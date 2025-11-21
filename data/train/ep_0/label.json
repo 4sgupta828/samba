@@ -1,0 +1,18 @@
+{
+  "episode": 0,
+  "level": 4,
+  "scenario": "External API error rate increase",
+  "root_cause_node": "ext_0",
+  "root_cause_role": "external",
+  "fault_type": "inject_errors",
+  "fault_start_time": 180,
+  "fault_duration": 420,
+  "topology": {
+    "nodes": 25,
+    "edges": 26,
+    "frontends": [
+      "svc_6",
+      "svc_13"
+    ]
+  }
+}

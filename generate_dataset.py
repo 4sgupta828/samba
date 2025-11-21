@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""
+Training Data Factory - Generate infinite procedural training episodes.
+
+This script orchestrates the generation of diverse, labeled microservice
+topology failures for training Graph Neural Networks (GNNs).
+
+Usage:
+    python generate_dataset.py --episodes 100 --output data/train
+"""
+import simpy
+import random
+import os
+import json
+import yaml
+import tempfile
+import argparse
+from pathlib import Path
+
+# Add src to path for imports
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+
+from src.topology.generator import TopologyGenerator
+from src.topology.adapter import TopologyAdapter, print_topology_summary
+from src.scenarios.library import ScenarioLibrary
+from src.simulation import Simulation
+from src.failures.injector import FailureInjector
+
+
+def create_dynamic_workload(nx_graph, base_rps: int = 50, peak_rps: int = 200):
+    """
+    Create a workload configuration that targets the specific frontend services
+    in this random topology.
+
+    Args:
+        nx_graph: NetworkX graph with topology
+        base_rps: Base requests per second
+        peak_rps: Peak requests per second
+
+    Returns:
+        Path to temporary workload YAML file
+    """
+    # Find nodes tagged as frontends
+    frontends = [n for n, d in nx_graph.nodes(data=True) if d.get('is_frontend')]
+
+    if not frontends:
+        # Fallback: pick any service if no frontends tagged
+        frontends = [n for n, d in nx_graph.nodes(data=True) if d.get('role') == 'service']
+
+    if not frontends:
+        raise ValueError("No services found in topology!")
+
+    # Distribute traffic evenly across frontends
+    weight = int(100 / len(frontends))
+
+    request_mix = []
+    for svc in frontends:
+        # Gateway is configured to route by request type
+        # We use 'GET' as a generic type
+        request_mix.append({
+            'type': 'GET',
+            'service': svc,
+            'weight': weight
+        })
+
+    workload_config = {
+        'name': 'Dynamic Random Workload',
+        'pattern': 'diurnal',  # Realistic daily traffic pattern
+        'baseline_rps': base_rps,  # Baseline requests per second
+        'peak_rps': peak_rps,  # Peak requests per second
+        'request_mix': request_mix
+    }
+
+    # Save to temp file
+    fd, path = tempfile.mkstemp(suffix='.yaml', text=True)
+    with os.fdopen(fd, 'w') as f:
+        yaml.dump(workload_config, f)
+
+    return path
+
+
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False):
+    """
+    Generate a single training episode.
+
+    Args:
+        episode_id: Unique episode identifier
+        output_dir: Base output directory
+        scenario_lib: Scenario library instance
+        verbose: Print detailed progress
+
+    Returns:
+        Dictionary with episode metadata
+    """
+    # 1. Select curriculum level
+    level = scenario_lib.sample_level(seed=episode_id)
+    cfg = scenario_lib.get_episode(level, seed=episode_id)
+
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Episode {episode_id} [Level {level}]")
+        print(f"  Scenario: {cfg.description}")
+        print(f"  Topology: {cfg.topology_size} nodes")
+        print(f"  Duration: {cfg.duration}s")
+        print(f"  Fault: {cfg.fault_type} on {cfg.fault_target_role}")
+        print(f"{'='*60}")
+
+    # 2. Generate Topology
+    topo_gen = TopologyGenerator(seed=episode_id)
+    nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
+
+    if verbose:
+        print_topology_summary(nx_graph)
+
+    # 3. Create Dynamic Workload
+    workload_path = create_dynamic_workload(nx_graph)
+
+    # 4. Configure Simulation
+    episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
+    os.makedirs(episode_dir, exist_ok=True)
+
+    sim_config = {
+        'simulation': {
+            'duration': cfg.duration,
+            'output_dir': episode_dir
+        },
+        'telemetry': {
+            'metric_export_interval': cfg.export_interval,
+            'exporter_type': 'file'
+        },
+        'workload': {
+            'path': workload_path
+        },
+        'infrastructure': {
+            'path': 'generated_internal'  # Placeholder (bypassing IaC parsing)
+        }
+    }
+
+    # 5. Initialize Simulation (bypass IaC parsing)
+    sim = Simulation(sim_config)
+
+    # 6. Setup Simulation Environment using Simulation's env (CRITICAL FIX!)
+    adapter = TopologyAdapter(sim.env)
+    registry = adapter.graph_to_registry(nx_graph)
+    sim.component_registry = registry  # Directly set registry
+
+    # Initialize simulation timestamp (normally done in sim.run())
+    import time
+    now_ns = int(time.time() * 1_000_000_000)
+    duration_ns = int(cfg.duration * 1_000_000_000)
+    sim.simulation_start_timestamp_ns = now_ns - duration_ns
+
+    # 7. Inject Fault Programmatically
+    valid_targets = [
+        nid for nid, data in nx_graph.nodes(data=True)
+        if data.get('role') == cfg.fault_target_role
+    ]
+
+    if not valid_targets:
+        print(f"Warning: No valid targets for role '{cfg.fault_target_role}', skipping episode {episode_id}")
+        return None
+
+    target_id = random.choice(valid_targets)
+    start_time = int(cfg.duration * 0.3)  # Inject at 30% through episode
+
+    if verbose:
+        print(f"\n[Fault Injection]")
+        print(f"  Target: {target_id}")
+        print(f"  Time: {start_time}s (30% through episode)")
+
+    # Initialize injector (bypassing YAML loading)
+    injector = FailureInjector(
+        sim.env,
+        "dummy_path",  # Not reading from file
+        registry,
+        sim.tracker,
+        simulation_duration=cfg.duration,
+        simulation_start_timestamp_ns=sim.simulation_start_timestamp_ns
+    )
+
+    # Manually schedule fault injection
+    sim.env.process(injector._execute_failure_step({
+        'id': f'procedural_fault_ep{episode_id}',
+        'timestamp': start_time,
+        'mode': cfg.fault_type,
+        'targets': [target_id],
+        'params': {
+            'latency_ms': 2000,
+            'wear_factor': 0.5,
+            'duration': cfg.duration - start_time  # Fault lasts until end
+        }
+    }))
+
+    # 8. Save Ground Truth Label
+    label = {
+        'episode': episode_id,
+        'level': level,
+        'scenario': cfg.description,
+        'root_cause_node': target_id,
+        'root_cause_role': cfg.fault_target_role,
+        'fault_type': cfg.fault_type,
+        'fault_start_time': start_time,
+        'fault_duration': cfg.duration - start_time,
+        'topology': {
+            'nodes': len(nx_graph.nodes),
+            'edges': len(nx_graph.edges),
+            'frontends': [n for n, d in nx_graph.nodes(data=True) if d.get('is_frontend')]
+        }
+    }
+
+    label_path = os.path.join(episode_dir, 'label.json')
+    with open(label_path, 'w') as f:
+        json.dump(label, f, indent=2)
+
+    if verbose:
+        print(f"\n[Ground Truth]")
+        print(f"  Saved to: {label_path}")
+
+    # 9. Run Simulation
+    try:
+        if verbose:
+            print(f"\n[Simulation]")
+            print(f"  Running for {cfg.duration}s...")
+
+        sim.run()
+
+        if verbose:
+            print(f"  Completed successfully")
+            print(f"  Output directory: {episode_dir}")
+
+    except Exception as e:
+        print(f"Error in episode {episode_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+    finally:
+        # Cleanup temp workload file
+        if os.path.exists(workload_path):
+            os.remove(workload_path)
+
+    return {
+        'episode_id': episode_id,
+        'level': level,
+        'output_dir': episode_dir,
+        'root_cause': target_id,
+        'fault_type': cfg.fault_type
+    }
+
+
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False):
+    """
+    Generate a full training dataset with multiple episodes.
+
+    Args:
+        num_episodes: Number of episodes to generate
+        output_dir: Output directory for dataset
+        verbose: Print detailed progress
+    """
+    print(f"\n{'='*60}")
+    print(f"SPATIOTEMPORAL DATA FACTORY")
+    print(f"{'='*60}")
+    print(f"Generating {num_episodes} training episodes...")
+    print(f"Output directory: {output_dir}")
+    print(f"{'='*60}\n")
+
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Initialize scenario library
+    lib = ScenarioLibrary()
+
+    # Generate episodes
+    results = []
+    for i in range(num_episodes):
+        result = generate_episode(i, output_dir, lib, verbose=verbose)
+        if result:
+            results.append(result)
+
+        if not verbose and (i + 1) % 10 == 0:
+            print(f"Progress: {i + 1}/{num_episodes} episodes completed")
+
+    # Save dataset metadata
+    metadata = {
+        'num_episodes': len(results),
+        'curriculum_distribution': lib.get_curriculum_distribution(),
+        'episodes': results
+    }
+
+    metadata_path = os.path.join(output_dir, 'dataset_metadata.json')
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print(f"Dataset generation complete!")
+    print(f"  Total episodes: {len(results)}")
+    print(f"  Metadata: {metadata_path}")
+    print(f"{'='*60}\n")
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Generate training data for GNN root cause analysis",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        '-n', '--episodes',
+        type=int,
+        default=10,
+        help='Number of episodes to generate'
+    )
+    parser.add_argument(
+        '-o', '--output',
+        default='data/train',
+        help='Output directory for dataset'
+    )
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Print detailed progress for each episode'
+    )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Random seed for reproducibility'
+    )
+
+    args = parser.parse_args()
+
+    # Set random seed if provided
+    if args.seed is not None:
+        random.seed(args.seed)
+
+    # Generate dataset
+    generate_dataset(
+        num_episodes=args.episodes,
+        output_dir=args.output,
+        verbose=args.verbose
+    )
+
+
+if __name__ == "__main__":
+    main()

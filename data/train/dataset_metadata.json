@@ -1,0 +1,18 @@
+{
+  "num_episodes": 1,
+  "curriculum_distribution": {
+    "1": 0.1,
+    "2": 0.3,
+    "3": 0.4,
+    "4": 0.2
+  },
+  "episodes": [
+    {
+      "episode_id": 0,
+      "level": 4,
+      "output_dir": "data/train/ep_0",
+      "root_cause": "ext_0",
+      "fault_type": "inject_errors"
+    }
+  ]
+}

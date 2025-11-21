@@ -1,0 +1,463 @@
+# Centralized Simulation Configuration
+# All tunable parameters for simulation components
+# LLM can modify this file to adjust simulation behavior
+
+# =============================================================================
+# GLOBAL SIMULATION SETTINGS
+# =============================================================================
+global:
+  time_acceleration: 1.0  # Speed multiplier for simulation time
+  random_seed: null  # Set for reproducible runs, null for random
+
+# =============================================================================
+# DYNAMICS ENGINE (Phase 2: First-Principles Metric Relationships)
+# =============================================================================
+dynamics:
+  enabled: true  # Master switch for dynamics engine
+
+  # Phase 4: Correlated Noise Configuration
+  # Replaces independent noise with correlated multivariate noise
+  correlated_noise:
+    enabled: true  # Enabled by default for more realistic metric fluctuations
+
+    # 5×5 correlation matrix for [CPU, Memory, Latency, Throughput, Error]
+    # Each row represents correlations of one metric with all others
+    # Values must be symmetric, diagonal = 1.0, range [-1, 1]
+    # Positive correlation: metrics tend to spike together
+    # Negative correlation: metrics tend to move in opposite directions
+    # Enhanced correlations for more realistic and diverse patterns
+    correlations:
+      - [1.0,  0.4,  0.75, -0.25,  0.6]  # CPU: strong positive with Latency, moderate with Error and Memory
+      - [0.4,  1.0,  0.3, -0.15,  0.2]  # Memory: moderate correlations, memory leaks affect CPU
+      - [0.75,  0.3,  1.0, -0.35,  0.85]  # Latency: very strong positive with CPU and Error (cascading)
+      - [-0.25, -0.15, -0.35,  1.0, -0.5] # Throughput: negative under stress (saturation effects)
+      - [0.6,  0.2,  0.85, -0.5,  1.0]  # Error: strong positive with Latency and CPU (failure cascade)
+
+  # Per-component configuration
+  components:
+    database:
+      enabled: true
+      config:
+        # Latency dynamics
+        latency_base: 20.0  # Base latency in milliseconds
+        latency_cpu_threshold: 60.0  # CPU% where latency starts degrading
+        latency_cpu_scale: 30.0  # Exponential scale factor
+
+        # CPU dynamics
+        cpu_from_throughput_coef: 0.03  # CPU increase per RPS (databases are CPU-intensive)
+        cpu_from_connections_coef: 0.2  # CPU increase per active connection (was 1.0 - too high!)
+        cpu_min: 5.0  # Baseline CPU %
+
+        # Error dynamics
+        error_base: 0.001  # Base error rate (0.1%)
+        error_latency_threshold: 200.0  # Latency (ms) where errors start increasing
+        error_cpu_threshold: 80.0  # CPU% where errors start increasing
+
+        # Retry handling
+        retry_load_multiplier: 1.0  # Retries count towards throughput (realistic load amplification)
+
+        # Noise
+        noise_enabled: true
+        noise_cpu_stddev: 0.02  # 2% variance
+        noise_latency_stddev: 0.05  # 5% variance
+        noise_error_stddev: 0.1  # 10% variance
+
+    load_balancer:
+      enabled: true
+      config:
+        # Latency dynamics
+        latency_base: 5.0  # Base latency in milliseconds (fast)
+        latency_cpu_threshold: 50.0
+        latency_cpu_scale: 30.0
+
+        # CPU dynamics
+        cpu_from_throughput_coef: 0.01  # Minimal CPU per RPS
+        cpu_from_connections_coef: 0.5
+        cpu_min: 2.0  # Very low baseline
+
+        # Error dynamics
+        error_base: 0.0001  # Very low base error rate (0.01%)
+        error_latency_threshold: 200.0
+        error_cpu_threshold: 80.0
+
+        # Retry handling
+        retry_load_multiplier: 1.0
+
+        # Noise
+        noise_enabled: true
+        noise_cpu_stddev: 0.02
+        noise_latency_stddev: 0.05
+        noise_error_stddev: 0.1
+
+    cache:
+      enabled: true
+      config:
+        # Latency dynamics
+        latency_base: 2.0  # Base latency in milliseconds (very fast)
+        latency_cpu_threshold: 50.0
+        latency_cpu_scale: 30.0
+
+        # CPU dynamics
+        cpu_from_throughput_coef: 0.005  # Minimal CPU usage
+        cpu_from_connections_coef: 0.1
+        cpu_min: 1.0  # Very low baseline
+
+        # Error dynamics
+        error_base: 0.0001  # Very low base error rate
+        error_latency_threshold: 200.0
+        error_cpu_threshold: 80.0
+
+        # Retry handling
+        retry_load_multiplier: 1.0
+
+        # Noise
+        noise_enabled: true
+        noise_cpu_stddev: 0.02
+        noise_latency_stddev: 0.05
+        noise_error_stddev: 0.1
+
+    api_service:
+      enabled: true
+      config:
+        # Latency dynamics
+        latency_base: 50.0  # Base latency in milliseconds (microservice overhead)
+        latency_cpu_threshold: 50.0
+        latency_cpu_scale: 30.0
+
+        # CPU dynamics
+        cpu_from_throughput_coef: 0.02  # Moderate CPU per RPS
+        cpu_from_connections_coef: 0.5
+        cpu_min: 5.0  # Moderate baseline
+
+        # Error dynamics
+        error_base: 0.002  # Base error rate (0.2%) - reduced from 0.5%
+        error_latency_threshold: 200.0
+        error_cpu_threshold: 80.0
+
+        # Retry handling
+        retry_load_multiplier: 1.0
+
+        # Noise
+        noise_enabled: true
+        noise_cpu_stddev: 0.02
+        noise_latency_stddev: 0.05
+        noise_error_stddev: 0.1
+
+    compute_agent:
+      enabled: true
+      config:
+        # Latency dynamics
+        latency_base: 50.0  # Base latency in milliseconds (processing time)
+        latency_cpu_threshold: 70.0  # Higher threshold before degradation
+        latency_cpu_scale: 20.0  # Sharper degradation curve
+
+        # CPU dynamics (Phase 2: concurrent request model)
+        cpu_from_throughput_coef: 0.25  # Deprecated - use cpu_from_concurrent_coef
+        cpu_from_concurrent_coef: 0.5  # CPU per concurrent request (Phase 2)
+        cpu_from_connections_coef: 2.0  # DB connections consume CPU
+        cpu_min: 10.0  # Higher baseline (runtime overhead)
+
+        # Memory dynamics (Phase 2: concurrent request model)
+        memory_base: 200.0  # Base memory in MB when idle
+        memory_per_request_mb: 5.0  # Memory per in-flight request (Phase 2)
+        memory_tau: 5.0  # Time constant for memory changes
+
+        # Error dynamics
+        error_base: 0.004  # Base error rate (0.4%) - higher than API due to complexity
+        error_latency_threshold: 500.0  # Tolerates higher latency
+        error_cpu_threshold: 85.0  # Tolerates higher CPU
+
+        # Retry handling
+        retry_load_multiplier: 1.0
+
+        # Noise
+        noise_enabled: true
+        noise_cpu_stddev: 0.02
+        noise_latency_stddev: 0.05
+        noise_error_stddev: 0.1
+
+# =============================================================================
+# WORKLOAD GENERATOR (Realistic Client Behavior)
+# =============================================================================
+workload_generator:
+  # Connection pool settings (mimics real HTTP client libraries)
+  # Examples: Python requests.Session (10 default), Java HttpClient (5 per route), browsers (6-8)
+  connection_pool_size: 50  # Max concurrent connections to backend
+
+  # Request timeout (seconds)
+  # Real-world: 30-60s typical for HTTP clients
+  request_timeout_seconds: 30.0
+
+  # Max queue size (in-flight requests waiting for connections)
+  # When exceeded, requests are rejected (load shedding / backpressure)
+  max_queue_size: 100
+
+  # Circuit breaker configuration (fail-fast pattern)
+  circuit_breaker:
+    enabled: true  # Enable circuit breaker pattern
+
+    # Open circuit when failure rate exceeds this threshold (0.0-1.0)
+    # Real-world: 50-70% is common (Hystrix default: 50%, but we use 70% to tolerate rolling deployments)
+    # With 3 instances and 1/3 down during deployment, we can tolerate higher temporary failure rates
+    failure_threshold: 0.7
+
+    # Close circuit when success rate exceeds this threshold (0.0-1.0)
+    # Require strong recovery signal (80% success) before fully closing
+    success_threshold: 0.8
+
+    # Number of recent requests to track for failure rate calculation
+    # Larger window (50 requests) provides more stability and avoids premature triggering
+    # Real-world: Resilience4j uses 100, Hystrix uses 20
+    window_size: 50
+
+    # Seconds to keep circuit open before testing recovery (half-open state)
+    # Real-world: 5-30s typical, we use 15s to allow deployment to complete
+    open_duration_seconds: 15.0
+
+    # Max probe requests to send in half-open state
+    # More probes (10) provide better signal during recovery
+    half_open_max_requests: 10
+
+# =============================================================================
+# TELEMETRY & OBSERVABILITY
+# =============================================================================
+telemetry:
+  # Trace sampling rates - adjusted for better coverage
+  trace_sampling_rate: 0.02  # 2% sampling for normal operations (increased for diversity)
+  trace_sampling_rate_errors: 0.2  # 20% sampling for operations with errors (increased for better error visibility)
+
+  # Metric export timing - finer granularity for more data points
+  metric_export_interval_seconds: 5  # Export every 5 seconds for higher resolution
+  metric_flush_interval_seconds: 2  # Check every 2 seconds for more frequent exports
+
+  # Logging configuration - more diverse log levels
+  min_log_level: "INFO"
+  log_throttle_window_seconds: 5.0  # Shorter throttle window for more log diversity
+  log_throttle_cleanup_threshold_seconds: 30.0  # Faster cleanup for more dynamic logs
+
+# =============================================================================
+# DEFAULT TIMING & SAMPLING (applies to all components unless overridden)
+# =============================================================================
+defaults:
+  sample_window_seconds: 5.0  # Window for calculating rolling metrics
+  cpu_sampling_interval_seconds: 1.0  # How often to sample CPU utilization
+
+  # Health check defaults
+  healthcheck:
+    protocol: "HTTP"
+    port: 80
+    path: "/"
+    interval_seconds: 30
+    timeout_seconds: 5
+    healthy_threshold: 2  # Consecutive successes to mark healthy
+    unhealthy_threshold: 2  # Consecutive failures to mark unhealthy
+
+  # Retry logic defaults
+  retry:
+    max_attempts: 3
+    backoff_base_seconds: 0.1  # Exponential backoff: base * 2^attempt
+    backoff_jitter_range_seconds: [0.01, 0.05]  # Random jitter added
+
+# =============================================================================
+# COMPUTE COMPONENT (ComputeAgent & AutoScalingGroup)
+# =============================================================================
+compute:
+  # Phase 3.1: Thread pool configuration
+  thread_pool_size: 50  # Default thread pool size for request processing
+
+  # Resource capacities
+  resources:
+    memory_base_mb: 200.0  # Base memory usage when idle
+    memory_capacity_mb: 512.0  # Total memory capacity
+    cpu_capacity_cores: 1.0  # Total CPU cores (overridden by IaC if specified)
+    db_connection_pool_capacity: 10  # Max concurrent DB connections (reduced for faster saturation)
+
+  # Client-side timeouts for dependencies (simulation realism)
+  timeouts:
+    database_call_seconds: 5.0  # Timeout for database calls
+    cache_call_seconds: 1.0  # Timeout for cache calls
+    external_api_seconds: 10.0  # Timeout for external API calls
+
+  # Startup and restart behavior
+  startup:
+    time_range_seconds: [1, 3]  # Random startup time (reduced for faster training data generation)
+    backoff_delay_base_seconds: 10  # Exponential backoff: 10s, 20s, 40s, 80s (capped at 300s)
+    backoff_jitter_range_seconds: [-2, 5]  # Random jitter on backoff
+    max_backoff_seconds: 300  # Maximum backoff delay
+
+  # Memory pressure thresholds and impacts (tuned for simulation)
+  memory_pressure:
+    thresholds_mb: [256, 384, 461]  # Thresholds at 50%, 75%, 90% (better for simulation)
+
+    # Additional delays added under memory pressure
+    delays_seconds:
+      severe: [0.25, 0.35]
+      moderate: [0.15, 0.25]
+      minor: [0.05, 0.15]
+
+    # CPU impact under memory pressure (percentage)
+    cpu_impact_percent:
+      severe: [85.0, 98.0]
+      moderate: [60.0, 80.0]
+      minor: [40.0, 60.0]
+
+  # OOM checking
+  oom:
+    check_interval_seconds: 0.5  # How often to check for OOM condition
+
+  # Request processing profiles (per request type)
+  request_profiles:
+    read_profile:
+      processing_time_mean_seconds: 0.05
+      processing_time_stdev_seconds: 0.01
+      cpu_spike_range_percent: [10, 20]  # Additional CPU spike
+
+    update_profile:
+      processing_time_mean_seconds: 0.1
+      processing_time_stdev_seconds: 0.03
+      cpu_usage_range_percent: [30, 50]
+
+    generate_report:
+      processing_time_mean_seconds: 0.5
+      processing_time_stdev_seconds: 0.1
+      cpu_usage_range_percent: [70, 90]
+
+    default:
+      processing_time_mean_seconds: 0.05
+      processing_time_stdev_seconds: 0.01
+      cpu_spike_range_percent: [10, 20]
+
+  # Cache interaction parameters
+  cache:
+    user_id_range: [1, 100]  # Range for cache key generation
+    processing_time_range_seconds: [0.01, 0.02]  # Time to process cache results
+
+  # Database interaction parameters
+  database:
+    max_retries: 3
+    retry_backoff_base_seconds: 0.1
+    retry_backoff_jitter_range_seconds: [0.01, 0.05]
+
+  # CPU behavior
+  cpu:
+    idle_level_percent: 5.0  # CPU usage when idle
+    processing_range_percent: [20, 40]  # CPU during general processing
+    additional_work_time_mean_seconds: 0.08
+    additional_work_time_stdev_seconds: 0.02
+
+  # Autoscaling configuration
+  autoscaling:
+    cooldown_seconds: 300  # Cooldown period between scaling actions
+    target_metric: "cpu_utilization"  # Metric to scale on
+    target_value: 70.0  # Target value for the metric
+
+# =============================================================================
+# DATABASE COMPONENT (SqlDatabase & NoSqlDatabase)
+# =============================================================================
+database:
+  # Resource capacities
+  resources:
+    connection_pool_capacity: 30  # Max concurrent connections (reduced for faster saturation)
+    cpu_capacity_cores: 4.0  # Total CPU capacity (4 cores)
+    memory_capacity_mb: 1024.0  # Total memory capacity
+
+  # Initial state
+  initial_state:
+    wear_factor: 0.0  # Initial wear/degradation (0.0 = pristine)
+
+  # Query performance
+  query_performance:
+    base_query_time_mean_seconds: 0.02  # 20ms base query time
+    base_query_time_stdev_seconds: 0.005  # 5ms standard deviation
+    cpu_usage_per_query_cores: 0.10  # CPU cores used per query (was 0.7 - too high!)
+    degradation_latency_factor: 0.1  # Additional latency per wear unit
+
+  # Wear and degradation (currently disabled)
+  wear:
+    enabled: false
+    query_wear_increment: 0.01  # Wear added per 1000 queries
+
+  # Background maintenance jobs
+  background_jobs:
+    enabled: true
+    interval_range_seconds: [600, 1200]  # 10-20 minutes between jobs
+    duration_range_seconds: [20, 40]  # Job duration
+    cpu_cores_used: 1.8  # CPU cores consumed during job (2 cores * 0.9 efficiency)
+
+# =============================================================================
+# NETWORK COMPONENT (NetworkLink)
+# =============================================================================
+network:
+  # Base network characteristics (global defaults)
+  base_latency_ms: 1.0  # Base network latency
+  latency_jitter_ms: 0.2  # Random jitter added to latency
+  bandwidth_mbps: 1000.0  # Network bandwidth (1 Gbps)
+  latency_minimum_ms: 0.1  # Absolute minimum latency (0.0001 seconds)
+
+  # Component-specific network latencies (overrides base_latency_ms)
+  # Simulates different network topologies: intra-AZ, cross-AZ, cross-region
+  component_latencies:
+    database: 2.0  # Intra-AZ (same availability zone)
+    cache: 0.5  # Co-located (same host/pod)
+    message_queue: 1.5  # Intra-AZ
+    object_storage: 5.0  # Cross-AZ or edge location
+    external_api: 50.0  # Cross-region or internet
+    default: 1.0  # Fallback for unlisted components
+
+  # TCP connection behavior
+  tcp:
+    handshake_time_multiplier: 3  # TCP handshake takes base_latency * 3
+    handshake_minimum_ms: 1.0  # Minimum handshake time
+
+  # Packet loss behavior
+  packet_loss:
+    latency_multiplier: 2  # Retransmission adds base_latency * 2
+
+# =============================================================================
+# STORAGE COMPONENTS
+# =============================================================================
+storage:
+  # Object Storage (S3-like)
+  object_storage:
+    latency_mean_ms: 20  # Average latency for operations
+    latency_stdev_ms: 5  # Standard deviation of latency
+
+  # In-Memory Cache (Redis-like)
+  inmemory_cache:
+    max_size_items: 1000  # Maximum number of items in cache (small for simulation - causes evictions)
+    latency_mean_ms: 2  # Average latency for cache operations
+    latency_stdev_ms: 0.5  # Standard deviation of latency
+    hit_rate_window_seconds: 10.0  # Window for calculating hit rate gauge
+
+# =============================================================================
+# MESSAGING COMPONENT (MessageQueue)
+# =============================================================================
+messaging:
+  message_queue:
+    visibility_timeout_seconds: 60  # Message visibility timeout (can be overridden by IaC)
+    metrics_sampling_interval_seconds: 1.0  # How often to sample queue metrics
+
+# =============================================================================
+# FAULT INJECTION (per-component runtime injection, separate from error_config.yaml)
+# =============================================================================
+fault_injection:
+  # These can be set at runtime for individual components
+  default_injected_latency_ms: 0.0  # Additional latency to inject
+  default_forced_error_rate: 0.0  # Force errors (0.0-1.0)
+
+# =============================================================================
+# NOTES FOR LLM AGENTS
+# =============================================================================
+# This configuration file centralizes all simulation parameters in one place.
+#
+# To adjust simulation behavior, modify values in this file:
+# - Increase/decrease resource capacities to simulate scaling
+# - Adjust latencies to simulate network conditions
+# - Modify timing parameters to speed up/slow down behaviors
+# - Change thresholds to trigger different stress conditions
+#
+# This file works alongside:
+# - error_config.yaml: Defines error rates and failure conditions
+# - workload config: Defines traffic patterns and request types
+# - main_config.yaml: Defines overall simulation parameters (duration, paths, etc.)
+# - IaC config: Defines infrastructure topology (can override some values here)

@@ -1,0 +1,22 @@
+#Python
+pycache/*.pyc*.pyo*.pyd.Pythonenv/venv/.venv/
+
+#Output
+output/*.logIDE / 
+
+#Editor
+.vscode/.idea/
+
+venv
+
+.DS_Store
+
+output
+
+data/
+
+simulation_data/
+
+*.json
+
+logs/
