@@ -116,6 +116,7 @@ data/train/
 ├── dataset_metadata.json       # Overall dataset info
 ├── ep_0/
 │   ├── label.json             # Ground truth: {root_cause: "svc_3", ...}
+│   ├── topology.json          # Full graph structure for GNN input
 │   ├── metrics.json           # Time-series metrics
 │   ├── logs.jsonl             # Structured logs
 │   ├── traces.json            # Distributed traces
@@ -143,6 +144,61 @@ data/train/
   }
 }
 ```
+
+### Topology Graph Format
+
+Each episode includes a `topology.json` file with the complete graph structure for GNN training:
+
+```json
+{
+  "nodes": [
+    {
+      "id": "gateway",
+      "type": "RequestGateway",
+      "role": "gateway"
+    },
+    {
+      "id": "svc_0",
+      "type": "ApiService",
+      "role": "service",
+      "is_frontend": true
+    },
+    {
+      "id": "db_0",
+      "type": "SqlDatabase",
+      "role": "database"
+    }
+  ],
+  "edges": [
+    {
+      "source": "gateway",
+      "target": "svc_0",
+      "type": "sync_http",
+      "base_latency": 5.0
+    },
+    {
+      "source": "svc_0",
+      "target": "db_0",
+      "type": "sync_db",
+      "base_latency": 2.0
+    }
+  ],
+  "num_nodes": 10,
+  "num_edges": 15,
+  "is_directed": true
+}
+```
+
+**Node attributes:**
+- `id`: Unique node identifier
+- `type`: Component type (ApiService, SqlDatabase, InMemoryCache, MessageQueue, ExternalService, RequestGateway)
+- `role`: Semantic role (gateway, service, database, cache, queue, external)
+- `is_frontend`: Boolean flag (only on frontend services)
+
+**Edge attributes:**
+- `source`, `target`: Node IDs
+- `type`: Connection type (sync_http, sync_rpc, sync_db, sync_cache, sync_external, async_produce, async_consume)
+- `base_latency`: Network latency in milliseconds
 
 ## 🧬 Procedural Topology Generation
 
@@ -214,10 +270,20 @@ df = pd.DataFrame(metrics['data_points'])
 
 ```python
 import networkx as nx
+import json
 
-# Reconstruct topology from traces or ground truth
+# Load topology directly from topology.json
+with open('data/train/ep_0/topology.json') as f:
+    topo = json.load(f)
+
+# Reconstruct NetworkX graph
 G = nx.DiGraph()
-# Add nodes and edges from telemetry data
+for node in topo['nodes']:
+    node_id = node.pop('id')
+    G.add_node(node_id, **node)
+for edge in topo['edges']:
+    G.add_edge(edge['source'], edge['target'],
+               type=edge['type'], base_latency=edge['base_latency'])
 ```
 
 ### 3. Train GNN

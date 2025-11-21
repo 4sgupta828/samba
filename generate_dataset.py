@@ -26,6 +26,7 @@ from src.topology.adapter import TopologyAdapter, print_topology_summary
 from src.scenarios.library import ScenarioLibrary
 from src.simulation import Simulation
 from src.failures.training_injector import TrainingFailureInjector
+import networkx as nx
 
 
 def create_dynamic_workload(nx_graph, base_rps: int = 50, peak_rps: int = 200):
@@ -78,6 +79,42 @@ def create_dynamic_workload(nx_graph, base_rps: int = 50, peak_rps: int = 200):
         yaml.dump(workload_config, f)
 
     return path
+
+
+def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
+    """
+    Serialize NetworkX graph to JSON-friendly format for GNN training.
+
+    Args:
+        nx_graph: NetworkX directed graph with node and edge attributes
+
+    Returns:
+        Dictionary with nodes and edges arrays suitable for GNN input
+    """
+    # Extract nodes with all attributes
+    nodes = []
+    for node_id, attrs in nx_graph.nodes(data=True):
+        node_data = {'id': node_id}
+        node_data.update(attrs)
+        nodes.append(node_data)
+
+    # Extract edges with all attributes
+    edges = []
+    for source, target, attrs in nx_graph.edges(data=True):
+        edge_data = {
+            'source': source,
+            'target': target
+        }
+        edge_data.update(attrs)
+        edges.append(edge_data)
+
+    return {
+        'nodes': nodes,
+        'edges': edges,
+        'num_nodes': len(nodes),
+        'num_edges': len(edges),
+        'is_directed': nx_graph.is_directed()
+    }
 
 
 def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False):
@@ -232,9 +269,17 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     with open(label_path, 'w') as f:
         json.dump(label, f, indent=2)
 
+    # Save complete topology graph for GNN training
+    topology_data = serialize_topology_graph(nx_graph)
+    topology_path = os.path.join(episode_dir, 'topology.json')
+    with open(topology_path, 'w') as f:
+        json.dump(topology_data, f, indent=2)
+
     if verbose:
         print(f"\n[Ground Truth]")
-        print(f"  Saved to: {label_path}")
+        print(f"  Label saved to: {label_path}")
+        print(f"  Topology saved to: {topology_path}")
+        print(f"  Topology: {topology_data['num_nodes']} nodes, {topology_data['num_edges']} edges")
 
     # 9. Run Simulation
     try:
