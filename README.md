@@ -308,6 +308,28 @@ python generate_dataset.py -n 100
     └── train/
 ```
 
+## 🔥 Gradual Failure Injection
+
+Unlike instant failure injection (unrealistic), Samba applies failures **gradually over time** to mimic real infrastructure degradation:
+
+### **Progression Types**
+- **Linear**: Steady degradation (e.g., latency increases uniformly)
+- **Exponential**: Accelerating problems (e.g., memory leaks compound)
+- **Step**: Sudden changes in phases (e.g., background jobs start)
+
+### **Example Timeline**
+```
+Episode Duration: 600s
+├─ 0-120s:    Healthy baseline (20%)
+├─ 120-360s:  Gradual failure ramp (40%)
+└─ 360-600s:  Full failure state (40%)
+```
+
+This creates **temporally rich training data** where GNNs learn to:
+- Detect early warning signs
+- Track degradation progression
+- Distinguish symptom propagation from root causes
+
 ## 🤝 Relationship to Main Simulator
 
 **Samba** is a **focused fork** of the main simulator (`~/sim`) designed specifically for GNN training data generation. Key differences:
@@ -316,7 +338,7 @@ python generate_dataset.py -n 100
 |---------|-------------------|-------------------|
 | **Purpose** | Testing & validation | Training data generation |
 | **Topology** | Static (Terraform IaC) | Procedural (NetworkX) |
-| **Scenarios** | Predefined YAML | Curriculum learning |
+| **Failures** | YAML scenarios | Programmatic gradual injection |
 | **Output** | Single run analysis | Batch datasets (1000s) |
 | **Usage** | Manual exploration | Automated pipeline |
 

@@ -25,7 +25,7 @@ from src.topology.generator import TopologyGenerator
 from src.topology.adapter import TopologyAdapter, print_topology_summary
 from src.scenarios.library import ScenarioLibrary
 from src.simulation import Simulation
-from src.failures.injector import FailureInjector
+from src.failures.training_injector import TrainingFailureInjector
 
 
 def create_dynamic_workload(nx_graph, base_rps: int = 50, peak_rps: int = 200):
@@ -151,7 +151,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     duration_ns = int(cfg.duration * 1_000_000_000)
     sim.simulation_start_timestamp_ns = now_ns - duration_ns
 
-    # 7. Inject Fault Programmatically
+    # 7. Inject Fault Programmatically (GRADUAL APPLICATION)
     valid_targets = [
         nid for nid, data in nx_graph.nodes(data=True)
         if data.get('role') == cfg.fault_target_role
@@ -162,37 +162,44 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         return None
 
     target_id = random.choice(valid_targets)
-    start_time = int(cfg.duration * 0.3)  # Inject at 30% through episode
+
+    # Calculate gradual failure timeline:
+    # - Start at 20% through episode (earlier than before to see healthy baseline)
+    # - Apply gradually over 40% of episode duration
+    # - Reach full effect at 60%, remains until end
+    start_time = int(cfg.duration * 0.2)
+    ramp_duration = int(cfg.duration * 0.4)
 
     if verbose:
-        print(f"\n[Fault Injection]")
+        print(f"\n[Fault Injection - GRADUAL]")
         print(f"  Target: {target_id}")
-        print(f"  Time: {start_time}s (30% through episode)")
+        print(f"  Start: {start_time}s (20% through episode)")
+        print(f"  Ramp: {ramp_duration}s (applies gradually)")
+        print(f"  Full effect at: {start_time + ramp_duration}s (60% through)")
 
-    # Initialize injector (bypassing YAML loading)
-    injector = FailureInjector(
+    # Initialize new training-focused injector
+    injector = TrainingFailureInjector(
         sim.env,
-        "dummy_path",  # Not reading from file
         registry,
         sim.tracker,
-        simulation_duration=cfg.duration,
         simulation_start_timestamp_ns=sim.simulation_start_timestamp_ns
     )
 
-    # Manually schedule fault injection
-    sim.env.process(injector._execute_failure_step({
-        'id': f'procedural_fault_ep{episode_id}',
-        'timestamp': start_time,
-        'mode': cfg.fault_type,
-        'targets': [target_id],
-        'params': {
-            'latency_ms': 2000,
-            'wear_factor': 0.5,
-            'duration': cfg.duration - start_time  # Fault lasts until end
-        }
-    }))
+    # Configure failure parameters based on type
+    params = cfg.get_failure_params()
 
-    # 8. Save Ground Truth Label
+    # Schedule GRADUAL fault injection
+    injector.inject_gradual_failure(
+        target_id=target_id,
+        failure_mode=cfg.fault_type,
+        start_time=start_time,
+        duration=ramp_duration,
+        params=params,
+        progression=cfg.progression,
+        episode_id=f'ep{episode_id}_fault'
+    )
+
+    # 8. Save Ground Truth Label (WITH PROGRESSION INFO)
     label = {
         'episode': episode_id,
         'level': level,
@@ -201,7 +208,19 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         'root_cause_role': cfg.fault_target_role,
         'fault_type': cfg.fault_type,
         'fault_start_time': start_time,
-        'fault_duration': cfg.duration - start_time,
+        'fault_ramp_duration': ramp_duration,
+        'fault_full_effect_time': start_time + ramp_duration,
+        'fault_total_duration': cfg.duration - start_time,
+        'progression': {
+            'type': cfg.progression,
+            'description': f'{cfg.progression} progression over {ramp_duration}s',
+            'timeline': {
+                'healthy_baseline': f'0s - {start_time}s',
+                'degradation_ramp': f'{start_time}s - {start_time + ramp_duration}s',
+                'full_failure': f'{start_time + ramp_duration}s - {cfg.duration}s'
+            }
+        },
+        'fault_params': params,
         'topology': {
             'nodes': len(nx_graph.nodes),
             'edges': len(nx_graph.edges),

@@ -1,0 +1,341 @@
+"""
+Training Failure Injector - Simplified injector for procedural training data generation.
+
+This module provides a clean API for programmatically injecting failures without YAML scenarios.
+Supports gradual failure application (realistic infrastructure degradation).
+"""
+import simpy
+from typing import Dict, List, Any
+from src.components.base_component import SimulatedComponent
+from src.core.ground_truth import CausalityTracker
+from src.core.scenario_events import ScenarioEventTracker, sim_time_to_timestamp
+from src.failures.modes import FAILURE_MODES
+
+
+class TrainingFailureInjector:
+    """
+    Simplified failure injector for training data generation.
+
+    Key differences from FailureInjector:
+    - No YAML scenario loading
+    - Programmatic API for direct fault injection
+    - Built-in support for gradual failure progression
+    - Simplified ground truth tracking
+    """
+
+    def __init__(
+        self,
+        env: simpy.Environment,
+        component_registry: Dict[str, SimulatedComponent],
+        tracker: CausalityTracker,
+        simulation_start_timestamp_ns: int = None
+    ):
+        """
+        Initialize the training failure injector.
+
+        Args:
+            env: SimPy environment
+            component_registry: Dictionary of component_id -> SimulatedComponent
+            tracker: CausalityTracker for ground truth
+            simulation_start_timestamp_ns: Start timestamp for event tracking
+        """
+        self.env = env
+        self.component_registry = component_registry
+        self.tracker = tracker
+        self.simulation_start_timestamp_ns = simulation_start_timestamp_ns
+        self.scenario_event_tracker = ScenarioEventTracker()
+
+        # Track all injected failures for export
+        self.failure_events = []
+
+    def inject_gradual_failure(
+        self,
+        target_id: str,
+        failure_mode: str,
+        start_time: float,
+        duration: float,
+        params: Dict[str, Any],
+        progression: str = "linear",
+        episode_id: str = None
+    ):
+        """
+        Inject a failure that applies gradually over time.
+
+        Args:
+            target_id: Component ID to target
+            failure_mode: Type of failure (e.g., 'inject_latency', 'cpu_saturation')
+            start_time: When to start applying the failure (sim time)
+            duration: How long it takes to reach full effect
+            params: Failure parameters (e.g., {'latency_ms': 2000})
+            progression: How to apply ('linear', 'exponential', 'step')
+            episode_id: Episode identifier for tracking
+
+        Returns:
+            SimPy process handle
+        """
+        return self.env.process(
+            self._apply_gradual_failure(
+                target_id=target_id,
+                failure_mode=failure_mode,
+                start_time=start_time,
+                duration=duration,
+                params=params,
+                progression=progression,
+                episode_id=episode_id or f"fault_{int(start_time)}"
+            )
+        )
+
+    def inject_instant_failure(
+        self,
+        target_id: str,
+        failure_mode: str,
+        start_time: float,
+        params: Dict[str, Any],
+        duration: float = None,
+        episode_id: str = None
+    ):
+        """
+        Inject a failure that applies instantly (legacy behavior).
+
+        Args:
+            target_id: Component ID to target
+            failure_mode: Type of failure
+            start_time: When to apply the failure (sim time)
+            params: Failure parameters
+            duration: Optional duration before auto-revert
+            episode_id: Episode identifier
+
+        Returns:
+            SimPy process handle
+        """
+        return self.env.process(
+            self._apply_instant_failure(
+                target_id=target_id,
+                failure_mode=failure_mode,
+                start_time=start_time,
+                params=params,
+                duration=duration,
+                episode_id=episode_id or f"fault_{int(start_time)}"
+            )
+        )
+
+    def _apply_gradual_failure(
+        self,
+        target_id: str,
+        failure_mode: str,
+        start_time: float,
+        duration: float,
+        params: Dict[str, Any],
+        progression: str,
+        episode_id: str
+    ):
+        """Internal process for gradual failure application."""
+        # Wait until start time
+        if start_time > self.env.now:
+            yield self.env.timeout(start_time - self.env.now)
+
+        # Get target component
+        if target_id not in self.component_registry:
+            print(f"ERROR: Target component '{target_id}' not found")
+            return
+
+        target = self.component_registry[target_id]
+
+        # Start incident tracking
+        if self.tracker.active_incident is None:
+            self.tracker.start_incident(
+                sim_time=self.env.now,
+                root_cause_component_id=target.id,
+                root_cause_component_type=target.type,
+                failure_mode=failure_mode,
+                params=params
+            )
+
+        # Record failure injection event
+        self._record_failure_event(
+            event_id=episode_id,
+            mode=failure_mode,
+            target=target,
+            params=params,
+            is_gradual=True,
+            duration=duration,
+            progression=progression
+        )
+
+        print(f"[{self.env.now:.2f}s] >>> GRADUAL FAILURE: '{failure_mode}' on {target_id} "
+              f"over {duration:.1f}s ({progression})")
+
+        # Apply failure using component's infrastructure change mechanism
+        # Map failure modes to parameters
+        if failure_mode == 'inject_latency':
+            parameter = 'latency_ms'
+            delta = params.get('latency_ms', 1000)
+        elif failure_mode == 'inject_errors':
+            parameter = 'error_rate'
+            delta = params.get('error_rate', 0.5)
+        elif failure_mode == 'cpu_saturation':
+            # For CPU saturation, we increase injected latency to simulate processing slowdown
+            parameter = 'latency_ms'
+            delta = params.get('cpu_latency_ms', 500)
+        elif failure_mode == 'memory_pressure':
+            parameter = 'latency_ms'
+            delta = params.get('memory_latency_ms', 300)
+        else:
+            print(f"WARNING: Gradual mode not implemented for '{failure_mode}', using instant")
+            # Fall back to instant application
+            failure_func = FAILURE_MODES.get(failure_mode)
+            if failure_func:
+                failure_func(target, params)
+            yield self.env.timeout(duration)
+            return
+
+        # Apply the change gradually
+        target.apply_infrastructure_change(
+            parameter=parameter,
+            delta=delta,
+            duration=duration,
+            progression=progression,
+            start_time=self.env.now
+        )
+
+        # Wait for the change to complete
+        yield self.env.timeout(duration)
+
+        print(f"[{self.env.now:.2f}s] <<< FAILURE FULLY APPLIED: '{failure_mode}' on {target_id}")
+
+    def _apply_instant_failure(
+        self,
+        target_id: str,
+        failure_mode: str,
+        start_time: float,
+        params: Dict[str, Any],
+        duration: float,
+        episode_id: str
+    ):
+        """Internal process for instant failure application."""
+        # Wait until start time
+        if start_time > self.env.now:
+            yield self.env.timeout(start_time - self.env.now)
+
+        # Get target component
+        if target_id not in self.component_registry:
+            print(f"ERROR: Target component '{target_id}' not found")
+            return
+
+        target = self.component_registry[target_id]
+
+        # Start incident tracking
+        if self.tracker.active_incident is None:
+            self.tracker.start_incident(
+                sim_time=self.env.now,
+                root_cause_component_id=target.id,
+                root_cause_component_type=target.type,
+                failure_mode=failure_mode,
+                params=params
+            )
+
+        # Record failure injection event
+        self._record_failure_event(
+            event_id=episode_id,
+            mode=failure_mode,
+            target=target,
+            params=params,
+            is_gradual=False
+        )
+
+        print(f"[{self.env.now:.2f}s] >>> INSTANT FAILURE: '{failure_mode}' on {target_id}")
+
+        # Apply failure immediately
+        failure_func = FAILURE_MODES.get(failure_mode)
+        if not failure_func:
+            print(f"ERROR: Unknown failure mode '{failure_mode}'")
+            return
+
+        try:
+            failure_func(target, params)
+        except Exception as e:
+            print(f"ERROR: Failed to apply '{failure_mode}': {e}")
+            return
+
+        # Wait for duration if specified
+        if duration:
+            yield self.env.timeout(duration)
+
+            # Auto-revert if revert mode exists
+            revert_mode = f"revert_{failure_mode}"
+            revert_func = FAILURE_MODES.get(revert_mode)
+            if revert_func:
+                print(f"[{self.env.now:.2f}s] <<< REVERTING: '{failure_mode}' on {target_id}")
+                revert_func(target, params)
+
+            # End incident
+            if self.tracker.active_incident:
+                self.tracker.end_incident(self.env.now)
+
+    def _record_failure_event(
+        self,
+        event_id: str,
+        mode: str,
+        target: SimulatedComponent,
+        params: Dict[str, Any],
+        is_gradual: bool,
+        duration: float = None,
+        progression: str = None
+    ):
+        """Record failure event in tracking systems."""
+        # Record in local timeline
+        event = {
+            "id": event_id,
+            "sim_time": self.env.now,
+            "mode": mode,
+            "target": target.id,
+            "params": params,
+            "is_gradual": is_gradual,
+            "duration": duration,
+            "progression": progression
+        }
+        self.failure_events.append(event)
+
+        # Record in ScenarioEventTracker for ground truth
+        if self.simulation_start_timestamp_ns:
+            timestamp = sim_time_to_timestamp(self.env.now, self.simulation_start_timestamp_ns)
+
+            # Use infrastructure change event for gradual failures
+            if is_gradual and duration:
+                # Determine the parameter being changed
+                parameter = "latency_ms"  # Default
+                delta = params.get('latency_ms', 0)
+
+                if mode == 'inject_errors':
+                    parameter = "error_rate"
+                    delta = params.get('error_rate', 0)
+                elif mode == 'cpu_saturation':
+                    parameter = "cpu_load"
+                    delta = params.get('cpu_latency_ms', 0)
+
+                self.scenario_event_tracker.add_infrastructure_change_event(
+                    event_id=event_id,
+                    sim_time=self.env.now,
+                    timestamp=timestamp,
+                    target_component=target.id,
+                    parameter=parameter,
+                    delta=delta,
+                    duration=duration,
+                    progression=progression,
+                    reason=f"Training episode failure: {mode}"
+                )
+            else:
+                # Use failure injection event for instant failures
+                self.scenario_event_tracker.add_failure_injection(
+                    event_id=event_id,
+                    sim_time=self.env.now,
+                    timestamp=timestamp,
+                    mode=mode,
+                    targets=[target.id],
+                    params=params,
+                    is_revert=False
+                )
+
+    def get_failure_timeline(self) -> List[Dict[str, Any]]:
+        """Get the complete timeline of failure injection events."""
+        return self.failure_events

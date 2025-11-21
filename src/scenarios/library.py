@@ -19,6 +19,47 @@ class EpisodeConfig:
     fault_target_role: str       # Component role to target
     export_interval: int         # Metric export interval (seconds)
     description: str             # Human-readable description
+    progression: str = "linear"  # How failure progresses: linear, exponential, step
+    fault_params: dict = None    # Failure-specific parameters
+
+    def get_failure_params(self) -> dict:
+        """
+        Get failure parameters based on fault type.
+        Returns appropriate default parameters if not explicitly set.
+        """
+        if self.fault_params:
+            return self.fault_params
+
+        # Default parameters for each failure type
+        param_defaults = {
+            'cpu_saturation': {
+                'cpu_multiplier': 3.0,
+                'latency_multiplier': 2.0,
+                'cpu_latency_ms': 500
+            },
+            'memory_leak': {
+                'leak_mb_per_request': 0.5
+            },
+            'inject_latency': {
+                'latency_ms': 2000
+            },
+            'slow_queries': {
+                'wear_factor': 0.5
+            },
+            'connection_exhaustion': {
+                'latency_ms': 1000
+            },
+            'enable_background_job': {},
+            'cache_failure': {},
+            'inject_errors': {
+                'error_rate': 0.3
+            },
+            'queue_consumer_slowdown': {
+                'latency_ms': 1500
+            }
+        }
+
+        return param_defaults.get(self.fault_type, {})
 
 
 class ScenarioLibrary:
@@ -74,7 +115,8 @@ class ScenarioLibrary:
                 fault_type="cpu_saturation",
                 fault_target_role="service",
                 export_interval=5,
-                description="Single service CPU saturation"
+                description="Single service CPU saturation",
+                progression="linear"
             ),
             EpisodeConfig(
                 level=1,
@@ -83,7 +125,8 @@ class ScenarioLibrary:
                 fault_type="memory_leak",
                 fault_target_role="service",
                 export_interval=5,
-                description="Single service memory leak"
+                description="Single service memory leak",
+                progression="exponential"  # Memory leaks often grow exponentially
             ),
             EpisodeConfig(
                 level=1,
@@ -92,7 +135,8 @@ class ScenarioLibrary:
                 fault_type="inject_latency",
                 fault_target_role="service",
                 export_interval=5,
-                description="Single service latency spike"
+                description="Single service latency spike",
+                progression="linear"
             ),
         ]
 
@@ -106,7 +150,8 @@ class ScenarioLibrary:
                 fault_type="slow_queries",
                 fault_target_role="database",
                 export_interval=5,
-                description="Database query slowdown"
+                description="Database query slowdown",
+                progression="exponential"  # DB degradation often accelerates
             ),
             EpisodeConfig(
                 level=2,
@@ -115,7 +160,8 @@ class ScenarioLibrary:
                 fault_type="connection_exhaustion",
                 fault_target_role="database",
                 export_interval=5,
-                description="Database connection pool exhaustion"
+                description="Database connection pool exhaustion",
+                progression="linear"
             ),
             EpisodeConfig(
                 level=2,
@@ -124,7 +170,8 @@ class ScenarioLibrary:
                 fault_type="enable_background_job",
                 fault_target_role="database",
                 export_interval=5,
-                description="Database background job contention"
+                description="Database background job contention",
+                progression="step"  # Background jobs often start suddenly
             ),
         ]
 
@@ -138,7 +185,8 @@ class ScenarioLibrary:
                 fault_type="cache_failure",
                 fault_target_role="cache",
                 export_interval=10,
-                description="Cache failure causing thundering herd"
+                description="Cache failure causing thundering herd",
+                progression="step"  # Cache failures are often sudden
             ),
             EpisodeConfig(
                 level=3,
@@ -147,7 +195,8 @@ class ScenarioLibrary:
                 fault_type="inject_latency",
                 fault_target_role="cache",
                 export_interval=10,
-                description="Cache latency spike"
+                description="Cache latency spike",
+                progression="linear"
             ),
             EpisodeConfig(
                 level=3,
@@ -156,7 +205,8 @@ class ScenarioLibrary:
                 fault_type="queue_consumer_slowdown",
                 fault_target_role="queue",
                 export_interval=10,
-                description="Message queue backlog"
+                description="Message queue backlog",
+                progression="exponential"  # Queue backlogs compound exponentially
             ),
         ]
 
@@ -170,7 +220,8 @@ class ScenarioLibrary:
                 fault_type="inject_latency",
                 fault_target_role="external",
                 export_interval=5,
-                description="External API latency spike"
+                description="External API latency spike",
+                progression="linear"
             ),
             EpisodeConfig(
                 level=4,
@@ -179,7 +230,8 @@ class ScenarioLibrary:
                 fault_type="inject_errors",
                 fault_target_role="external",
                 export_interval=5,
-                description="External API error rate increase"
+                description="External API error rate increase",
+                progression="step"  # External failures often happen suddenly
             ),
         ]
 
