@@ -379,9 +379,9 @@ class ComputeAgent(EnrichedComponent):
 
             db = self.connections.get("database")
             cache = self.connections.get("cache")
-            if not db:
-                raise Exception("Database dependency not connected")
-            # Cache is optional - not all architectures have caching
+            # NOTE: Both database and cache are optional
+            # Some services may only call external APIs, other services, or queues
+            # If no database is available, we skip the cache-aside pattern
 
             # --- Determine if request type uses cache ---
             # Define cache-friendly request types with their cache key patterns and hit rates
@@ -436,7 +436,8 @@ class ComputeAgent(EnrichedComponent):
             cache_config = CACHE_ENABLED_REQUESTS.get(request_type)
 
             # --- Cache-Aside Logic for cache-enabled requests ---
-            if cache_config and cache:
+            # Note: Cache-aside pattern requires both cache and database
+            if cache_config and cache and db:
                 config = get_simulation_config().compute
 
                 # Generate cache key based on request type configuration
@@ -639,6 +640,13 @@ class ComputeAgent(EnrichedComponent):
             self.state.cpu_utilization = config.cpu_idle_level_percent # Back to idle
 
             # --- DB call with client-side connection pool and retry logic for write operations ---
+            # Only make database call if database connection is available
+            if not db:
+                # No database connection - service completes without database access
+                # This is valid for services that only call external APIs or other services
+                self._emit_log("DEBUG", f"No database connection for {request_type}, completing without DB call")
+                return
+
             max_retries = config.db_max_retries
 
             # Acquire connection from client-side pool (queues here if pool is full)

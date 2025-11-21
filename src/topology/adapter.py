@@ -82,6 +82,31 @@ class TopologyAdapter:
 
             self._wire_connection(src, tgt, edge_type, v)
 
+        # Phase 3: Propagate service connections to compute agents
+        # CRITICAL FIX: Compute agents need access to the same database/cache/queue as their parent service
+        # This matches the behavior in ~/sim/src/iac/graph_builder.py
+        for node_id, data in G.nodes(data=True):
+            if data.get('role') == 'service':
+                service = registry[node_id]
+                compute_pool = service.connections.get('compute_pool', [])
+
+                for compute_agent in compute_pool:
+                    # Propagate database connection
+                    if 'database' in service.connections:
+                        compute_agent.connections['database'] = service.connections['database']
+
+                    # Propagate cache connection
+                    if 'cache' in service.connections:
+                        compute_agent.connections['cache'] = service.connections['cache']
+
+                    # Propagate queue connections
+                    if 'queue' in service.connections:
+                        compute_agent.connections['queue'] = service.connections['queue']
+                    if 'queue_out' in service.connections:
+                        compute_agent.connections['queue_out'] = service.connections['queue_out']
+                    if 'queue_in' in service.connections:
+                        compute_agent.connections['queue_in'] = service.connections['queue_in']
+
         return registry
 
     def _create_component(self, node_id: str, node_data: Dict[str, Any]):

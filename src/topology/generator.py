@@ -49,11 +49,22 @@ class TopologyGenerator:
         n_gateway = 1
         n_total_others = num_nodes - 1
 
-        n_db = max(1, int(n_total_others * 0.2))        # 20% Databases
-        n_cache = max(1, int(n_total_others * 0.15))    # 15% Caches
-        n_queue = max(1, int(n_total_others * 0.1))     # 10% Queues
-        n_external = max(1, int(n_total_others * 0.05)) # 5% External APIs
-        n_service = n_total_others - n_db - n_cache - n_queue - n_external
+        # For very small topologies (< 10 nodes), use simpler allocation
+        if num_nodes < 10:
+            # Simplified allocation: prioritize services
+            n_service = max(2, num_nodes - 3)  # At least 2 services
+            n_db = 1
+            n_cache = 1 if num_nodes > 4 else 0
+            n_queue = 1 if num_nodes > 6 else 0
+            n_external = 1 if num_nodes > 8 else 0
+        else:
+            # Standard allocation for larger topologies
+            n_db = max(1, int(n_total_others * 0.2))        # 20% Databases
+            n_cache = max(1, int(n_total_others * 0.15))    # 15% Caches
+            n_queue = max(1, int(n_total_others * 0.1))     # 10% Queues
+            n_external = max(1, int(n_total_others * 0.05)) # 5% External APIs
+            n_service = n_total_others - n_db - n_cache - n_queue - n_external
+            n_service = max(2, n_service)  # Ensure at least 2 services
 
         # Create node lists
         services = [f'svc_{i}' for i in range(n_service)]
@@ -88,37 +99,41 @@ class TopologyGenerator:
             self._add_edge(G, 'gateway', svc, 'sync_http')
 
         # B. Service → Database (Persistence)
-        # Each database is owned by one service (microservice pattern)
-        available_services = list(services)
+        # Each database is owned by one or more services (microservices can share DBs)
+        # Note: Not all services need databases - some may only call external APIs or other services
         for db in dbs:
-            if not available_services:
-                available_services = list(services)  # Recycle if needed
-            owner = self.rng.choice(available_services)
-            self._add_edge(G, owner, db, 'sync_db')
+            # Assign 1-3 services to each database
+            num_owners = self.rng.randint(1, min(3, len(services)))
+            owners = self.rng.sample(services, num_owners)
+            for owner in owners:
+                self._add_edge(G, owner, db, 'sync_db')
 
         # C. Service → Cache (Sidecar Pattern)
         # Caches attached to read-heavy services
-        for cache in caches:
-            user = self.rng.choice(services)
-            self._add_edge(G, user, cache, 'sync_cache')
+        if caches and services:
+            for cache in caches:
+                user = self.rng.choice(services)
+                self._add_edge(G, user, cache, 'sync_cache')
 
         # D. Async Message Queues
         # Pattern: Producer → Queue → Consumer
-        for queue in queues:
-            producer = self.rng.choice(services)
-            potential_consumers = [s for s in services if s != producer]
-            if potential_consumers:
-                consumer = self.rng.choice(potential_consumers)
-                # Producer publishes to queue
-                self._add_edge(G, producer, queue, 'async_produce')
-                # Consumer reads from queue
-                self._add_edge(G, queue, consumer, 'async_consume')
+        if queues and services and len(services) >= 2:
+            for queue in queues:
+                producer = self.rng.choice(services)
+                potential_consumers = [s for s in services if s != producer]
+                if potential_consumers:
+                    consumer = self.rng.choice(potential_consumers)
+                    # Producer publishes to queue
+                    self._add_edge(G, producer, queue, 'async_produce')
+                    # Consumer reads from queue
+                    self._add_edge(G, queue, consumer, 'async_consume')
 
         # E. Service → External API
         # Some services depend on 3rd party APIs
-        for ext in externals:
-            caller = self.rng.choice(services)
-            self._add_edge(G, caller, ext, 'sync_external')
+        if externals and services:
+            for ext in externals:
+                caller = self.rng.choice(services)
+                self._add_edge(G, caller, ext, 'sync_external')
 
         # F. Service → Service (RPC)
         # Add inter-service dependencies (50% additional edges)

@@ -15,14 +15,14 @@ def load_config(path: str) -> dict:
 
     # Load and set error configuration if present
     if 'error_config' in config:
-        from error_config import ErrorConfiguration, set_error_config
+        from src.core.error_config import ErrorConfiguration, set_error_config
         error_cfg = ErrorConfiguration.from_dict(config['error_config'])
         set_error_config(error_cfg)
         print(f"Loaded error configuration (inline)")
     elif 'error_config_path' in config:
         # Load error config from external file
         import os
-        from error_config import ErrorConfiguration, set_error_config
+        from src.core.error_config import ErrorConfiguration, set_error_config
 
         error_config_path = config['error_config_path']
         # Make path relative to the working directory if not absolute

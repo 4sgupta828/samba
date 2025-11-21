@@ -209,7 +209,7 @@ class SimulatedComponent:
         Returns:
             True if error should occur, False otherwise
         """
-        from error_config import get_error_simulator
+        from src.core.error_config import get_error_simulator
 
         simulator = get_error_simulator()
 
@@ -235,7 +235,7 @@ class SimulatedComponent:
         Args:
             error_type: Type of error to raise
         """
-        from error_config import get_error_simulator
+        from src.core.error_config import get_error_simulator
 
         simulator = get_error_simulator()
         error_message = simulator.get_error_message(self.type, error_type)
@@ -267,7 +267,7 @@ class SimulatedComponent:
         """
         # Initialize network layer if not already done
         if SimulatedComponent._network_layer is None:
-            from components.network import NetworkLink
+            from src.components.network import NetworkLink
             SimulatedComponent._network_layer = NetworkLink(self.env, "global_network")
 
         # Perform network transmission through the network layer
