@@ -11,27 +11,27 @@ class SqlDatabase(EnrichedComponent):
         config = get_simulation_config().database
         global_config = get_simulation_config()
 
-        # Initialize dynamics engine if enabled
-        self.use_dynamics = False
-        self.dynamics = None
-        if hasattr(global_config, 'dynamics') and global_config.dynamics.get('enabled', False):
+        # Initialize dynamics engine (always enabled - single source of truth)
+        # Load dynamics configuration from global config with sensible defaults
+        dynamics_params = {}
+        if hasattr(global_config, 'dynamics'):
             db_dynamics_config = global_config.dynamics.get('components', {}).get('database', {})
-            if db_dynamics_config.get('enabled', False):
-                self.use_dynamics = True
-                # Database-specific dynamics configuration
-                dynamics_params = db_dynamics_config.get('config', {})
-                dynamics_cfg = DynamicsConfig(
-                    latency_base=dynamics_params.get('latency_base', 20.0),
-                    cpu_from_throughput_coef=dynamics_params.get('cpu_from_throughput_coef', 0.03),
-                    cpu_from_connections_coef=dynamics_params.get('cpu_from_connections_coef', 1.0),
-                    latency_cpu_threshold=dynamics_params.get('latency_cpu_threshold', 60.0),
-                    latency_cpu_scale=dynamics_params.get('latency_cpu_scale', 30.0),
-                    error_base=dynamics_params.get('error_base', 0.001),
-                    error_latency_threshold=dynamics_params.get('error_latency_threshold', 200.0),
-                    error_cpu_threshold=dynamics_params.get('error_cpu_threshold', 80.0),
-                    noise_enabled=dynamics_params.get('noise_enabled', True),
-                )
-                self.dynamics = MetricsDynamicsEngine(config=dynamics_cfg)
+            dynamics_params = db_dynamics_config.get('config', {})
+
+        # Create dynamics configuration with defaults
+        dynamics_cfg = DynamicsConfig(
+            latency_base=dynamics_params.get('latency_base', 20.0),
+            cpu_from_throughput_coef=dynamics_params.get('cpu_from_throughput_coef', 0.03),
+            cpu_from_connections_coef=dynamics_params.get('cpu_from_connections_coef', 1.0),
+            latency_cpu_threshold=dynamics_params.get('latency_cpu_threshold', 60.0),
+            latency_cpu_scale=dynamics_params.get('latency_cpu_scale', 30.0),
+            error_base=dynamics_params.get('error_base', 0.001),
+            error_latency_threshold=dynamics_params.get('error_latency_threshold', 200.0),
+            error_cpu_threshold=dynamics_params.get('error_cpu_threshold', 80.0),
+            noise_enabled=dynamics_params.get('noise_enabled', True),
+            latency_wear_coef=dynamics_params.get('latency_wear_coef', 0.01),
+        )
+        self.dynamics = MetricsDynamicsEngine(config=dynamics_cfg)
 
         self.instance_class = ""
         self.connection_pool = simpy.Resource(env, capacity=config.connection_pool_capacity)
@@ -40,8 +40,7 @@ class SqlDatabase(EnrichedComponent):
         # Use PriorityResource for priority-based requests
         self.cpu_resource = simpy.PriorityResource(env, capacity=config.cpu_cores)
 
-        # Internal state for cumulative effects
-        self.wear_factor = config.initial_wear_factor
+        # Track queries processed for dynamics updates
         self.queries_processed = 0
 
         # Control flag for background job (set by failure injection)
@@ -98,27 +97,11 @@ class SqlDatabase(EnrichedComponent):
         })
 
     def _report_cpu_utilization(self, options):
-        """Callback for CPU utilization gauge - reports time-averaged value like production systems."""
+        """Callback for CPU utilization gauge - reports dynamics engine value."""
         from opentelemetry.metrics import Observation
 
-        # Use dynamics engine value if enabled, otherwise fall back to old calculation
-        if self.use_dynamics and self.dynamics:
-            avg_cpu = self.dynamics.get_cpu_percent()
-        else:
-            # Calculate average CPU over the sample window
-            if self.cpu_samples:
-                avg_cpu = sum(v for _, v in self.cpu_samples) / len(self.cpu_samples)
-            else:
-                # Fallback: calculate from accumulator
-                current_time = self.env.now
-                time_delta = current_time - self.last_cpu_reset_time
-
-                if time_delta > 0:
-                    # Calculate average utilization: (CPU-seconds used / time elapsed / num cores) * 100
-                    avg_cpu = (self.cpu_usage_accumulator / time_delta / self.cpu_capacity_cores) * 100
-                    avg_cpu = min(avg_cpu, 100)  # Cap at 100%
-                else:
-                    avg_cpu = 0
+        # Always use dynamics engine value (single source of truth)
+        avg_cpu = self.dynamics.get_cpu_percent()
 
         yield Observation(avg_cpu, {
             "component.id": self.id,
@@ -137,9 +120,8 @@ class SqlDatabase(EnrichedComponent):
         # to avoid confounding baseline metrics with background job effects
         self.env.process(self._sample_cpu_periodically())
 
-        # Start dynamics update loop if enabled
-        if self.use_dynamics:
-            self.env.process(self._update_dynamics_loop())
+        # Start dynamics update loop (always enabled)
+        self.env.process(self._update_dynamics_loop())
 
         # The component itself can now just idle, its jobs are running
         while True:
@@ -313,27 +295,20 @@ class SqlDatabase(EnrichedComponent):
                 if self._should_transient_error_occur('statement_timeout'):
                     self._raise_transient_error('statement_timeout')
 
-                # --- Stochasticity & Cumulative Effect: Query Time ---
+                # --- Query Time: Always use dynamics engine (single source of truth) ---
                 config = get_simulation_config().database
 
-                # Use dynamics engine for latency if enabled
-                if self.use_dynamics and self.dynamics:
-                    # Dynamics engine provides latency in milliseconds
-                    base_query_time = self.dynamics.get_latency() / 1000.0
+                # Dynamics engine provides latency in milliseconds, convert to seconds
+                base_query_time = self.dynamics.get_latency() / 1000.0
 
-                    # Check if query should fail based on dynamics error rate
-                    if random.random() < self.dynamics.get_error_rate():
-                        self._emit_log("ERROR", "Query failed due to dynamics-driven error")
-                        raise Exception("Database query failed: Resource temporarily unavailable")
-                else:
-                    # Original behavior
-                    base_query_time = random.gauss(config.query_base_time_mean_seconds, config.query_base_time_stdev_seconds)
-                    degradation_latency = self.wear_factor * config.query_degradation_latency_factor
-                    base_query_time += degradation_latency
+                # Check if query should fail based on dynamics error rate
+                if random.random() < self.dynamics.get_error_rate():
+                    self._emit_log("ERROR", "Query failed due to dynamics-driven error")
+                    raise Exception("Database query failed: Resource temporarily unavailable")
 
-                # Add fault injection latency if active
-                injected_latency = self.injected_latency_ms / 1000.0 if self.injected_latency_ms > 0 else 0
-                total_query_time = base_query_time + injected_latency
+                # Note: Fault injections now work through dynamics multipliers/wear_factor
+                # No need for separate injected_latency_ms - dynamics handles everything
+                total_query_time = base_query_time
 
                 # Track CPU usage
                 cpu_cores_used = config.query_cpu_usage_cores
@@ -342,9 +317,8 @@ class SqlDatabase(EnrichedComponent):
                 yield self.env.timeout(total_query_time)
 
                 self.queries_processed += 1
-                # Wear factor (controlled by config)
-                if config.wear_enabled and self.queries_processed % 1000 == 0: # Every 1000 queries, wear increases
-                    self.wear_factor += config.wear_query_increment
+                # Note: Wear is now managed by dynamics engine based on CPU load
+                # No manual wear accumulation needed here
 
 class NoSqlDatabase(EnrichedComponent):
     def __init__(self, env, component_id):

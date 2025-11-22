@@ -157,6 +157,12 @@ class MetricsDynamicsEngine:
         self.latency_multiplier = 1.0
         self.error_rate_multiplier = 1.0
 
+        # Fault injection state (FLOOR and ADDITIVE faults)
+        self.fault_latency_floor_ms = None      # Minimum latency (for slow_queries, etc.)
+        self.fault_latency_additive_ms = 0.0    # Added latency (for inject_latency)
+        self.fault_cpu_floor_percent = None     # Minimum CPU (for cpu_saturation)
+        self.fault_error_additive = 0.0         # Added error rate (for inject_errors)
+
         # Latency history for percentile calculation
         self.latency_history: deque = deque(maxlen=1000)  # Keep last 1000 samples
 
@@ -264,6 +270,10 @@ class MetricsDynamicsEngine:
         # This is applied to the TARGET, so the dynamics naturally drive toward the new state
         target_cpu_from_load *= self.cpu_multiplier
 
+        # Apply FLOOR fault (e.g., cpu_saturation) - CPU never goes below this
+        if self.fault_cpu_floor_percent is not None:
+            target_cpu_from_load = max(target_cpu_from_load, self.fault_cpu_floor_percent)
+
         # Drive CPU toward target (equilibrium-seeking behavior)
         # This allows CPU to both increase and decrease naturally
         tau = 3.0  # Time constant for CPU adjustment
@@ -276,7 +286,9 @@ class MetricsDynamicsEngine:
         causing 4.8x latency, or inefficient algorithms).
         """
         # Target latency increases exponentially with CPU
-        cpu_factor = math.exp((self.cpu_percent - self.config.latency_cpu_threshold) / self.config.latency_cpu_scale)
+        # CRITICAL FIX: Clamp to min 1.0 so latency never goes below base
+        # (was causing faults to be canceled out at low CPU)
+        cpu_factor = max(1.0, math.exp((self.cpu_percent - self.config.latency_cpu_threshold) / self.config.latency_cpu_scale))
 
         # Queue depth impact
         queue_factor = 1.0 + self.queue_depth / 10.0 * self.config.latency_queue_coef
@@ -289,6 +301,13 @@ class MetricsDynamicsEngine:
         # Apply latency multiplier from deployments (e.g., thread pool exhaustion)
         # This models bugs like undersized thread pools, inefficient algorithms, etc.
         target_latency *= self.latency_multiplier
+
+        # Apply ADDITIVE fault (e.g., inject_latency)
+        target_latency += self.fault_latency_additive_ms
+
+        # Apply FLOOR fault (e.g., slow_queries) - latency never goes below this
+        if self.fault_latency_floor_ms is not None:
+            target_latency = max(target_latency, self.fault_latency_floor_ms)
 
         # Drive toward target with time constant
         return (target_latency - self.latency_ms) / self.config.latency_tau
@@ -312,6 +331,9 @@ class MetricsDynamicsEngine:
 
         # Apply error rate multiplier from deployments (e.g., buggy error handling)
         target_error *= self.error_rate_multiplier
+
+        # Apply ADDITIVE fault (e.g., inject_errors) - adds base error rate
+        target_error += self.fault_error_additive
 
         target_error = min(target_error, self.config.error_max)
 

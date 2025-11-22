@@ -27,6 +27,9 @@ class MessageQueue(EnrichedComponent):
 
         self.message_counter = 0
 
+        # Fault injection support
+        self.injected_latency_ms = 0  # Set by failure injection
+
         # Track samples for time-averaged gauges (like production systems)
         self.visible_samples = []
         self.in_flight_samples = []
@@ -147,14 +150,18 @@ class MessageQueue(EnrichedComponent):
         """Consumer calls this to get a message."""
         msg = yield self.store.get()
         msg.receive_count += 1
-        
+
+        # Apply fault injection latency if active
+        if self.injected_latency_ms > 0:
+            yield self.env.timeout(self.injected_latency_ms / 1000.0)
+
         # Move to in-flight and start visibility timeout
         self.in_flight_messages[msg.id] = msg
         self._emit_log("DEBUG", f"Message {msg.id} is now in-flight.")
-        
+
         # Start a process to handle the timeout
         self.env.process(self._handle_visibility_timeout(msg))
-        
+
         return msg
 
     def delete_message(self, msg: Message):

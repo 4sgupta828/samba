@@ -27,26 +27,55 @@ def set_component_state(component: SimulatedComponent, params: Dict[str, Any]):
         component._emit_log("WARN", f"Cannot force state on component without 'operational' state attribute.")
 
 def inject_latency(component: SimulatedComponent, params: Dict[str, Any]):
-    """Injects additional latency into a component's operations."""
-    latency_ms = params.get("latency_ms", 1000)
-    component.injected_latency_ms = latency_ms
-    component._emit_log("WARN", f"Injecting {latency_ms}ms of additional latency.")
+    """
+    ADDITIVE FAULT: Adds fixed latency on top of natural latency.
+    Models network delays, external API slowness.
+    """
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject latency")
+        return
+
+    latency_ms = params.get("latency_ms", 500)
+
+    # Add fixed latency (CRITICAL FIX: additive, not multiplier)
+    component.dynamics.fault_latency_additive_ms = latency_ms
+    component._emit_log("WARN", f"Latency injection: +{latency_ms}ms")
 
 def revert_latency(component: SimulatedComponent, params: Dict[str, Any]):
     """Removes injected latency."""
-    component.injected_latency_ms = 0
-    component._emit_log("INFO", "Reverting injected latency.")
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        component.dynamics.fault_latency_additive_ms = 0.0
+        component._emit_log("INFO", "Latency injection reverted")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
     
 def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
-    """Starts or accelerates a memory leak in a ComputeAgent."""
+    """Starts or accelerates a memory leak in a ComputeAgent via dynamics engine."""
+    if not isinstance(component, ComputeAgent):
+        component._emit_log("WARN", "start_memory_leak can only be applied to ComputeAgent components.")
+        return
+
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject memory leak")
+        return
+
     leak_rate = params.get("leak_mb_per_request", 0.5)
-    component.leak_mb_per_request = leak_rate
-    component._emit_log("WARN", f"Starting memory leak at {leak_rate} MB/request.")
+    # Increase memory per request in dynamics engine
+    component.dynamics.config.memory_per_request_mb += leak_rate
+    component._emit_log("WARN", f"Starting memory leak: +{leak_rate} MB/request (dynamics: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f})")
 
 def stop_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
-    """Stops an injected memory leak."""
-    component.leak_mb_per_request = 0.0 # Or revert to a smaller baseline leak
-    component._emit_log("INFO", "Stopping memory leak.")
+    """Stops an injected memory leak via dynamics engine."""
+    if not isinstance(component, ComputeAgent):
+        return
+
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        leak_rate = params.get("leak_mb_per_request", 0.5)
+        # Reduce memory per request back to normal (careful not to go negative)
+        component.dynamics.config.memory_per_request_mb = max(0.1, component.dynamics.config.memory_per_request_mb - leak_rate)
+        component._emit_log("INFO", f"Stopping memory leak (dynamics: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f})")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
 
 def start_db_background_job(component: SqlDatabase, params: Dict[str, Any]):
     """Starts the database background job (VACUUM/cleanup) which competes for CPU resources."""
@@ -75,52 +104,66 @@ def stop_db_background_job(component: SqlDatabase, params: Dict[str, Any]):
 def inject_db_wear(component: SqlDatabase, params: Dict[str, Any]):
     """
     Inject database degradation (simulates index bloat, fragmentation, etc.)
-    This increases query latency gradually as if the DB has been running under load.
+    This increases query latency via the dynamics engine wear_factor.
     """
     if not isinstance(component, SqlDatabase):
         component._emit_log("WARN", "inject_db_wear can only be applied to SqlDatabase components.")
         return
 
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject wear")
+        return
+
     wear_amount = params.get("wear_factor", 0.1)
-    component.wear_factor += wear_amount
-    added_latency_ms = wear_amount * 100  # Each 1.0 wear = 100ms
-    component._emit_log("WARN", f"Injected DB wear (+{wear_amount:.3f}), adds ~{added_latency_ms:.1f}ms latency per query.")
+    component.dynamics.wear_factor += wear_amount
+    # Wear affects latency through dynamics: latency *= (1 + wear_factor * latency_wear_coef)
+    wear_coef = component.dynamics.config.latency_wear_coef
+    added_latency_factor = wear_amount * wear_coef
+    component._emit_log("WARN", f"Injected DB wear (+{wear_amount:.3f}), latency multiplier: {1 + added_latency_factor:.3f}x")
 
 def reset_db_wear(component: SqlDatabase, params: Dict[str, Any]):
-    """Reset database wear to pristine state (simulates DB optimization/rebuild)."""
+    """Reset database wear to pristine state via dynamics engine."""
     if not isinstance(component, SqlDatabase):
         component._emit_log("WARN", "reset_db_wear can only be applied to SqlDatabase components.")
         return
 
-    old_wear = component.wear_factor
-    component.wear_factor = 0.0
-    component._emit_log("INFO", f"Reset DB wear (was {old_wear:.3f}) - DB optimized/rebuilt.")
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        old_wear = component.dynamics.wear_factor
+        component.dynamics.wear_factor = 0.0
+        component._emit_log("INFO", f"Reset DB wear (was {old_wear:.3f}) - DB optimized/rebuilt (dynamics)")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
 
 
 def cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
     """
-    Simulates CPU saturation by increasing latency and CPU multiplier.
-    This makes requests slower and increases CPU metrics.
+    FLOOR FAULT: Sets minimum CPU regardless of load.
+    Models CPU exhaustion from external processes, resource contention.
     """
     if not isinstance(component, ComputeAgent):
         component._emit_log("WARN", "cpu_saturation can only be applied to ComputeAgent components.")
         return
 
-    cpu_multiplier = params.get("cpu_multiplier", 3.0)
-    latency_multiplier = params.get("latency_multiplier", 2.0)
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject CPU saturation")
+        return
 
-    component.cpu_multiplier = cpu_multiplier
-    component.latency_multiplier = latency_multiplier
-    component._emit_log("WARN", f"CPU saturation injected: CPU {cpu_multiplier}x, latency {latency_multiplier}x")
+    cpu_target = params.get("cpu_percent", 80)
+
+    # Set FLOOR: CPU never goes below target (CRITICAL FIX)
+    component.dynamics.fault_cpu_floor_percent = cpu_target
+    component._emit_log("WARN", f"CPU saturation: {cpu_target}% floor")
 
 def revert_cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
-    """Revert CPU saturation."""
+    """Revert CPU saturation by removing CPU floor."""
     if not isinstance(component, ComputeAgent):
         return
 
-    component.cpu_multiplier = 1.0
-    component.latency_multiplier = 1.0
-    component._emit_log("INFO", "CPU saturation reverted")
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        component.dynamics.fault_cpu_floor_percent = None
+        component._emit_log("INFO", "CPU saturation reverted (floor removed)")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
 
 def memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     """
@@ -130,37 +173,56 @@ def memory_leak(component: ComputeAgent, params: Dict[str, Any]):
 
 def memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
     """
-    Simulates memory pressure without a leak - just high baseline memory usage.
+    Simulates memory pressure without a leak - just high baseline memory usage via dynamics engine.
     """
     if not isinstance(component, ComputeAgent):
         component._emit_log("WARN", "memory_pressure can only be applied to ComputeAgent components.")
         return
 
-    memory_increase_mb = params.get("memory_increase_mb", 300)
-    component.memory_bloat_mb += memory_increase_mb
-    component._emit_log("WARN", f"Memory pressure injected: +{memory_increase_mb}MB")
-
-def revert_memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
-    """Revert memory pressure."""
-    if not isinstance(component, ComputeAgent):
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject memory pressure")
         return
 
     memory_increase_mb = params.get("memory_increase_mb", 300)
-    component.memory_bloat_mb = max(0, component.memory_bloat_mb - memory_increase_mb)
-    component._emit_log("INFO", "Memory pressure reverted")
+    # Increase baseline memory in dynamics engine
+    component.dynamics.config.memory_base += memory_increase_mb
+    component._emit_log("WARN", f"Memory pressure injected: +{memory_increase_mb}MB (dynamics: memory_base={component.dynamics.config.memory_base:.1f}MB)")
+
+def revert_memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
+    """Revert memory pressure via dynamics engine."""
+    if not isinstance(component, ComputeAgent):
+        return
+
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        memory_increase_mb = params.get("memory_increase_mb", 300)
+        # Reduce baseline memory back to normal (careful not to go negative)
+        component.dynamics.config.memory_base = max(10.0, component.dynamics.config.memory_base - memory_increase_mb)
+        component._emit_log("INFO", f"Memory pressure reverted (dynamics: memory_base={component.dynamics.config.memory_base:.1f}MB)")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
 
 def inject_errors(component: SimulatedComponent, params: Dict[str, Any]):
     """
-    Inject increased error rate.
+    ADDITIVE FAULT: Adds base error rate on top of natural errors.
+    Models external failures, flaky networks.
     """
-    error_rate = params.get("error_rate", 0.1)
-    component.forced_error_rate = error_rate
-    component._emit_log("WARN", f"Error rate injected: {error_rate*100:.1f}%")
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject errors")
+        return
+
+    error_rate = params.get("error_rate", 0.1)  # 10%
+
+    # Add fixed error rate (CRITICAL FIX: additive, not multiplier)
+    component.dynamics.fault_error_additive = error_rate
+    component._emit_log("WARN", f"Error injection: +{error_rate*100:.1f}% base error rate")
 
 def revert_errors(component: SimulatedComponent, params: Dict[str, Any]):
     """Revert error rate injection."""
-    component.forced_error_rate = 0.0
-    component._emit_log("INFO", "Error rate injection reverted")
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        component.dynamics.fault_error_additive = 0.0
+        component._emit_log("INFO", "Error injection reverted")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
 
 def cache_failure(component: InMemoryCache, params: Dict[str, Any]):
     """
@@ -207,41 +269,67 @@ def revert_queue_consumer_slowdown(component: MessageQueue, params: Dict[str, An
 
 def slow_queries(component: SqlDatabase, params: Dict[str, Any]):
     """
-    Simulates slow database queries by injecting DB wear.
-    Alias for inject_db_wear with query-specific semantics.
+    FLOOR FAULT: Sets minimum query latency regardless of load.
+    Models inherently slow queries (table scans, missing indexes).
     """
     if not isinstance(component, SqlDatabase):
         component._emit_log("WARN", "slow_queries can only be applied to SqlDatabase components.")
         return
 
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject slow queries")
+        return
+
+    # Map wear_factor parameter to meaningful latency floor
+    # wear_factor 0.3 -> 56ms floor, 0.5 -> 80ms floor, 1.0 -> 140ms floor
     wear_factor = params.get("wear_factor", 0.3)
-    params_with_wear = {"wear_factor": wear_factor}
-    inject_db_wear(component, params_with_wear)
-    component._emit_log("WARN", f"Slow queries injected: wear factor +{wear_factor}")
+    slowdown_factor = 1.0 + (wear_factor * 6.0)
+    base_latency = component.dynamics.config.latency_base
+    latency_floor = base_latency * slowdown_factor
+
+    # Set FLOOR: queries never faster than this (CRITICAL FIX)
+    component.dynamics.fault_latency_floor_ms = latency_floor
+    component._emit_log("WARN", f"Slow queries: {slowdown_factor:.1f}x floor ({latency_floor:.0f}ms min, wear={wear_factor})")
 
 def revert_slow_queries(component: SqlDatabase, params: Dict[str, Any]):
-    """Revert slow queries."""
-    reset_db_wear(component, params)
+    """Revert slow queries by removing latency floor."""
+    if not isinstance(component, SqlDatabase):
+        return
+
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        component.dynamics.fault_latency_floor_ms = None
+        component._emit_log("INFO", "Slow queries reverted (floor removed)")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
 
 def connection_exhaustion(component: SqlDatabase, params: Dict[str, Any]):
     """
-    Simulates database connection pool exhaustion by increasing connection latency.
+    Simulates database connection pool exhaustion via dynamics engine latency multiplier.
     """
     if not isinstance(component, SqlDatabase):
         component._emit_log("WARN", "connection_exhaustion can only be applied to SqlDatabase components.")
         return
 
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject connection exhaustion")
+        return
+
     latency_ms = params.get("latency_ms", 500)
-    component.injected_latency_ms = latency_ms
-    component._emit_log("WARN", f"Connection exhaustion simulated: +{latency_ms}ms connection delay")
+    base_latency = component.dynamics.config.latency_base
+    latency_multiplier = 1.0 + (latency_ms / base_latency)
+    component.dynamics.latency_multiplier = latency_multiplier
+    component._emit_log("WARN", f"Connection exhaustion simulated (dynamics): {latency_multiplier:.2f}x latency (~{latency_ms}ms)")
 
 def revert_connection_exhaustion(component: SqlDatabase, params: Dict[str, Any]):
-    """Revert connection exhaustion."""
+    """Revert connection exhaustion via dynamics engine."""
     if not isinstance(component, SqlDatabase):
         return
 
-    component.injected_latency_ms = 0
-    component._emit_log("INFO", "Connection exhaustion reverted")
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        component.dynamics.latency_multiplier = 1.0
+        component._emit_log("INFO", "Connection exhaustion reverted (dynamics multiplier reset)")
+    else:
+        component._emit_log("WARN", "Component does not have dynamics engine")
 
 def enable_background_job(component: SqlDatabase, params: Dict[str, Any]):
     """

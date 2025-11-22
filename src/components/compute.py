@@ -11,16 +11,10 @@ class ComputeAgent(EnrichedComponent):
         config = get_simulation_config().compute
 
         # Internal state for cumulative effects
-        self.memory_bloat_mb: float = 0.0
-        self.base_memory_usage_mb: float = config.memory_base_mb
         self.memory_capacity_mb = config.memory_capacity_mb
         self.restarts = 0
-        # Fault injection and deployment-triggered behavior support
-        self.leak_mb_per_request: float = 0.0  # Set by fault injection or deployment
-        self.latency_multiplier: float = 1.0   # Multiplies processing time (1.0 = normal, 2.0 = 2x slower)
-        self.error_rate_multiplier: float = 1.0  # Multiplies error probability (1.0 = normal, 3.0 = 3x more errors)
+        # Deployment-triggered behavior support (non-dynamics attributes)
         self.critical_error_boost: float = 0.0  # Adds to probability of 5xx errors (0.0 = normal, 0.15 = +15%)
-        self.cpu_multiplier: float = 1.0       # Multiplies CPU usage per request (1.0 = normal, 3.0 = 3x CPU)
 
         # Client-side connection pool (like HikariCP, pgBouncer, etc.)
         # Each compute agent manages its own pool of DB connections
@@ -37,31 +31,33 @@ class ComputeAgent(EnrichedComponent):
         self.connection_queue_samples = []
         self.sample_window = get_simulation_config().defaults.sample_window_seconds
 
-        # Initialize dynamics engine if enabled
-        self.use_dynamics = False
-        self.dynamics = None
+        # Initialize dynamics engine (always enabled - single source of truth)
         self.request_count = 0
         self.last_request_count = 0
         global_config = get_simulation_config()
-        if hasattr(global_config, 'dynamics') and global_config.dynamics.get('enabled', False):
+
+        # Load dynamics configuration with sensible defaults
+        dynamics_params = {}
+        if hasattr(global_config, 'dynamics'):
             compute_dynamics_config = global_config.dynamics.get('components', {}).get('compute_agent', {})
-            if compute_dynamics_config.get('enabled', False):
-                self.use_dynamics = True
-                # Compute agent-specific dynamics configuration
-                dynamics_params = compute_dynamics_config.get('config', {})
-                dynamics_cfg = DynamicsConfig(
-                    latency_base=dynamics_params.get('latency_base', 50.0),
-                    cpu_min=dynamics_params.get('cpu_min', 10.0),  # FIXED: Add cpu_min parameter
-                    cpu_from_throughput_coef=dynamics_params.get('cpu_from_throughput_coef', 0.25),
-                    cpu_from_connections_coef=dynamics_params.get('cpu_from_connections_coef', 2.0),
-                    latency_cpu_threshold=dynamics_params.get('latency_cpu_threshold', 70.0),
-                    latency_cpu_scale=dynamics_params.get('latency_cpu_scale', 20.0),
-                    error_base=dynamics_params.get('error_base', 0.002),
-                    error_latency_threshold=dynamics_params.get('error_latency_threshold', 500.0),
-                    error_cpu_threshold=dynamics_params.get('error_cpu_threshold', 85.0),
-                    noise_enabled=dynamics_params.get('noise_enabled', True),
-                )
-                self.dynamics = MetricsDynamicsEngine(config=dynamics_cfg)
+            dynamics_params = compute_dynamics_config.get('config', {})
+
+        # Create dynamics configuration with defaults
+        dynamics_cfg = DynamicsConfig(
+            latency_base=dynamics_params.get('latency_base', 50.0),
+            cpu_min=dynamics_params.get('cpu_min', 10.0),
+            cpu_from_throughput_coef=dynamics_params.get('cpu_from_throughput_coef', 0.25),
+            cpu_from_connections_coef=dynamics_params.get('cpu_from_connections_coef', 2.0),
+            latency_cpu_threshold=dynamics_params.get('latency_cpu_threshold', 70.0),
+            latency_cpu_scale=dynamics_params.get('latency_cpu_scale', 20.0),
+            error_base=dynamics_params.get('error_base', 0.002),
+            error_latency_threshold=dynamics_params.get('error_latency_threshold', 500.0),
+            error_cpu_threshold=dynamics_params.get('error_cpu_threshold', 85.0),
+            noise_enabled=dynamics_params.get('noise_enabled', True),
+            memory_base=dynamics_params.get('memory_base', config.memory_base_mb),
+            memory_per_request_mb=dynamics_params.get('memory_per_request_mb', 5.0),
+        )
+        self.dynamics = MetricsDynamicsEngine(config=dynamics_cfg)
 
         # OTel Metrics - using gauges like production systems (CloudWatch, Prometheus, Datadog)
         self.cpu_usage_metric = self.meter.create_observable_gauge(
@@ -107,14 +103,14 @@ class ComputeAgent(EnrichedComponent):
         # Start OOMKilled monitoring process
         self.env.process(self._monitor_oom())
 
-        # Start dynamics update loop if enabled
-        if self.use_dynamics:
-            self.env.process(self._update_dynamics_loop())
+        # Start dynamics update loop (always enabled - single source of truth)
+        self.env.process(self._update_dynamics_loop())
 
         while True:
             self.state.operational = "STARTING"
             self.restarts += 1
-            self.memory_bloat_mb = 0 # Memory is reset on restart
+            # Reset dynamics memory on restart (simulates process restart)
+            self.dynamics.memory_percent = self.dynamics.config.memory_base
             self._emit_log("INFO", f"Starting (Restart #{self.restarts})...")
 
             config = get_simulation_config().compute
@@ -135,8 +131,8 @@ class ComputeAgent(EnrichedComponent):
                     self._emit_log("FATAL", "OOMKilled: Memory limit exceeded. Restarting...")
                     self.state.operational = "CRASHED"
 
-                    # Clear memory bloat immediately (simulates process termination)
-                    self.memory_bloat_mb = 0
+                    # Reset dynamics memory immediately (simulates process termination)
+                    self.dynamics.memory_percent = self.dynamics.config.memory_base
                     self.state.cpu_utilization = 0  # Process is dead, no CPU usage
 
                     # Longer CrashLoopBackOff delay for OOM (includes cleanup, restart policy backoff)
@@ -171,7 +167,7 @@ class ComputeAgent(EnrichedComponent):
                 self.running_process = None
 
     def _monitor_oom(self):
-        """Background process that monitors for OOMKilled condition."""
+        """Background process that monitors for OOMKilled condition using dynamics engine."""
         config = get_simulation_config().compute
         while self.state.operational != "TERMINATED":
             yield self.env.timeout(config.oom_check_interval_seconds)
@@ -181,10 +177,11 @@ class ComputeAgent(EnrichedComponent):
                 break
 
             # Check if we're currently running and memory exceeds capacity
+            # Always use dynamics engine (single source of truth)
             if self.state.operational == "RUNNING":
-                current_memory = self.base_memory_usage_mb + self.memory_bloat_mb
+                current_memory = self.dynamics.get_memory()
                 if current_memory > self.memory_capacity_mb:
-                    self._emit_log("WARN", f"OOMKilled condition detected: {current_memory:.1f}MB > {self.memory_capacity_mb}MB")
+                    self._emit_log("WARN", f"OOMKilled condition detected: {current_memory:.1f}MB > {self.memory_capacity_mb}MB (dynamics)")
                     # Interrupt the running process
                     if hasattr(self, 'running_process') and self.running_process is not None:
                         self.running_process.interrupt("OOMKilled")
@@ -201,8 +198,8 @@ class ComputeAgent(EnrichedComponent):
             if self.state.operational == "TERMINATED":
                 break
 
-            # Phase 3.4: Check memory pressure for GC
-            memory_mb = self.dynamics.get_memory() if self.use_dynamics else self.state.memory_usage_mb
+            # Phase 3.4: Check memory pressure for GC (always use dynamics - single source of truth)
+            memory_mb = self.dynamics.get_memory()
             memory_capacity = self.iac_config.get('memory_capacity_mb', 512)
             memory_pct = memory_mb / memory_capacity
 
@@ -210,19 +207,17 @@ class ComputeAgent(EnrichedComponent):
             if memory_pct > 0.85:
                 gc_pause_ms = random.uniform(100, 500)  # 100-500ms pause
 
-                self._emit_log("WARN", f"GC triggered: memory={memory_mb:.0f}MB ({memory_pct*100:.1f}%)")
+                self._emit_log("WARN", f"GC triggered: memory={memory_mb:.0f}MB ({memory_pct*100:.1f}%) (dynamics)")
 
                 # During GC: spike CPU, pause request processing
-                old_cpu = self.dynamics.cpu_percent if self.use_dynamics else self.state.cpu_utilization
-                if self.use_dynamics:
-                    self.dynamics.cpu_percent = random.uniform(85, 100)
+                old_cpu = self.dynamics.cpu_percent
+                self.dynamics.cpu_percent = random.uniform(85, 100)
 
                 yield self.env.timeout(gc_pause_ms / 1000.0)
 
-                # After GC: reclaim memory
-                if self.use_dynamics:
-                    self.dynamics.memory_percent *= 0.7  # Reclaim 30%
-                    self.dynamics.cpu_percent = old_cpu
+                # After GC: reclaim memory (30% reclaim)
+                self.dynamics.memory_percent *= 0.7
+                self.dynamics.cpu_percent = old_cpu
 
             # Calculate throughput (requests per second)
             requests_delta = self.request_count - self.last_request_count
@@ -232,15 +227,12 @@ class ComputeAgent(EnrichedComponent):
             active_connections = self.db_connection_pool.count
             queue_depth = len(self.db_connection_pool.queue)
 
-            # Update dynamics engine with multipliers from deployments
+            # Update dynamics engine (multipliers are managed by the dynamics engine itself)
             self.dynamics.update(
                 dt=1.0,
                 external_throughput=requests_delta,
                 active_connections=active_connections,
-                queue_depth=queue_depth,
-                cpu_multiplier=self.cpu_multiplier,
-                latency_multiplier=self.latency_multiplier,
-                error_rate_multiplier=self.error_rate_multiplier
+                queue_depth=queue_depth
             )
 
     def _call_with_timeout(self, process, timeout_seconds, error_message="Call timeout"):
@@ -270,7 +262,10 @@ class ComputeAgent(EnrichedComponent):
             raise Exception(f"{error_message}: operation exceeded {timeout_seconds}s")
 
     def _sample_cpu_periodically(self):
-        """Background process that samples CPU, memory, and connection pool metrics at regular intervals."""
+        """Background process that samples CPU, memory, and connection pool metrics at regular intervals.
+
+        Always uses dynamics engine for CPU and memory (single source of truth).
+        """
         config = get_simulation_config().defaults
         while self.state.operational != "TERMINATED":
             yield self.env.timeout(config.cpu_sampling_interval_seconds)
@@ -281,11 +276,11 @@ class ComputeAgent(EnrichedComponent):
 
             current_time = self.env.now
 
-            # Sample CPU utilization
-            self.cpu_samples.append((current_time, self.state.cpu_utilization))
+            # Sample CPU utilization from dynamics engine
+            self.cpu_samples.append((current_time, self.dynamics.get_cpu_percent()))
 
-            # Sample memory usage
-            current_memory = self.base_memory_usage_mb + self.memory_bloat_mb
+            # Sample memory usage from dynamics engine
+            current_memory = self.dynamics.get_memory()
             self.memory_samples.append((current_time, current_memory))
 
             # Sample connection pool metrics
@@ -338,17 +333,16 @@ class ComputeAgent(EnrichedComponent):
 
             self._emit_log("DEBUG", f"Processing request type: {request_type}")  # Reduced from INFO to DEBUG
 
-            # Check dynamics-based error before processing
-            if self.use_dynamics and self.dynamics:
-                if random.random() < self.dynamics.get_error_rate():
-                    self._emit_log("ERROR", "Request failed due to dynamics-driven error")
-                    if span:
-                        span.set_attribute("error", True)
-                        span.set_attribute("error.type", "dynamics_error")
-                    raise Exception("Request processing failed: Service temporarily unavailable")
+            # Check dynamics-based error before processing (always enabled - single source of truth)
+            if random.random() < self.dynamics.get_error_rate():
+                self._emit_log("ERROR", "Request failed due to dynamics-driven error")
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "dynamics_error")
+                raise Exception("Request processing failed: Service temporarily unavailable")
 
-            # Calculate memory pressure effects (simulates GC pauses and performance degradation)
-            current_memory = self.base_memory_usage_mb + self.memory_bloat_mb
+            # Calculate memory pressure effects using dynamics engine
+            current_memory = self.dynamics.get_memory()
             memory_pressure_delay = self._calculate_memory_pressure_delay(current_memory)
 
             if memory_pressure_delay > 0:
@@ -485,9 +479,8 @@ class ComputeAgent(EnrichedComponent):
                     proc_time_range = config.cache_processing_time_range_seconds
                     yield self.env.timeout(random.uniform(proc_time_range[0], proc_time_range[1]))
 
-                    # Apply memory leak even on cache hits (all requests consume memory)
-                    if self.leak_mb_per_request > 0:
-                        self.memory_bloat_mb += self.leak_mb_per_request
+                    # Note: Memory is now managed by dynamics engine based on concurrent requests
+                    # No need for manual memory leak tracking
 
                     return # Request is done!
 
@@ -593,50 +586,35 @@ class ComputeAgent(EnrichedComponent):
                 cpu_range = config.request_default_cpu_spike_range_percent
                 cpu_spike = random.uniform(cpu_range[0], cpu_range[1])
 
-            # --- Apply cumulative effects and resource usage ---
-            # Memory leak ONLY happens when explicitly injected via failure scenario or deployment
-            if self.leak_mb_per_request > 0:
-                self.memory_bloat_mb += self.leak_mb_per_request
+            # --- Apply resource usage ---
+            # Note: Memory, CPU multipliers, latency multipliers, and error rates are now
+            # managed by the dynamics engine automatically. Fault injections set dynamics
+            # multipliers which the engine uses to compute realistic metric evolution.
 
-            # Apply CPU multiplier from deployment bugs (e.g., inefficient algorithm)
-            self.state.cpu_utilization = cpu_spike * self.cpu_multiplier
+            # Update state CPU for instantaneous spikes (dynamics provides time-averaged values)
+            self.state.cpu_utilization = cpu_spike
 
-            # Add fault injection latency if active
-            injected_latency = self.injected_latency_ms / 1000.0 if self.injected_latency_ms > 0 else 0
-
-            # Apply latency multiplier from deployment bugs (e.g., inefficient API calls)
-            total_latency = (work_time + injected_latency) * self.latency_multiplier
-
-            yield self.env.timeout(total_latency)
+            # Work time is base latency - dynamics will apply its multipliers
+            yield self.env.timeout(work_time)
 
             self.state.cpu_utilization = config.cpu_idle_level_percent # Back to idle
 
-            # Update memory usage for metrics (OOMKilled is now monitored by _monitor_oom())
-            self.state.memory_usage_mb = self.base_memory_usage_mb + self.memory_bloat_mb
+            # Update memory usage for metrics from dynamics engine
+            self.state.memory_usage_mb = self.dynamics.get_memory()
 
-            # NEW: Check if deployment introduced critical errors (e.g., validation bugs causing 500s)
+            # Check if deployment introduced critical errors (e.g., validation bugs causing 500s)
+            # This is separate from dynamics error rate - it's a specific deployment bug scenario
             if self.critical_error_boost > 0 and random.random() < self.critical_error_boost:
                 error_msg = "Validation error: Unexpected data format in request payload"
                 self._emit_log("ERROR", f"Critical error triggered by deployment bug: {error_msg}")
-                raise Exception(f"DeploymentBug: {error_msg}")
-
-            # Apply error_rate_multiplier: increases baseline error probability
-            # Base error rate from config (typically very low, like 0.001 = 0.1%)
-            base_error_rate = config.request_base_error_rate if hasattr(config, 'request_base_error_rate') else 0.005
-            effective_error_rate = base_error_rate * self.error_rate_multiplier
-
-            if self.error_rate_multiplier > 1.0 and random.random() < effective_error_rate:
-                error_msg = "Request processing error: Invalid state transition"
-                self._emit_log("ERROR", f"Error triggered by deployment bug (error_rate_multiplier={self.error_rate_multiplier}): {error_msg}")
                 raise Exception(f"DeploymentBug: {error_msg}")
 
             # --- Stochasticity: Simulate CPU work with noise ---
             cpu_range = config.cpu_processing_range_percent
             self.state.cpu_utilization = random.uniform(cpu_range[0], cpu_range[1])
             additional_work_time = random.gauss(config.cpu_additional_work_time_mean_seconds, config.cpu_additional_work_time_stdev_seconds)
-            # Add fault injection latency if active
-            injected_latency = self.injected_latency_ms / 1000.0 if self.injected_latency_ms > 0 else 0
-            yield self.env.timeout(additional_work_time + injected_latency)
+            # Note: Latency injections now work through dynamics latency_multiplier
+            yield self.env.timeout(additional_work_time)
             self.state.cpu_utilization = config.cpu_idle_level_percent # Back to idle
 
             # --- DB call with client-side connection pool and retry logic for write operations ---
@@ -719,27 +697,16 @@ class ComputeAgent(EnrichedComponent):
             return delay_range[0] + random.uniform(0, delay_range[1] - delay_range[0]) * pressure_factor
 
     def _report_cpu_utilization(self, options):
-        """Callback for CPU utilization gauge - reports time-averaged value like production systems."""
+        """Callback for CPU utilization gauge - always uses dynamics engine (single source of truth)."""
         from opentelemetry.metrics import Observation
 
         # Don't emit metrics if instance is terminated
         if self.state.operational == "TERMINATED":
             return
 
-        # Use dynamics engine value if enabled, otherwise fall back to samples
-        if self.use_dynamics and self.dynamics:
-            # Dynamics engine already applies cpu_multiplier internally
-            avg_cpu = self.dynamics.get_cpu_percent()
-        else:
-            # Calculate average CPU over the sample window
-            if self.cpu_samples:
-                avg_cpu = sum(v for _, v in self.cpu_samples) / len(self.cpu_samples)
-            else:
-                # Fallback to current state if no samples yet
-                avg_cpu = self.state.cpu_utilization
-
-            # Apply CPU multiplier for non-dynamics mode
-            avg_cpu = avg_cpu * self.cpu_multiplier
+        # Always use dynamics engine value (single source of truth)
+        # Dynamics engine already applies cpu_multiplier internally
+        avg_cpu = self.dynamics.get_cpu_percent()
 
         yield Observation(avg_cpu, {
             "component.id": self.id,
@@ -747,9 +714,9 @@ class ComputeAgent(EnrichedComponent):
         })
 
     def _report_memory_usage(self, options):
-        """Callback for memory usage gauge - reports time-averaged value like production systems.
+        """Callback for memory usage gauge - always uses dynamics engine (single source of truth).
 
-        Phase 2: Uses dynamics engine value if enabled (returns MB directly).
+        Returns MB directly from dynamics engine.
         """
         from opentelemetry.metrics import Observation
 
@@ -757,16 +724,8 @@ class ComputeAgent(EnrichedComponent):
         if self.state.operational == "TERMINATED":
             return
 
-        # Phase 2: Use dynamics engine value if enabled
-        if self.use_dynamics and self.dynamics:
-            avg_memory = self.dynamics.get_memory()  # Returns MB directly
-        else:
-            # Calculate average memory over the sample window
-            if self.memory_samples:
-                avg_memory = sum(v for _, v in self.memory_samples) / len(self.memory_samples)
-            else:
-                # Fallback to current state if no samples yet
-                avg_memory = self.base_memory_usage_mb + self.memory_bloat_mb
+        # Always use dynamics engine value (single source of truth)
+        avg_memory = self.dynamics.get_memory()  # Returns MB directly
 
         # Also update state for consistency
         self.state.memory_usage_mb = avg_memory
