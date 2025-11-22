@@ -84,7 +84,7 @@ def create_metadata_card(label_data):
                 dbc.Col([
                     html.Strong("Timeline: "),
                     html.Span(f"Fault starts at {label_data['fault_start_time']}s, "),
-                    html.Span(f"duration {label_data['fault_duration']}s"),
+                    html.Span(f"duration {label_data.get('fault_total_duration', label_data.get('fault_duration', 0))}s"),
                 ], width=12),
             ]),
             html.Hr(),
