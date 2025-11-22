@@ -416,12 +416,25 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy):
     hidden_nodes = None
     if hide_healthy_nodes and 'health_analysis' in episode_data:
         health_analysis = episode_data['health_analysis']
-        hidden_nodes = list(health_analysis['healthy_nodes'])
-        healthy_count = len(hidden_nodes)
+        node_results = health_analysis.get('node_results', {})
+
+        # Filter out entry point nodes (gateways) - they should never be hidden
+        hidden_nodes = [
+            node_id for node_id in health_analysis['healthy_nodes']
+            if not node_results.get(node_id, type('obj', (), {'is_entry_point': False})).is_entry_point
+        ]
+
+        healthy_count = len(health_analysis['healthy_nodes'])
         impacted_count = len(health_analysis['impacted_nodes'])
-        info_text += f" | Healthy: {healthy_count}, Impacted: {impacted_count}"
+        uncertain_count = len(health_analysis.get('uncertain_nodes', set()))
+        entry_point_count = len(health_analysis['healthy_nodes']) - len(hidden_nodes)
+
+        info_text += f" | Impacted: {impacted_count}, Healthy: {healthy_count}, Uncertain: {uncertain_count}"
         if hidden_nodes:
-            info_text += f" ({healthy_count} healthy nodes hidden)"
+            info_text += f" ({len(hidden_nodes)} hidden"
+            if entry_point_count > 0:
+                info_text += f", {entry_point_count} gateway(s) kept visible"
+            info_text += ")"
 
     return create_topology_chart(
         graph,

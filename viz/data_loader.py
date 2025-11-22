@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import networkx as nx
-from health_analyzer import detect_healthy_nodes
+# Import new statistical impact analyzer
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from analysis.impact_analyzer import detect_node_impacts
 
 
 def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
@@ -315,7 +318,25 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
     }
 
     # Perform health analysis to identify healthy vs impacted nodes
-    health_analysis = detect_healthy_nodes(metrics_df, topology_graph, label)
+    # Uses new statistical analyzer with metric-agnostic approach
+    #
+    # To adjust the "healthy" threshold (which nodes get hidden when "Hide Healthy Nodes" is checked):
+    #   1. Edit analysis/impact_config.py
+    #   2. Adjust config.scoring.healthy_threshold (default: 0.7)
+    #      - Higher threshold (e.g., 0.8) = fewer nodes classified as healthy (more conservative)
+    #      - Lower threshold (e.g., 0.6) = more nodes classified as healthy (more aggressive hiding)
+    #
+    # To customize configuration programmatically:
+    #   from analysis.impact_config import create_custom_config
+    #   config = create_custom_config(scoring={'healthy_threshold': 0.75})
+    #   health_analysis = detect_node_impacts(..., config=config)
+    #
+    health_analysis = detect_node_impacts(
+        metrics_df=metrics_df,
+        graph=topology_graph,
+        label_data=label,
+        config=None  # Uses default config from analysis/impact_config.py
+    )
 
     return {
         'episode_id': episode_id,
