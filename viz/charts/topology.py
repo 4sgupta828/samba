@@ -51,7 +51,75 @@ def get_node_symbol(node_type: str) -> str:
     return symbol_mapping.get(node_type, 'circle')
 
 
-def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: list = None, hidden_nodes: list = None) -> go.Figure:
+def _calculate_spring_layout(graph: nx.DiGraph) -> Dict:
+    """Calculate spring/force-directed layout."""
+    return nx.spring_layout(graph, k=2, iterations=50, seed=42)
+
+
+def _calculate_hierarchical_layout(graph: nx.DiGraph) -> Dict:
+    """
+    Calculate hierarchical layout with layers based on component type.
+    Entry points (gateways) on left, services in middle, backends on right.
+    """
+    from collections import defaultdict
+
+    # Define layer order (left to right: entry -> services -> backends)
+    layer_order = {
+        'RequestGateway': 0,
+        'ApiService': 1,
+        'InMemoryCache': 2,
+        'SqlDatabase': 2,
+        'MessageQueue': 2,
+        'ExternalService': 2,
+        'ComputeAgent': 1,
+        'ComputeInstance': 1,
+        'Container': 1,
+        'VM': 1,
+        'LoadBalancer': 0,
+    }
+
+    # Group nodes by layer
+    layers = defaultdict(list)
+    for node in graph.nodes():
+        node_type = graph.nodes[node].get('type', 'Unknown')
+        layer = layer_order.get(node_type, 1)
+        layers[layer].append(node)
+
+    # Assign positions
+    positions = {}
+    max_layer = max(layers.keys()) if layers else 0
+
+    for layer_idx, node_ids in layers.items():
+        x = layer_idx / max(max_layer, 1) if max_layer > 0 else 0.5
+        num_nodes = len(node_ids)
+
+        for i, node_id in enumerate(node_ids):
+            # Distribute vertically
+            y = (i + 1) / (num_nodes + 1) if num_nodes > 0 else 0.5
+            positions[node_id] = (x, y)
+
+    return positions
+
+
+def _calculate_circular_layout(graph: nx.DiGraph) -> Dict:
+    """Calculate circular layout with nodes arranged in a circle."""
+    import math
+
+    positions = {}
+    nodes = list(graph.nodes())
+    num_nodes = len(nodes)
+
+    for i, node_id in enumerate(nodes):
+        angle = 2 * math.pi * i / num_nodes if num_nodes > 0 else 0
+        x = 0.5 + 0.4 * math.cos(angle)
+        y = 0.5 + 0.4 * math.sin(angle)
+        positions[node_id] = (x, y)
+
+    return positions
+
+
+def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: list = None,
+                         hidden_nodes: list = None, layout_type: str = 'spring') -> go.Figure:
     """
     Create an interactive topology visualization using Plotly.
 
@@ -60,6 +128,7 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         label_data: Label data with ground truth (root_cause_node)
         visible_types: List of node types to show (None = show all)
         hidden_nodes: List of node IDs to hide (e.g., healthy nodes)
+        layout_type: Layout algorithm ('spring', 'hierarchical', 'circular')
 
     Returns:
         Plotly figure
@@ -87,8 +156,13 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
             visible_nodes.append(root_cause_node)
         graph = graph.subgraph(visible_nodes).copy()
 
-    # Use spring layout for positioning
-    pos = nx.spring_layout(graph, k=2, iterations=50, seed=42)
+    # Calculate layout based on selected type
+    if layout_type == 'hierarchical':
+        pos = _calculate_hierarchical_layout(graph)
+    elif layout_type == 'circular':
+        pos = _calculate_circular_layout(graph)
+    else:  # spring/force-directed (default)
+        pos = _calculate_spring_layout(graph)
 
     # Create edge traces with arrows
     edge_traces = []
@@ -233,9 +307,10 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
     fig = go.Figure(data=edge_traces + [node_trace] + legend_traces)
 
     # Update layout with dark theme and add edge annotations (arrows)
+    layout_name = layout_type.capitalize()
     fig.update_layout(
         title=dict(
-            text=f"System Topology - {label_data['topology']['nodes']} nodes, "
+            text=f"System Topology ({layout_name} Layout) - {label_data['topology']['nodes']} nodes, "
                  f"{label_data['topology']['edges']} edges",
             x=0.5,
             xanchor='center',
@@ -245,19 +320,19 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.15,
+            y=-0.12,
             xanchor="center",
             x=0.5,
             font=dict(color='#f9fafb')
         ),
         hovermode='closest',
-        margin=dict(l=20, r=20, t=40, b=80),
+        margin=dict(l=20, r=20, t=40, b=60),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         plot_bgcolor='#374151',
         paper_bgcolor='#374151',
         font=dict(color='#f9fafb'),
-        height=600,
+        height=800,  # Increased from 600 for better visibility
         annotations=edge_annotations  # Add arrow annotations
     )
 

@@ -149,15 +149,39 @@ app.layout = dbc.Container([
         ])
     ]),
 
-    # Main visualization panels
+    # Golden Signals (full width at top)
     dbc.Row([
-        # Left column: Topology
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader(html.H5("📈 Golden Signals", className="mb-0")),
+                dbc.CardBody([
+                    html.Div(id='golden-signals-dashboard')
+                ], style={'padding': '10px'})
+            ], className="shadow-sm")
+        ], width=12)
+    ], className="mb-3"),
+
+    # System Topology (full width below)
+    dbc.Row([
         dbc.Col([
             dbc.Card([
                 dbc.CardHeader([
                     html.Div([
                         html.H5("🗺️ System Topology", className="mb-0 d-inline-block"),
                         html.Div([
+                            html.Span("Layout: ", style={'marginRight': '8px', 'fontSize': '0.85rem', 'color': '#6c757d', 'fontWeight': 'bold'}),
+                            dcc.Dropdown(
+                                id='topology-layout-selector',
+                                options=[
+                                    {'label': 'Spring (Force-Directed)', 'value': 'spring'},
+                                    {'label': 'Hierarchical', 'value': 'hierarchical'},
+                                    {'label': 'Circular', 'value': 'circular'}
+                                ],
+                                value='hierarchical',
+                                clearable=False,
+                                className="d-inline-block me-3",
+                                style={'width': '200px', 'display': 'inline-block', 'verticalAlign': 'middle'}
+                            ),
                             dbc.Checklist(
                                 id='use-filtered-topology',
                                 options=[{'label': ' Filter by Root Cause', 'value': 'filtered'}],
@@ -190,21 +214,11 @@ app.layout = dbc.Container([
                     ], className="clearfix")
                 ]),
                 dbc.CardBody([
-                    dcc.Graph(id='topology-graph', style={'height': '600px'}, config={'displayModeBar': True}),
+                    dcc.Graph(id='topology-graph', style={'height': '800px'}, config={'displayModeBar': True}),
                     html.Div(id='topology-info', className="text-muted small mt-2")
                 ], style={'padding': '10px'})
             ], className="shadow-sm")
-        ], width=6, className="mb-3"),
-
-        # Right column: Golden Signals
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader(html.H5("📈 Golden Signals", className="mb-0")),
-                dbc.CardBody([
-                    html.Div(id='golden-signals-dashboard')
-                ], style={'padding': '10px'})
-            ], className="shadow-sm")
-        ], width=6, className="mb-3"),
+        ], width=12)
     ], className="mb-3"),
 
     # Component drill-down (hidden until node clicked)
@@ -376,9 +390,10 @@ def populate_topology_filters(episode_id):
     Input('episode-data-store', 'data'),
     Input('topology-filters', 'value'),
     Input('use-filtered-topology', 'value'),
-    Input('hide-healthy-nodes', 'value')
+    Input('hide-healthy-nodes', 'value'),
+    Input('topology-layout-selector', 'value')
 )
-def update_topology(episode_id, visible_types, use_filtered, hide_healthy):
+def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layout_type):
     """Update topology graph when episode is loaded or filters change."""
     if not episode_id or episode_id not in current_episode_data:
         return {}, ""
@@ -440,7 +455,8 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy):
         graph,
         episode_data['label'],
         visible_types=visible_types or [],
-        hidden_nodes=hidden_nodes
+        hidden_nodes=hidden_nodes,
+        layout_type=layout_type or 'hierarchical'
     ), info_text
 
 
