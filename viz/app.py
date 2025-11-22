@@ -10,7 +10,7 @@ from flask import Flask
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
-from data_loader import list_episodes, load_episode
+from data_loader import list_data_runs, list_episodes, load_episode
 
 # Import chart modules (will be created)
 from charts.topology import create_topology_chart
@@ -19,7 +19,9 @@ from charts.component_drilldown import create_component_drilldown
 from charts.propagation_timeline import create_propagation_timeline
 
 # Configuration
-DATA_DIR = os.environ.get('SAMBA_DATA_DIR', '../data/final_validation')
+# Default to ../data relative to this file's location
+_default_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
+BASE_DATA_DIR = os.environ.get('SAMBA_DATA_DIR', _default_data_dir)
 PORT = int(os.environ.get('PORT', 8050))
 
 # Initialize Flask app
@@ -110,13 +112,23 @@ app.layout = dbc.Container([
         ])
     ]),
 
-    # Episode selector
+    # Data run and episode selectors
     dbc.Row([
+        dbc.Col([
+            dbc.Label("Select Data Run:", html_for="datarun-dropdown"),
+            dcc.Dropdown(
+                id='datarun-dropdown',
+                options=[],  # Will be populated on load
+                value=None,
+                placeholder="Select a data run...",
+                clearable=False
+            ),
+        ], width=4),
         dbc.Col([
             dbc.Label("Select Episode:", html_for="episode-dropdown"),
             dcc.Dropdown(
                 id='episode-dropdown',
-                options=[],  # Will be populated on load
+                options=[],  # Will be populated when data run selected
                 value=None,
                 placeholder="Select an episode...",
                 clearable=False
@@ -127,7 +139,7 @@ app.layout = dbc.Container([
         ], width=2),
         dbc.Col([
             dbc.Spinner(html.Div(id="loading-status"), size="sm", spinner_class_name="mt-4"),
-        ], width=6),
+        ], width=2),
     ], className="mb-4"),
 
     # Metadata card (hidden until episode loaded)
@@ -213,13 +225,35 @@ app.layout = dbc.Container([
 # Callbacks
 
 @app.callback(
+    Output('datarun-dropdown', 'options'),
+    Output('datarun-dropdown', 'value'),
+    Input('datarun-dropdown', 'id')  # Trigger on page load
+)
+def populate_data_runs(_):
+    """Populate data run dropdown on page load."""
+    runs = list_data_runs(BASE_DATA_DIR)
+    options = [
+        {
+            'label': f"{run['id']} ({run['timestamp']})",
+            'value': run['path']
+        }
+        for run in runs
+    ]
+    default_value = runs[0]['path'] if runs else None
+    return options, default_value
+
+
+@app.callback(
     Output('episode-dropdown', 'options'),
     Output('episode-dropdown', 'value'),
-    Input('episode-dropdown', 'id')  # Trigger on page load
+    Input('datarun-dropdown', 'value')
 )
-def populate_episodes(_):
-    """Populate episode dropdown on page load."""
-    episodes = list_episodes(DATA_DIR)
+def populate_episodes(data_run_path):
+    """Populate episode dropdown when data run is selected."""
+    if not data_run_path:
+        return [], None
+
+    episodes = list_episodes(data_run_path)
     options = [{'label': ep, 'value': ep} for ep in episodes]
     default_value = episodes[0] if episodes else None
     return options, default_value
@@ -230,17 +264,18 @@ def populate_episodes(_):
     Output('loading-status', 'children'),
     Output('metadata-card', 'children'),
     Input('load-button', 'n_clicks'),
+    State('datarun-dropdown', 'value'),
     State('episode-dropdown', 'value'),
     prevent_initial_call=True
 )
-def load_episode_data(n_clicks, episode_id):
+def load_episode_data(n_clicks, data_run_path, episode_id):
     """Load episode data when button is clicked."""
-    if not episode_id:
-        return None, "No episode selected", []
+    if not episode_id or not data_run_path:
+        return None, "No episode or data run selected", []
 
     try:
         # Load episode
-        episode_data = load_episode(episode_id, DATA_DIR)
+        episode_data = load_episode(episode_id, data_run_path)
 
         # Create metadata card
         metadata_card = create_metadata_card(episode_data['label'])
@@ -421,11 +456,15 @@ def update_propagation_timeline(episode_id):
 
 if __name__ == '__main__':
     print(f"Starting Samba Telemetry Dashboard...")
-    print(f"Data directory: {DATA_DIR}")
-    print(f"Loading episodes...")
+    print(f"Base data directory: {BASE_DATA_DIR}")
+    print(f"Loading data runs...")
 
-    episodes = list_episodes(DATA_DIR)
-    print(f"Found {len(episodes)} episodes: {episodes}")
+    runs = list_data_runs(BASE_DATA_DIR)
+    print(f"Found {len(runs)} data runs:")
+    for run in runs[:5]:  # Show first 5
+        print(f"  - {run['id']} ({run['timestamp']})")
+    if len(runs) > 5:
+        print(f"  ... and {len(runs) - 5} more")
 
     print(f"\n🚀 Dashboard running at http://localhost:{PORT}")
     app.run(debug=True, host='0.0.0.0', port=PORT)

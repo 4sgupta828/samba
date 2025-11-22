@@ -319,26 +319,31 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False):
 
     Args:
         num_episodes: Number of episodes to generate
-        output_dir: Output directory for dataset
+        output_dir: Base output directory (e.g., 'data')
         verbose: Print detailed progress
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
     print(f"{'='*60}")
     print(f"Generating {num_episodes} training episodes...")
-    print(f"Output directory: {output_dir}")
+    print(f"Base output directory: {output_dir}")
     print(f"{'='*60}\n")
 
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
+    # Create timestamped run directory: data/data_YYYYMMDD_HHMMSS
+    from datetime import datetime
+    run_id = f"data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = os.path.join(output_dir, run_id)
+    os.makedirs(run_dir, exist_ok=True)
+
+    print(f"Run directory: {run_dir}\n")
 
     # Initialize scenario library
     lib = ScenarioLibrary()
 
-    # Generate episodes
+    # Generate episodes under the run directory
     results = []
     for i in range(num_episodes):
-        result = generate_episode(i, output_dir, lib, verbose=verbose)
+        result = generate_episode(i, run_dir, lib, verbose=verbose)
         if result:
             results.append(result)
 
@@ -347,17 +352,19 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False):
 
     # Save dataset metadata
     metadata = {
+        'run_id': run_id,
         'num_episodes': len(results),
         'curriculum_distribution': lib.get_curriculum_distribution(),
         'episodes': results
     }
 
-    metadata_path = os.path.join(output_dir, 'dataset_metadata.json')
+    metadata_path = os.path.join(run_dir, 'dataset_metadata.json')
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
 
     print(f"\n{'='*60}")
     print(f"Dataset generation complete!")
+    print(f"  Run ID: {run_id}")
     print(f"  Total episodes: {len(results)}")
     print(f"  Metadata: {metadata_path}")
     print(f"{'='*60}\n")
@@ -377,8 +384,8 @@ def main():
     )
     parser.add_argument(
         '-o', '--output',
-        default='data/train',
-        help='Output directory for dataset'
+        default='data',
+        help='Base output directory for dataset (run directory will be created inside)'
     )
     parser.add_argument(
         '-v', '--verbose',

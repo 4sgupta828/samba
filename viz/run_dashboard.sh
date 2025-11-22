@@ -11,13 +11,13 @@ if [ ! -f "app.py" ]; then
 fi
 
 # Check if data directory exists
-if [ ! -d "../data/final_validation" ]; then
-    echo "Warning: Default data directory not found"
+if [ ! -d "../data" ]; then
+    echo "Warning: Data directory not found at ../data"
     echo "Set SAMBA_DATA_DIR environment variable to your data location"
 fi
 
-# Set defaults
-export SAMBA_DATA_DIR=${SAMBA_DATA_DIR:-../data/final_validation}
+# Set defaults (app.py will automatically find the latest data run)
+export SAMBA_DATA_DIR=${SAMBA_DATA_DIR:-../data}
 export PORT=${PORT:-8050}
 
 echo "Configuration:"

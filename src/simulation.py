@@ -73,20 +73,21 @@ class Simulation:
         self.simulation_start_timestamp_ns = now_ns - duration_ns
 
         # Get or create output directory
-        # If output_dir is a full path (already includes run_id), use it directly
+        # If output_dir is under a timestamped run directory, use it directly
         # Otherwise, create a timestamped subdirectory
         base_output_dir = sim_config.get('output_dir', 'output')
 
-        # Check if this is already a full path with timestamp (created by UI)
-        # Pattern: ends with data_YYYYMMDD_HHMMSS
+        # Check if this path or its parent contains a timestamped run directory
+        # Pattern: data_YYYYMMDD_HHMMSS anywhere in the path
         import re
-        if re.search(r'data_\d{8}_\d{6}$', base_output_dir):
-            # This is already a full path with run_id
+        if re.search(r'data_\d{8}_\d{6}', base_output_dir):
+            # This is already under a timestamped run directory (e.g., data/data_20251121_184527/ep_0)
             self.output_dir = base_output_dir
-            # Extract simulation_id from path
-            self.simulation_id = os.path.basename(base_output_dir)
+            # Extract simulation_id from the timestamped directory in the path
+            match = re.search(r'(data_\d{8}_\d{6})', base_output_dir)
+            self.simulation_id = match.group(1) if match else os.path.basename(base_output_dir)
         else:
-            # Create new timestamped subdirectory (CLI usage)
+            # Create new timestamped subdirectory (legacy CLI usage)
             self.simulation_id = f"data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             self.output_dir = os.path.join(base_output_dir, self.simulation_id)
 

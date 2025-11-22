@@ -4,8 +4,8 @@
 echo "🚀 Starting Samba Telemetry Dashboard..."
 echo ""
 
-# Set default data directory if not specified
-export SAMBA_DATA_DIR="${SAMBA_DATA_DIR:-../data/final_validation}"
+# Set default data directory if not specified (app.py will find data runs automatically)
+export SAMBA_DATA_DIR="${SAMBA_DATA_DIR:-../data}"
 export PORT="${PORT:-8050}"
 
 echo "Configuration:"

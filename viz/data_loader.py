@@ -16,31 +16,96 @@ import pandas as pd
 import networkx as nx
 
 
-def list_episodes(data_dir: str) -> List[str]:
+def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
     """
-    List all available episodes in the data directory.
+    List all available data runs (data_YYYYMMDD_HHMMSS directories) in reverse chronological order.
 
     Args:
-        data_dir: Path to data directory (e.g., 'data/final_validation')
+        base_dir: Base data directory (default: 'data')
+
+    Returns:
+        List of dictionaries with 'id', 'path', and 'timestamp' for each run
+        Example: [{'id': 'data_20251121_184527', 'path': 'data/data_20251121_184527', 'timestamp': '2025-11-21 18:45:27'}, ...]
+    """
+    import re
+    from datetime import datetime
+
+    if not os.path.exists(base_dir):
+        return []
+
+    # Find all directories matching data_YYYYMMDD_HHMMSS pattern
+    pattern = re.compile(r'data_(\d{8})_(\d{6})$')
+    runs = []
+
+    for item in os.listdir(base_dir):
+        item_path = os.path.join(base_dir, item)
+        if os.path.isdir(item_path):
+            match = pattern.match(item)
+            if match:
+                date_str, time_str = match.groups()
+                # Parse timestamp for sorting and display
+                try:
+                    timestamp = datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
+                    runs.append({
+                        'id': item,
+                        'path': item_path,
+                        'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                        'sort_key': timestamp
+                    })
+                except ValueError:
+                    continue
+
+    # Sort by timestamp in reverse chronological order (newest first)
+    runs.sort(key=lambda x: x['sort_key'], reverse=True)
+
+    # Remove sort_key from output
+    for run in runs:
+        del run['sort_key']
+
+    return runs
+
+
+def list_episodes(data_run_path: str) -> List[str]:
+    """
+    List all available episodes in a data run directory.
+
+    Args:
+        data_run_path: Path to data run directory (e.g., 'data/data_20251121_184527')
 
     Returns:
         List of episode IDs (e.g., ['ep_0', 'ep_1', ...])
     """
-    ep_dirs = glob.glob(os.path.join(data_dir, "ep_*"))
+    ep_dirs = glob.glob(os.path.join(data_run_path, "ep_*"))
     episodes = sorted([os.path.basename(d) for d in ep_dirs if os.path.isdir(d)])
     return episodes
 
 
 def get_episode_data_dir(episode_path: str) -> Optional[str]:
     """
-    Find the data_* subdirectory within an episode directory.
+    Find the data directory for an episode.
+
+    For new structure (data/data_YYYYMMDD_HHMMSS/ep_N):
+        Returns the episode path itself (no nested data_* subdirectory)
+
+    For legacy structure (data/train/ep_N/data_YYYYMMDD_HHMMSS):
+        Returns the nested data_* subdirectory
 
     Args:
-        episode_path: Path to episode (e.g., 'data/final_validation/ep_0')
+        episode_path: Path to episode directory
 
     Returns:
-        Path to data subdirectory or None if not found
+        Path to data directory or None if not found
     """
+    import re
+
+    # Check if this is the new structure (parent contains data_YYYYMMDD_HHMMSS)
+    if re.search(r'data_\d{8}_\d{6}', episode_path):
+        # New structure: episode directory IS the data directory
+        if os.path.exists(os.path.join(episode_path, "metrics.jsonl")):
+            return episode_path
+        # Fall through to legacy check if metrics.jsonl not found
+
+    # Legacy structure: look for nested data_* subdirectory
     data_dirs = glob.glob(os.path.join(episode_path, "data_*"))
     if not data_dirs:
         return None
@@ -177,28 +242,31 @@ def build_topology_graph(topology: Dict) -> nx.DiGraph:
 # without ComputeAgent nodes
 
 
-def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Dict:
+def load_episode(episode_id: str, data_run_path: str) -> Dict:
     """
     Load all data for a single episode.
 
     Args:
         episode_id: Episode identifier (e.g., 'ep_0')
-        data_dir: Base data directory
+        data_run_path: Path to data run directory (e.g., 'data/data_20251121_184527')
 
     Returns:
         Dictionary containing:
+        - episode_id: Episode identifier
         - label: Ground truth metadata (includes fault details)
         - topology: Topology dictionary from topology.json
         - metrics_df: DataFrame with time-series metrics
         - topology_graph: NetworkX graph (logical topology)
+        - logical_topology_graph: NetworkX graph (same as topology_graph, for backward compatibility)
+        - ground_truth: Fault injection details (for backward compatibility)
         - episode_path: Path to episode directory
-        - data_path: Path to data subdirectory
+        - data_path: Path to data directory
     """
-    episode_path = os.path.join(data_dir, episode_id)
+    episode_path = os.path.join(data_run_path, episode_id)
 
     # Check if episode exists
     if not os.path.exists(episode_path):
-        raise ValueError(f"Episode {episode_id} not found in {data_dir}")
+        raise ValueError(f"Episode {episode_id} not found in {data_run_path}")
 
     # Load label and topology from episode directory
     label = load_label(episode_path)
@@ -209,11 +277,19 @@ def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Di
     if not data_path:
         raise ValueError(f"No data directory found in {episode_path}")
 
-    # Load metrics from data subdirectory
+    # Load metrics from data directory
     metrics_df = load_metrics(data_path)
 
     # Build graph from topology
     topology_graph = build_topology_graph(topology)
+
+    # Extract ground truth for backward compatibility
+    ground_truth = {
+        'root_cause_node': label.get('root_cause_node'),
+        'fault_type': label.get('fault_type'),
+        'fault_start_time': label.get('fault_start_time'),
+        'fault_duration': label.get('fault_total_duration', label.get('fault_duration', 0))
+    }
 
     return {
         'episode_id': episode_id,
@@ -221,6 +297,8 @@ def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Di
         'topology': topology,
         'metrics_df': metrics_df,
         'topology_graph': topology_graph,
+        'logical_topology_graph': topology_graph,  # For backward compatibility
+        'ground_truth': ground_truth,
         'episode_path': episode_path,
         'data_path': data_path
     }
@@ -276,21 +354,32 @@ if __name__ == '__main__':
     # Test the data loader
     import sys
 
-    data_dir = "data/final_validation" if len(sys.argv) < 2 else sys.argv[1]
+    base_dir = "data" if len(sys.argv) < 2 else sys.argv[1]
 
-    print(f"Loading episodes from {data_dir}...")
-    episodes = list_episodes(data_dir)
-    print(f"Found {len(episodes)} episodes: {episodes}")
+    print(f"Loading data runs from {base_dir}...")
+    runs = list_data_runs(base_dir)
+    print(f"Found {len(runs)} data runs:")
+    for run in runs[:5]:
+        print(f"  - {run['id']} ({run['timestamp']})")
+    if len(runs) > 5:
+        print(f"  ... and {len(runs) - 5} more")
 
-    if episodes:
-        ep_id = episodes[0]
-        print(f"\nLoading {ep_id}...")
-        episode_data = load_episode(ep_id, data_dir)
+    if runs:
+        # Use the most recent run
+        run_path = runs[0]['path']
+        print(f"\nLoading episodes from {run_path}...")
+        episodes = list_episodes(run_path)
+        print(f"Found {len(episodes)} episodes: {episodes[:10]}")
 
-        print(f"\nLabel: {episode_data['label']}")
-        print(f"\nTopology: {episode_data['label']['topology']['nodes']} nodes, "
-              f"{episode_data['label']['topology']['edges']} edges")
-        print(f"\nMetrics shape: {episode_data['metrics_df'].shape}")
-        print(f"Metric names: {episode_data['metrics_df']['metric_name'].unique()[:10]}")
-        print(f"\nGraph: {episode_data['topology_graph'].number_of_nodes()} nodes, "
-              f"{episode_data['topology_graph'].number_of_edges()} edges")
+        if episodes:
+            ep_id = episodes[0]
+            print(f"\nLoading {ep_id}...")
+            episode_data = load_episode(ep_id, run_path)
+
+            print(f"\nLabel: {episode_data['label']}")
+            print(f"\nTopology: {episode_data['label']['topology']['nodes']} nodes, "
+                  f"{episode_data['label']['topology']['edges']} edges")
+            print(f"\nMetrics shape: {episode_data['metrics_df'].shape}")
+            print(f"Metric names: {episode_data['metrics_df']['metric_name'].unique()[:10]}")
+            print(f"\nGraph: {episode_data['topology_graph'].number_of_nodes()} nodes, "
+                  f"{episode_data['topology_graph'].number_of_edges()} edges")
