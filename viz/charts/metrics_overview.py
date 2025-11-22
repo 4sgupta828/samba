@@ -238,8 +238,8 @@ def create_golden_signals_dashboard(metrics_df: pd.DataFrame, label_data: Dict):
     latency_chart = create_latency_chart(metrics_df, label_data)
     saturation_chart = create_saturation_chart(metrics_df, label_data)
 
-    # Layout in 2x2 grid
-    return dbc.Container([
+    # Layout in 2x2 grid (removed nested Container to fix layout)
+    return html.Div([
         dbc.Row([
             dbc.Col([
                 dcc.Graph(figure=request_chart, config={'displayModeBar': False})
@@ -247,7 +247,7 @@ def create_golden_signals_dashboard(metrics_df: pd.DataFrame, label_data: Dict):
             dbc.Col([
                 dcc.Graph(figure=error_chart, config={'displayModeBar': False})
             ], width=6),
-        ]),
+        ], className="mb-2"),
         dbc.Row([
             dbc.Col([
                 dcc.Graph(figure=latency_chart, config={'displayModeBar': False})
@@ -256,7 +256,7 @@ def create_golden_signals_dashboard(metrics_df: pd.DataFrame, label_data: Dict):
                 dcc.Graph(figure=saturation_chart, config={'displayModeBar': False})
             ], width=6),
         ]),
-    ], fluid=True)
+    ])
 
 
 if __name__ == '__main__':

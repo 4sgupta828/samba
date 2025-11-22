@@ -51,18 +51,32 @@ def get_node_symbol(node_type: str) -> str:
     return symbol_mapping.get(node_type, 'circle')
 
 
-def create_topology_chart(graph: nx.DiGraph, label_data: Dict) -> go.Figure:
+def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: list = None) -> go.Figure:
     """
     Create an interactive topology visualization using Plotly.
 
     Args:
         graph: NetworkX directed graph with nodes and edges
         label_data: Label data with ground truth (root_cause_node)
+        visible_types: List of node types to show (None = show all)
 
     Returns:
         Plotly figure
     """
     root_cause_node = label_data.get('root_cause_node')
+
+    # Filter nodes based on visible types
+    if visible_types is not None:
+        # Create a subgraph with only visible node types
+        filtered_nodes = [
+            node for node in graph.nodes()
+            if graph.nodes[node].get('type') in visible_types
+        ]
+        # Always keep root cause visible regardless of filter
+        if root_cause_node and root_cause_node not in filtered_nodes:
+            filtered_nodes.append(root_cause_node)
+
+        graph = graph.subgraph(filtered_nodes).copy()
 
     # Use spring layout for positioning
     pos = nx.spring_layout(graph, k=2, iterations=50, seed=42)
@@ -128,6 +142,9 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict) -> go.Figure:
         hover_text += f"<i>Click for details</i>"
         node_hover.append(hover_text)
 
+    # Store node IDs in customdata for easier extraction on click
+    node_ids = list(graph.nodes())
+
     node_trace = go.Scatter(
         x=node_x,
         y=node_y,
@@ -143,6 +160,7 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict) -> go.Figure:
         textfont=dict(size=8),
         hovertext=node_hover,
         hoverinfo='text',
+        customdata=node_ids,  # Store node IDs for click handler
         showlegend=False
     )
 

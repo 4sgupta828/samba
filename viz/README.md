@@ -52,6 +52,11 @@ The dashboard will be available at `http://localhost:8050` (or your custom port)
   - ⭐ External (star, red)
 - **Root cause highlighting** in bright red
 - **Click any node** to drill down into detailed metrics
+- **Intelligent filtering**: Toggle visibility of node types to reduce clutter
+  - Dynamically detects all node types in the episode
+  - Hide Agents (ComputeAgent), Services, Databases, or any other type
+  - Root cause always visible regardless of filters
+  - Reduces view from 50+ nodes to ~20 essential nodes
 
 ### 3. Golden Signals Dashboard
 

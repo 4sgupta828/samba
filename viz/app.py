@@ -129,51 +129,67 @@ app.layout = dbc.Container([
         # Left column: Topology
         dbc.Col([
             dbc.Card([
-                dbc.CardHeader(html.H5("🗺️ System Topology")),
+                dbc.CardHeader([
+                    html.Div([
+                        html.H5("🗺️ System Topology", className="mb-0 d-inline-block"),
+                        html.Div([
+                            html.Span("Show: ", style={'marginRight': '8px', 'fontSize': '0.85rem', 'color': '#6c757d'}),
+                            dbc.Checklist(
+                                id='topology-filters',
+                                options=[],  # Will be populated dynamically
+                                value=[],     # Will be populated dynamically
+                                inline=True,
+                                switch=True,
+                                className="d-inline-block",
+                                style={'fontSize': '0.85rem'}
+                            )
+                        ], className="float-end")
+                    ], className="clearfix")
+                ]),
                 dbc.CardBody([
-                    dcc.Graph(id='topology-graph', style={'height': '600px'})
-                ])
-            ])
-        ], width=6),
+                    dcc.Graph(id='topology-graph', style={'height': '600px'}, config={'displayModeBar': True})
+                ], style={'padding': '10px'})
+            ], className="shadow-sm")
+        ], width=6, className="mb-3"),
 
         # Right column: Golden Signals
         dbc.Col([
             dbc.Card([
-                dbc.CardHeader(html.H5("📈 Golden Signals")),
+                dbc.CardHeader(html.H5("📈 Golden Signals", className="mb-0")),
                 dbc.CardBody([
                     html.Div(id='golden-signals-dashboard')
-                ])
-            ])
-        ], width=6),
-    ], className="mb-4"),
+                ], style={'padding': '10px'})
+            ], className="shadow-sm")
+        ], width=6, className="mb-3"),
+    ], className="mb-3"),
 
     # Component drill-down (hidden until node clicked)
     dbc.Row([
         dbc.Col([
             dbc.Collapse(
                 dbc.Card([
-                    dbc.CardHeader(html.H5("🔍 Component Drill-Down")),
+                    dbc.CardHeader(html.H5("🔍 Component Drill-Down", className="mb-0")),
                     dbc.CardBody([
                         html.Div(id='component-drilldown')
-                    ])
-                ]),
+                    ], style={'padding': '15px'})
+                ], className="shadow-sm"),
                 id="drilldown-collapse",
                 is_open=False
             )
         ])
-    ], className="mb-4"),
+    ], className="mb-3"),
 
     # Failure propagation timeline
     dbc.Row([
         dbc.Col([
             dbc.Card([
-                dbc.CardHeader(html.H5("🌊 Failure Propagation Timeline")),
+                dbc.CardHeader(html.H5("🌊 Failure Propagation Timeline", className="mb-0")),
                 dbc.CardBody([
                     html.Div(id='propagation-timeline')
-                ])
-            ])
+                ], style={'padding': '15px'})
+            ], className="shadow-sm")
         ])
-    ], className="mb-4"),
+    ], className="mb-3"),
 
     # Hidden div to store episode data
     dcc.Store(id='episode-data-store'),
@@ -227,18 +243,73 @@ def load_episode_data(n_clicks, episode_id):
 
 
 @app.callback(
-    Output('topology-graph', 'figure'),
+    Output('topology-filters', 'options'),
+    Output('topology-filters', 'value'),
     Input('episode-data-store', 'data')
 )
-def update_topology(episode_id):
-    """Update topology graph when episode is loaded."""
+def populate_topology_filters(episode_id):
+    """Populate topology filters based on node types in the episode."""
+    if not episode_id or episode_id not in current_episode_data:
+        return [], []
+
+    episode_data = current_episode_data[episode_id]
+    graph = episode_data['topology_graph']
+
+    # Get all unique node types in the graph
+    node_types = set()
+    for node in graph.nodes():
+        node_type = graph.nodes[node].get('type', 'Unknown')
+        node_types.add(node_type)
+
+    # Create friendly labels for each type
+    type_labels = {
+        'RequestGateway': 'Gateway',
+        'ApiService': 'Service',
+        'SqlDatabase': 'Database',
+        'InMemoryCache': 'Cache',
+        'MessageQueue': 'Queue',
+        'ExternalService': 'External',
+        'ComputeInstance': 'Compute',
+        'ComputeAgent': 'Agent',
+        'Container': 'Container',
+        'VM': 'VM',
+        'LoadBalancer': 'LB',
+    }
+
+    # Sort types for consistent display
+    sorted_types = sorted(node_types)
+
+    # Create options
+    options = [
+        {
+            'label': f' {type_labels.get(t, t)}',
+            'value': t
+        }
+        for t in sorted_types
+    ]
+
+    # All types enabled by default
+    default_values = list(sorted_types)
+
+    return options, default_values
+
+
+@app.callback(
+    Output('topology-graph', 'figure'),
+    Input('episode-data-store', 'data'),
+    Input('topology-filters', 'value')
+)
+def update_topology(episode_id, visible_types):
+    """Update topology graph when episode is loaded or filters change."""
     if not episode_id or episode_id not in current_episode_data:
         return {}
 
     episode_data = current_episode_data[episode_id]
+
     return create_topology_chart(
         episode_data['topology_graph'],
-        episode_data['label']
+        episode_data['label'],
+        visible_types=visible_types or []
     )
 
 
@@ -267,20 +338,42 @@ def update_golden_signals(episode_id):
 def update_component_drilldown(click_data, episode_id):
     """Update component drill-down when topology node is clicked."""
     if not click_data or not episode_id or episode_id not in current_episode_data:
-        return html.Div("Click a node in the topology to see details"), False
+        return html.Div("Click a node in the topology to see details", className="text-muted"), False
 
-    # Extract component ID from click data
-    component_id = click_data['points'][0].get('text', '').split('<br>')[0]
+    try:
+        # Extract component ID from click data
+        point = click_data['points'][0]
 
-    episode_data = current_episode_data[episode_id]
-    drilldown_content = create_component_drilldown(
-        component_id,
-        episode_data['metrics_df'],
-        episode_data['topology_graph'],
-        episode_data['label']
-    )
+        # Use customdata which contains the node ID directly
+        component_id = point.get('customdata')
 
-    return drilldown_content, True
+        # Fallback methods if customdata is not available
+        if not component_id:
+            if 'hovertext' in point:
+                hovertext = point['hovertext']
+                # Extract ID from "<b>component_id</b><br>..." format
+                component_id = hovertext.split('<b>')[1].split('</b>')[0] if '<b>' in hovertext else None
+
+        if not component_id:
+            # Final fallback to text field
+            text = point.get('text', '')
+            component_id = text.split('<br>')[0] if text else None
+
+        if not component_id:
+            return html.Div("Could not identify component", className="text-danger"), False
+
+        episode_data = current_episode_data[episode_id]
+        drilldown_content = create_component_drilldown(
+            component_id,
+            episode_data['metrics_df'],
+            episode_data['topology_graph'],
+            episode_data['label']
+        )
+
+        return drilldown_content, True
+
+    except Exception as e:
+        return html.Div(f"Error loading component details: {str(e)}", className="text-danger"), False
 
 
 @app.callback(

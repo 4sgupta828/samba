@@ -340,8 +340,8 @@ def create_propagation_timeline(metrics_df: pd.DataFrame, graph: nx.DiGraph,
     # Create propagation path description
     propagation_path = create_propagation_graph(metrics_df, graph, label_data, ground_truth)
 
-    # Combine into layout
-    return dbc.Container([
+    # Combine into layout (removed nested Container to fix layout)
+    return html.Div([
         dbc.Row([
             dbc.Col([
                 html.Div(propagation_path)
@@ -349,13 +349,13 @@ def create_propagation_timeline(metrics_df: pd.DataFrame, graph: nx.DiGraph,
             dbc.Col([
                 dcc.Graph(figure=correlation_matrix, config={'displayModeBar': False})
             ], width=9)
-        ], className="mb-4"),
+        ], className="mb-3"),
         dbc.Row([
             dbc.Col([
                 dcc.Graph(figure=metric_cascade, config={'displayModeBar': False})
             ], width=12)
         ])
-    ], fluid=True)
+    ])
 
 
 if __name__ == '__main__':

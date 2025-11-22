@@ -1,0 +1,170 @@
+/* Custom CSS for Samba Telemetry Dashboard */
+
+/* Main container improvements */
+.container-fluid {
+    padding-left: 20px;
+    padding-right: 20px;
+}
+
+/* Card improvements */
+.card {
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+}
+
+.card-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+    padding: 0.75rem 1.25rem;
+}
+
+.card-body {
+    padding: 1rem;
+}
+
+/* Shadow for cards */
+.shadow-sm {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075) !important;
+}
+
+/* Button styling */
+.btn-primary {
+    background-color: #007bff;
+    border-color: #007bff;
+    padding: 0.5rem 1.5rem;
+}
+
+.btn-primary:hover {
+    background-color: #0056b3;
+    border-color: #0056b3;
+}
+
+/* Dropdown styling */
+.Select-control {
+    border-radius: 4px;
+}
+
+/* Graph containers */
+.js-plotly-plot {
+    width: 100%;
+}
+
+/* Metadata card styling */
+.metadata-card {
+    background-color: #f8f9fa;
+}
+
+/* Loading spinner */
+.spinner-border {
+    color: #007bff;
+}
+
+/* Text utilities */
+.text-muted {
+    color: #6c757d !important;
+}
+
+.text-danger {
+    color: #dc3545 !important;
+}
+
+/* Header styling */
+h1 {
+    font-weight: 600;
+    color: #212529;
+}
+
+h5 {
+    font-weight: 500;
+    color: #495057;
+}
+
+/* Row spacing */
+.row {
+    margin-left: -10px;
+    margin-right: -10px;
+}
+
+.row > [class*='col-'] {
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .container-fluid {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    .card-body {
+        padding: 0.5rem;
+    }
+}
+
+/* Component drilldown styling */
+#component-drilldown {
+    min-height: 200px;
+}
+
+/* Propagation timeline styling */
+#propagation-timeline {
+    min-height: 300px;
+}
+
+/* Episode selector row */
+#episode-dropdown {
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+}
+
+/* Loading status */
+#loading-status {
+    display: inline-block;
+    margin-left: 10px;
+}
+
+/* Topology filters */
+#topology-filters {
+    margin-top: 4px;
+}
+
+#topology-filters .form-check {
+    margin-bottom: 0;
+    margin-right: 12px;
+}
+
+#topology-filters .form-check:last-child {
+    margin-right: 0;
+}
+
+#topology-filters .form-check-label {
+    font-size: 0.8rem;
+    color: #495057;
+    cursor: pointer;
+}
+
+#topology-filters .form-check-input {
+    cursor: pointer;
+}
+
+#topology-filters .form-check-input:checked {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+/* Float utilities */
+.float-end {
+    float: right;
+}
+
+.clearfix::after {
+    content: "";
+    display: table;
+    clear: both;
+}
+
+.d-inline-block {
+    display: inline-block;
+}
