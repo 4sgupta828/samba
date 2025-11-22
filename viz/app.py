@@ -53,6 +53,16 @@ app.title = "Samba Telemetry Dashboard"
 # Global state (in-memory cache for loaded episode)
 current_episode_data = {}
 
+# Global state for dataset generation
+generation_state = {
+    'running': False,
+    'process': None,
+    'start_time': None,
+    'config': None,
+    'output': [],
+    'error': None
+}
+
 
 def create_metadata_card(label_data):
     """Create a card displaying episode metadata and ground truth."""
@@ -109,6 +119,79 @@ app.layout = dbc.Container([
             html.H1("🔍 Samba Telemetry Dashboard", className="text-center mt-3 mb-2"),
             html.P("Visualize GNN training episode data with topology, metrics, and failure propagation",
                    className="text-center text-muted mb-4")
+        ])
+    ]),
+
+    # Dataset Generator Section (Collapsible)
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader([
+                    html.H5("🏭 Dataset Generator", className="mb-0 d-inline-block"),
+                    dbc.Button("Toggle", id="generator-collapse-button", size="sm", className="float-end", color="secondary")
+                ]),
+                dbc.Collapse([
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("Number of Episodes:", html_for="episodes-input"),
+                                dbc.Input(
+                                    id='episodes-input',
+                                    type='number',
+                                    value=10,
+                                    min=1,
+                                    max=1000,
+                                    placeholder="Number of episodes to generate"
+                                ),
+                            ], width=3),
+                            dbc.Col([
+                                dbc.Label("Output Directory:", html_for="output-dir-input"),
+                                dbc.Input(
+                                    id='output-dir-input',
+                                    type='text',
+                                    value='data',
+                                    placeholder="Output directory (e.g., 'data')"
+                                ),
+                            ], width=3),
+                            dbc.Col([
+                                dbc.Label("Random Seed (optional):", html_for="seed-input"),
+                                dbc.Input(
+                                    id='seed-input',
+                                    type='number',
+                                    placeholder="Leave empty for random"
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Label(" ", html_for="verbose-checkbox"),
+                                dbc.Checklist(
+                                    id='verbose-checkbox',
+                                    options=[{'label': ' Verbose Output', 'value': 'verbose'}],
+                                    value=[],
+                                    switch=True,
+                                    className="mt-2"
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Generate Dataset",
+                                    id="generate-button",
+                                    color="success",
+                                    className="mt-4",
+                                    style={'width': '100%'}
+                                ),
+                            ], width=2),
+                        ]),
+                        html.Hr(),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div(id='generation-status', children=[
+                                    html.Div("Ready to generate training data", className="text-muted")
+                                ]),
+                            ])
+                        ]),
+                    ])
+                ], id="generator-collapse", is_open=False)
+            ], className="mb-4 shadow-sm")
         ])
     ]),
 
@@ -251,6 +334,9 @@ app.layout = dbc.Container([
 
     # Hidden div to store episode data
     dcc.Store(id='episode-data-store'),
+
+    # Interval for polling generation status
+    dcc.Interval(id='generation-poll-interval', interval=2000, disabled=True),
 
 ], fluid=True)
 
@@ -542,6 +628,194 @@ def update_propagation_timeline(episode_id):
         episode_data['label'],
         episode_data['ground_truth']
     )
+
+
+# Dataset Generator Callbacks
+
+@app.callback(
+    Output('generator-collapse', 'is_open'),
+    Input('generator-collapse-button', 'n_clicks'),
+    State('generator-collapse', 'is_open')
+)
+def toggle_generator_collapse(n_clicks, is_open):
+    """Toggle dataset generator section."""
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+@app.callback(
+    Output('generation-status', 'children'),
+    Output('generation-poll-interval', 'disabled'),
+    Output('generate-button', 'disabled'),
+    Input('generate-button', 'n_clicks'),
+    State('episodes-input', 'value'),
+    State('output-dir-input', 'value'),
+    State('seed-input', 'value'),
+    State('verbose-checkbox', 'value'),
+    prevent_initial_call=True
+)
+def start_generation(n_clicks, num_episodes, output_dir, seed, verbose_list):
+    """Start dataset generation in background when button is clicked."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    import time
+
+    if not n_clicks:
+        return html.Div("Ready to generate training data", className="text-muted"), True, False
+
+    # Check if generation is already running
+    global generation_state
+    if generation_state['running']:
+        return dbc.Alert("Generation is already running", color="warning"), False, True
+
+    # Validate inputs
+    if not num_episodes or num_episodes < 1:
+        return dbc.Alert("Please enter a valid number of episodes (minimum 1)", color="danger"), True, False
+
+    if not output_dir:
+        output_dir = 'data'
+
+    # Convert output_dir to absolute path relative to project root, not viz directory
+    if not os.path.isabs(output_dir):
+        project_root = Path(__file__).parent.parent
+        output_dir = str(project_root / output_dir)
+
+    # Build command
+    script_path = Path(__file__).parent.parent / 'generate_dataset.py'
+    cmd = [sys.executable, str(script_path), '--episodes', str(num_episodes), '--output', output_dir]
+
+    if seed:
+        cmd.extend(['--seed', str(seed)])
+
+    verbose = 'verbose' in (verbose_list or [])
+    if verbose:
+        cmd.append('--verbose')
+
+    try:
+        # Start the generation script in background
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        # Update global state
+        generation_state['running'] = True
+        generation_state['process'] = process
+        generation_state['start_time'] = time.time()
+        generation_state['config'] = {
+            'episodes': num_episodes,
+            'output_dir': output_dir,
+            'command': ' '.join(cmd)
+        }
+        generation_state['output'] = []
+        generation_state['error'] = None
+
+        # Show starting status
+        starting_msg = dbc.Alert([
+            html.H6("🚀 Generation Started", className="alert-heading"),
+            html.P(f"Generating {num_episodes} episodes in background..."),
+            html.P(f"Command: {' '.join(cmd)}", className="small mb-2"),
+            dbc.Spinner(size="sm")
+        ], color="info")
+
+        return starting_msg, False, True  # Enable polling, disable button
+
+    except Exception as e:
+        exception_msg = dbc.Alert([
+            html.H6("❌ Failed to Start Generation", className="alert-heading"),
+            html.P(f"Error: {str(e)}")
+        ], color="danger")
+
+        return exception_msg, True, False  # Disable polling, enable button
+
+
+@app.callback(
+    Output('generation-status', 'children', allow_duplicate=True),
+    Output('generation-poll-interval', 'disabled', allow_duplicate=True),
+    Output('generate-button', 'disabled', allow_duplicate=True),
+    Output('datarun-dropdown', 'options', allow_duplicate=True),
+    Output('datarun-dropdown', 'value', allow_duplicate=True),
+    Input('generation-poll-interval', 'n_intervals'),
+    prevent_initial_call=True
+)
+def poll_generation_status(n_intervals):
+    """Poll the generation process status."""
+    import time
+
+    global generation_state
+
+    if not generation_state['running']:
+        return dash.no_update, True, False, dash.no_update, dash.no_update
+
+    process = generation_state['process']
+    config = generation_state['config']
+
+    # Check if process is still running
+    returncode = process.poll()
+
+    if returncode is None:
+        # Still running - show progress
+        elapsed = time.time() - generation_state['start_time']
+        mins, secs = divmod(int(elapsed), 60)
+
+        running_msg = dbc.Alert([
+            html.H6("⏳ Generation In Progress", className="alert-heading"),
+            html.P(f"Generating {config['episodes']} episodes..."),
+            html.P(f"Elapsed time: {mins}m {secs}s", className="mb-2"),
+            dbc.Progress(animated=True, striped=True, value=100, color="info", className="mb-2"),
+            html.P(f"Command: {config['command']}", className="small mb-0")
+        ], color="info")
+
+        return running_msg, False, True, dash.no_update, dash.no_update
+
+    else:
+        # Process finished
+        stdout, stderr = process.communicate()
+
+        generation_state['running'] = False
+        generation_state['process'] = None
+
+        if returncode == 0:
+            # Success
+            success_msg = dbc.Alert([
+                html.H6("✅ Generation Complete!", className="alert-heading"),
+                html.P(f"Successfully generated {config['episodes']} episodes"),
+                html.P(f"Output directory: {config['output_dir']}", className="mb-2"),
+                html.Hr(),
+                html.P("Output (last 1000 chars):", className="small mb-1"),
+                html.Pre(stdout[-1000:] if stdout else "No output", className="small mb-0",
+                        style={'maxHeight': '200px', 'overflow': 'auto', 'backgroundColor': '#f8f9fa'})
+            ], color="success")
+
+            # Refresh data run dropdown
+            runs = list_data_runs(BASE_DATA_DIR)
+            options = [
+                {
+                    'label': f"{run['id']} ({run['timestamp']})",
+                    'value': run['path']
+                }
+                for run in runs
+            ]
+            default_value = runs[0]['path'] if runs else None
+
+            return success_msg, True, False, options, default_value
+        else:
+            # Error
+            error_msg = dbc.Alert([
+                html.H6("❌ Generation Failed", className="alert-heading"),
+                html.P(f"Process exited with code: {returncode}"),
+                html.Hr(),
+                html.P("Error output (last 1000 chars):", className="small mb-1"),
+                html.Pre(stderr[-1000:] if stderr else "No error output", className="small mb-0",
+                        style={'maxHeight': '200px', 'overflow': 'auto', 'backgroundColor': '#fff5f5'})
+            ], color="danger")
+
+            return error_msg, True, False, dash.no_update, dash.no_update
 
 
 if __name__ == '__main__':

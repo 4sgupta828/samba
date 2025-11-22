@@ -172,8 +172,16 @@ def load_metrics(data_dir: str) -> pd.DataFrame:
 
     Returns:
         DataFrame with columns: timestamp, metric_name, sim_time, component_id, value, p50, p90, p99, etc.
+        Returns empty DataFrame if metrics file is empty or missing.
     """
     metrics_file = os.path.join(data_dir, "metrics.jsonl")
+
+    # Check if file exists and has content
+    if not os.path.exists(metrics_file):
+        raise ValueError(f"Metrics file not found: {metrics_file}")
+
+    if os.path.getsize(metrics_file) == 0:
+        raise ValueError(f"Metrics file is empty. Episode generation may have failed.")
 
     records = []
     with open(metrics_file, 'r') as f:
