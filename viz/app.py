@@ -25,11 +25,24 @@ PORT = int(os.environ.get('PORT', 8050))
 # Initialize Flask app
 server = Flask(__name__)
 
-# Initialize Dash app with Bootstrap theme
+# Configure Flask to serve static files
+@server.route('/static/css/<path:filename>')
+def serve_css(filename):
+    from flask import send_from_directory
+    import os
+    return send_from_directory(
+        os.path.join(os.path.dirname(__file__), 'static', 'css'),
+        filename
+    )
+
+# Initialize Dash app with Bootstrap theme and custom dark theme
 app = dash.Dash(
     __name__,
     server=server,
-    external_stylesheets=[dbc.themes.BOOTSTRAP],
+    external_stylesheets=[
+        dbc.themes.BOOTSTRAP,
+        '/static/css/dark_theme.css'
+    ],
     suppress_callback_exceptions=True
 )
 
@@ -253,6 +266,7 @@ def populate_topology_filters(episode_id):
         return [], []
 
     episode_data = current_episode_data[episode_id]
+    # Use physical topology to get ALL available node types (including ComputeAgent)
     graph = episode_data['topology_graph']
 
     # Get all unique node types in the graph
@@ -288,8 +302,8 @@ def populate_topology_filters(episode_id):
         for t in sorted_types
     ]
 
-    # All types enabled by default
-    default_values = list(sorted_types)
+    # All types EXCEPT ComputeAgent enabled by default (show logical view)
+    default_values = [t for t in sorted_types if t != 'ComputeAgent']
 
     return options, default_values
 
@@ -306,8 +320,16 @@ def update_topology(episode_id, visible_types):
 
     episode_data = current_episode_data[episode_id]
 
+    # Decide which topology to use based on whether ComputeAgent is in visible types
+    if visible_types and 'ComputeAgent' in visible_types:
+        # User wants to see compute agents - use physical topology
+        graph = episode_data['topology_graph']
+    else:
+        # User filtered out compute agents - use logical topology
+        graph = episode_data['logical_topology_graph']
+
     return create_topology_chart(
-        episode_data['topology_graph'],
+        graph,
         episode_data['label'],
         visible_types=visible_types or []
     )
@@ -363,6 +385,8 @@ def update_component_drilldown(click_data, episode_id):
             return html.Div("Could not identify component", className="text-danger"), False
 
         episode_data = current_episode_data[episode_id]
+
+        # Use physical topology for node type lookup (has all nodes)
         drilldown_content = create_component_drilldown(
             component_id,
             episode_data['metrics_df'],
@@ -386,9 +410,10 @@ def update_propagation_timeline(episode_id):
         return html.Div("No data loaded", className="text-muted")
 
     episode_data = current_episode_data[episode_id]
+    # Use logical topology for propagation analysis (cleaner view)
     return create_propagation_timeline(
         episode_data['metrics_df'],
-        episode_data['topology_graph'],
+        episode_data['logical_topology_graph'],
         episode_data['label'],
         episode_data['ground_truth']
     )

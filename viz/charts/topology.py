@@ -189,13 +189,14 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
     # Combine all traces
     fig = go.Figure(data=edge_traces + [node_trace] + legend_traces)
 
-    # Update layout
+    # Update layout with dark theme
     fig.update_layout(
         title=dict(
             text=f"System Topology - {label_data['topology']['nodes']} nodes, "
                  f"{label_data['topology']['edges']} edges",
             x=0.5,
-            xanchor='center'
+            xanchor='center',
+            font=dict(color='#f9fafb')
         ),
         showlegend=True,
         legend=dict(
@@ -203,13 +204,16 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
             yanchor="bottom",
             y=-0.15,
             xanchor="center",
-            x=0.5
+            x=0.5,
+            font=dict(color='#f9fafb')
         ),
         hovermode='closest',
         margin=dict(l=20, r=20, t=40, b=80),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        plot_bgcolor='white',
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb'),
         height=600
     )
 

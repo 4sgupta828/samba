@@ -22,25 +22,54 @@ def get_component_type(component_id: str, graph: nx.DiGraph) -> str:
 
 def create_metric_chart(metrics_df: pd.DataFrame, component_id: str,
                        metric_name: str, title: str, ylabel: str,
-                       value_col: str = 'value') -> go.Figure:
-    """Create a simple time-series chart for a specific metric."""
-    # Filter for this component and metric
-    data = metrics_df[
-        (metrics_df['component_id'] == component_id) &
-        (metrics_df['metric_name'] == metric_name)
-    ].copy()
+                       value_col: str = 'value', aggregate_pattern: str = None) -> go.Figure:
+    """Create a simple time-series chart for a specific metric.
 
+    Args:
+        metrics_df: DataFrame with all metrics
+        component_id: Component ID to filter for
+        metric_name: Metric name to display
+        title: Chart title
+        ylabel: Y-axis label
+        value_col: Column name containing the values
+        aggregate_pattern: If provided, will aggregate metrics from all components matching this pattern
+    """
     fig = go.Figure()
 
-    if not data.empty and value_col in data.columns:
-        fig.add_trace(go.Scatter(
-            x=data['sim_time'],
-            y=data[value_col],
-            mode='lines+markers',
-            line=dict(width=2),
-            marker=dict(size=4),
-            name=title
-        ))
+    if aggregate_pattern:
+        # Aggregate metrics from multiple components (e.g., all compute agents)
+        data = metrics_df[
+            (metrics_df['component_id'].str.startswith(aggregate_pattern, na=False)) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
+
+        if not data.empty and value_col in data.columns:
+            # Group by sim_time and aggregate
+            aggregated = data.groupby('sim_time')[value_col].mean().reset_index()
+            fig.add_trace(go.Scatter(
+                x=aggregated['sim_time'],
+                y=aggregated[value_col],
+                mode='lines+markers',
+                line=dict(width=2),
+                marker=dict(size=4),
+                name=f'{title} (avg across agents)'
+            ))
+    else:
+        # Single component metric
+        data = metrics_df[
+            (metrics_df['component_id'] == component_id) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
+
+        if not data.empty and value_col in data.columns:
+            fig.add_trace(go.Scatter(
+                x=data['sim_time'],
+                y=data[value_col],
+                mode='lines+markers',
+                line=dict(width=2),
+                marker=dict(size=4),
+                name=title
+            ))
 
     fig.update_layout(
         title=title,
@@ -48,7 +77,10 @@ def create_metric_chart(metrics_df: pd.DataFrame, component_id: str,
         yaxis_title=ylabel,
         height=200,
         margin=dict(l=50, r=20, t=40, b=30),
-        showlegend=False
+        showlegend=False,
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb')
     )
 
     return fig
@@ -83,7 +115,10 @@ def create_percentile_chart(metrics_df: pd.DataFrame, component_id: str,
         yaxis_title="Latency (ms)",
         height=200,
         margin=dict(l=50, r=20, t=40, b=30),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb')
     )
 
     return fig
@@ -94,70 +129,162 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
     """Create drill-down charts for ApiService."""
     charts = []
 
-    # CPU utilization
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'container.cpu.utilization',
-            'CPU Utilization',
-            'Percentage (%)'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # Get all metrics for this component to see what's available
+    component_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    available_metrics = set(component_metrics['metric_name'].unique())
 
-    # Memory usage
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'container.memory.usage_mb',
-            'Memory Usage',
-            'MB'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # IMPORTANT: Also check compute agent metrics since detailed metrics are emitted there
+    compute_agent_pattern = f'{component_id}_compute_'
+    compute_agent_metrics = metrics_df[
+        metrics_df['component_id'].str.startswith(compute_agent_pattern, na=False)
+    ]
 
-    # Request duration percentiles
-    charts.append(dcc.Graph(
-        figure=create_percentile_chart(
-            metrics_df, component_id,
-            'http.server.request.duration',
-            'Request Duration'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if not compute_agent_metrics.empty:
+        compute_metrics_available = set(compute_agent_metrics['metric_name'].unique())
+        # Note: We found compute agent metrics
+    else:
+        compute_metrics_available = set()
 
-    # Connection pool metrics
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'connection_pool.connections.active',
-            'Active Connections',
-            'Count'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # Request rate (looking for service.{id}.requests or similar)
+    request_metric = f'service.{component_id}.requests'
+    if request_metric in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                request_metric,
+                'Request Rate',
+                'Requests'
+            ),
+            config={'displayModeBar': False}
+        ))
 
-    # Thread pool
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'thread_pool.threads.active',
-            'Active Threads',
-            'Count'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # Request duration (looking for service.{id}.duration)
+    duration_metric = f'service.{component_id}.duration'
+    if duration_metric in available_metrics:
+        # Check if it has percentile data
+        duration_data = component_metrics[component_metrics['metric_name'] == duration_metric]
+        if 'p50' in duration_data.columns and not duration_data['p50'].isna().all():
+            charts.append(dcc.Graph(
+                figure=create_percentile_chart(
+                    metrics_df, component_id,
+                    duration_metric,
+                    'Request Duration'
+                ),
+                config={'displayModeBar': False}
+            ))
+        else:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    duration_metric,
+                    'Request Duration',
+                    'ms'
+                ),
+                config={'displayModeBar': False}
+            ))
 
-    # Queue depth
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'thread_pool.queue.depth',
-            'Thread Pool Queue Depth',
-            'Count'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # Error rate
+    error_metric = f'service.{component_id}.errors'
+    if error_metric in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                error_metric,
+                'Error Rate',
+                'Errors'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Total errors
+    if 'component.errors.total' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'component.errors.total',
+                'Total Errors',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Now check compute agent metrics for detailed infrastructure metrics
+    if compute_metrics_available:
+        # CPU utilization from compute agents
+        if 'container.cpu.utilization' in compute_metrics_available:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    'container.cpu.utilization',
+                    'CPU Utilization (from compute agents)',
+                    'Percentage (%)',
+                    aggregate_pattern=compute_agent_pattern
+                ),
+                config={'displayModeBar': False}
+            ))
+
+        # Memory usage from compute agents
+        if 'container.memory.usage_mb' in compute_metrics_available:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    'container.memory.usage_mb',
+                    'Memory Usage (from compute agents)',
+                    'MB',
+                    aggregate_pattern=compute_agent_pattern
+                ),
+                config={'displayModeBar': False}
+            ))
+
+        # Connection pool
+        if 'connection_pool.connections.active' in compute_metrics_available:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    'connection_pool.connections.active',
+                    'Active Connections (from compute agents)',
+                    'Count',
+                    aggregate_pattern=compute_agent_pattern
+                ),
+                config={'displayModeBar': False}
+            ))
+
+        # Thread pool
+        if 'thread_pool.threads.active' in compute_metrics_available:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    'thread_pool.threads.active',
+                    'Active Threads (from compute agents)',
+                    'Count',
+                    aggregate_pattern=compute_agent_pattern
+                ),
+                config={'displayModeBar': False}
+            ))
+
+        # Queue depth
+        if 'thread_pool.queue.depth' in compute_metrics_available:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    'thread_pool.queue.depth',
+                    'Thread Pool Queue Depth (from compute agents)',
+                    'Count',
+                    aggregate_pattern=compute_agent_pattern
+                ),
+                config={'displayModeBar': False}
+            ))
+
+    # If no charts were created, show a message
+    if not charts:
+        all_metrics = available_metrics | compute_metrics_available
+        charts.append(html.Div([
+            html.P(f"No detailed metrics available for {component_id}"),
+            html.P(f"Service metrics: {', '.join(available_metrics) if available_metrics else 'None'}",
+                   style={'fontSize': '0.8em', 'color': '#666'}),
+            html.P(f"Compute agent metrics: {', '.join(list(compute_metrics_available)[:5]) if compute_metrics_available else 'None'}",
+                   style={'fontSize': '0.8em', 'color': '#666'})
+        ]))
 
     return charts
 
@@ -167,59 +294,41 @@ def create_database_drilldown(metrics_df: pd.DataFrame, component_id: str,
     """Create drill-down charts for SqlDatabase."""
     charts = []
 
-    # Query latency percentiles
-    charts.append(dcc.Graph(
-        figure=create_percentile_chart(
-            metrics_df, component_id,
-            'db.query.latency',
-            'Query Latency'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # Get all metrics for this component
+    component_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    available_metrics = set(component_metrics['metric_name'].unique())
 
     # Active connections
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'db.connections.active',
-            'Active Connections',
-            'Count'
-        ),
-        config={'displayModeBar': False}
-    ))
-
-    # Connection rejections
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'db.connections.rejected',
-            'Connection Rejections',
-            'Count'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'db.connections.active' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'db.connections.active',
+                'Active Connections',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
 
     # CPU utilization
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'container.cpu.utilization',
-            'CPU Utilization',
-            'Percentage (%)'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'db.cpu.utilization' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'db.cpu.utilization',
+                'CPU Utilization',
+                'Percentage (%)'
+            ),
+            config={'displayModeBar': False}
+        ))
 
-    # Memory usage
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'container.memory.usage_mb',
-            'Memory Usage',
-            'MB'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # If no charts were created, show a message
+    if not charts:
+        charts.append(html.Div([
+            html.P(f"No detailed metrics available for {component_id}"),
+            html.P(f"Available metrics: {', '.join(available_metrics)}",
+                   style={'fontSize': '0.8em', 'color': '#666'})
+        ]))
 
     return charts
 
@@ -229,49 +338,53 @@ def create_cache_drilldown(metrics_df: pd.DataFrame, component_id: str,
     """Create drill-down charts for InMemoryCache."""
     charts = []
 
+    # Get all metrics for this component
+    component_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    available_metrics = set(component_metrics['metric_name'].unique())
+
     # Hit rate
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'cache.hit_rate',
-            'Cache Hit Rate',
-            'Rate'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'cache.hit_rate' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'cache.hit_rate',
+                'Cache Hit Rate',
+                'Rate'
+            ),
+            config={'displayModeBar': False}
+        ))
 
     # Miss rate
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'cache.miss_rate',
-            'Cache Miss Rate',
-            'Rate'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'cache.miss_rate' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'cache.miss_rate',
+                'Cache Miss Rate',
+                'Rate'
+            ),
+            config={'displayModeBar': False}
+        ))
 
     # Eviction rate
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'cache.evictions',
-            'Cache Evictions',
-            'Count'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'cache.evictions' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'cache.evictions',
+                'Cache Evictions',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
 
-    # Memory usage
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'container.memory.usage_mb',
-            'Memory Usage',
-            'MB'
-        ),
-        config={'displayModeBar': False}
-    ))
+    # If no charts were created, show a message
+    if not charts:
+        charts.append(html.Div([
+            html.P(f"No detailed metrics available for {component_id}"),
+            html.P(f"Available metrics: {', '.join(available_metrics)}",
+                   style={'fontSize': '0.8em', 'color': '#666'})
+        ]))
 
     return charts
 
@@ -322,37 +435,107 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
     """Create drill-down charts for ExternalService."""
     charts = []
 
+    # Get all metrics for this component
+    component_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    available_metrics = set(component_metrics['metric_name'].unique())
+
     # Request rate
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'http.client.requests',
-            'Request Rate',
-            'Requests'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'http.client.requests' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'http.client.requests',
+                'Request Rate',
+                'Requests'
+            ),
+            config={'displayModeBar': False}
+        ))
 
     # Error rate
-    charts.append(dcc.Graph(
-        figure=create_metric_chart(
-            metrics_df, component_id,
-            'http.client.errors',
-            'Error Rate',
-            'Errors'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'http.client.errors' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'http.client.errors',
+                'Error Rate',
+                'Errors'
+            ),
+            config={'displayModeBar': False}
+        ))
 
     # Latency percentiles
-    charts.append(dcc.Graph(
-        figure=create_percentile_chart(
-            metrics_df, component_id,
-            'http.client.request.duration',
-            'Request Latency'
-        ),
-        config={'displayModeBar': False}
-    ))
+    if 'http.client.request.duration' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_percentile_chart(
+                metrics_df, component_id,
+                'http.client.request.duration',
+                'Request Latency'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # If no charts were created, show a message
+    if not charts:
+        charts.append(html.Div([
+            html.P(f"No detailed metrics available for {component_id}"),
+            html.P(f"Available metrics: {', '.join(available_metrics)}",
+                   style={'fontSize': '0.8em', 'color': '#666'})
+        ]))
+
+    return charts
+
+
+def create_gateway_drilldown(metrics_df: pd.DataFrame, component_id: str,
+                             label_data: Dict) -> List[dcc.Graph]:
+    """Create drill-down charts for RequestGateway."""
+    charts = []
+
+    # Get all metrics for this component
+    component_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    available_metrics = set(component_metrics['metric_name'].unique())
+
+    # Request rate
+    if 'http.server.requests' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'http.server.requests',
+                'Request Rate',
+                'Requests'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Request duration
+    if 'http.server.request.duration' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_percentile_chart(
+                metrics_df, component_id,
+                'http.server.request.duration',
+                'Request Duration'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Total errors
+    if 'component.errors.total' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'component.errors.total',
+                'Total Errors',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # If no charts were created, show a message
+    if not charts:
+        charts.append(html.Div([
+            html.P(f"No detailed metrics available for {component_id}"),
+            html.P(f"Available metrics: {', '.join(available_metrics)}",
+                   style={'fontSize': '0.8em', 'color': '#666'})
+        ]))
 
     return charts
 
@@ -404,8 +587,28 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
         charts = create_queue_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'ExternalService':
         charts = create_external_drilldown(metrics_df, component_id, label_data)
+    elif component_type == 'RequestGateway':
+        # Gateway uses generic HTTP server metrics
+        charts = create_gateway_drilldown(metrics_df, component_id, label_data)
     else:
-        charts = [html.P(f"No specific drill-down for component type: {component_type}")]
+        # Generic fallback - show whatever metrics exist
+        component_metrics = metrics_df[metrics_df['component_id'] == component_id]
+        available_metrics = set(component_metrics['metric_name'].unique())
+
+        if available_metrics:
+            charts = []
+            for metric in sorted(available_metrics):
+                charts.append(dcc.Graph(
+                    figure=create_metric_chart(
+                        metrics_df, component_id,
+                        metric,
+                        metric,
+                        'Value'
+                    ),
+                    config={'displayModeBar': False}
+                ))
+        else:
+            charts = [html.P(f"No metrics available for {component_id} (type: {component_type})")]
 
     # Layout charts in a grid
     chart_rows = []

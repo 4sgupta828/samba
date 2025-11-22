@@ -158,7 +158,7 @@ def build_topology_graph(infra_context: Dict) -> nx.DiGraph:
         infra_context: Dictionary from infra_context.json
 
     Returns:
-        NetworkX DiGraph with nodes and edges
+        NetworkX DiGraph with nodes and edges (includes all nodes, including ComputeAgents)
     """
     G = nx.DiGraph()
 
@@ -187,6 +187,63 @@ def build_topology_graph(infra_context: Dict) -> nx.DiGraph:
     return G
 
 
+def build_logical_topology(physical_graph: nx.DiGraph) -> nx.DiGraph:
+    """
+    Build a logical topology that shows direct service-to-resource connections,
+    bypassing ComputeAgent nodes.
+
+    The physical graph has edges like:
+    - service -> compute_agent (uses_compute)
+    - compute_agent -> database (uses_database)
+
+    The logical graph will have:
+    - service -> database (uses_database)
+
+    Args:
+        physical_graph: Original graph from infra_context
+
+    Returns:
+        Logical graph with ComputeAgent nodes removed and edges reconnected
+    """
+    logical_graph = nx.DiGraph()
+
+    # Add all non-ComputeAgent nodes
+    for node in physical_graph.nodes():
+        node_type = physical_graph.nodes[node].get('type')
+        if node_type != 'ComputeAgent':
+            # Copy node with all attributes
+            logical_graph.add_node(node, **physical_graph.nodes[node])
+
+    # For each service, find what resources it uses through compute agents
+    for node in logical_graph.nodes():
+        node_type = logical_graph.nodes[node].get('type')
+
+        # Find all compute agents this node uses
+        compute_agents = []
+        for successor in physical_graph.successors(node):
+            if physical_graph.nodes[successor].get('type') == 'ComputeAgent':
+                compute_agents.append(successor)
+
+        # For each compute agent, add edges to its non-compute-agent successors
+        for agent in compute_agents:
+            for resource in physical_graph.successors(agent):
+                resource_type = physical_graph.nodes[resource].get('type')
+                if resource_type != 'ComputeAgent' and resource in logical_graph:
+                    # Get edge data from agent -> resource
+                    edge_data = physical_graph.get_edge_data(agent, resource)
+                    # Add edge from node -> resource
+                    logical_graph.add_edge(node, resource, **edge_data)
+
+        # Also add direct edges that don't go through compute agents
+        for successor in physical_graph.successors(node):
+            successor_type = physical_graph.nodes[successor].get('type')
+            if successor_type != 'ComputeAgent' and successor in logical_graph:
+                edge_data = physical_graph.get_edge_data(node, successor)
+                logical_graph.add_edge(node, successor, **edge_data)
+
+    return logical_graph
+
+
 def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Dict:
     """
     Load all data for a single episode.
@@ -201,7 +258,8 @@ def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Di
         - infra_context: System topology
         - ground_truth: Detailed failure events
         - metrics_df: DataFrame with time-series metrics
-        - topology_graph: NetworkX graph
+        - topology_graph: NetworkX graph (physical, includes ComputeAgents)
+        - logical_topology_graph: NetworkX graph (logical, ComputeAgents removed)
         - episode_path: Path to episode directory
         - data_path: Path to data subdirectory
     """
@@ -224,6 +282,7 @@ def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Di
     ground_truth = load_ground_truth(data_path)
     metrics_df = load_metrics(data_path)
     topology_graph = build_topology_graph(infra_context)
+    logical_topology_graph = build_logical_topology(topology_graph)
 
     return {
         'episode_id': episode_id,
@@ -232,6 +291,7 @@ def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Di
         'ground_truth': ground_truth,
         'metrics_df': metrics_df,
         'topology_graph': topology_graph,
+        'logical_topology_graph': logical_topology_graph,
         'episode_path': episode_path,
         'data_path': data_path
     }
