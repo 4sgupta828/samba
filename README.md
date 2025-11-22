@@ -247,6 +247,35 @@ Each episode generates a **unique microservice architecture** with:
 - Missing logs (sampling)
 - Hard negatives (similar fault signatures)
 
+## 🔍 Topology Filtering by Root Cause
+
+Samba includes tools to filter topology graphs to show only nodes that can be affected by a root cause, helping you focus analysis on relevant components.
+
+### Quick Start
+
+```bash
+# Generate filtered topologies for all episodes
+./generate_filtered_topologies.sh
+
+# Or filter a specific episode
+python filter_topology_by_root_cause.py data/data_20251121_185526/ep_0
+```
+
+### Use in Visualization UI
+
+1. Generate filtered topologies (one-time setup)
+2. Start the dashboard: `python viz/app.py`
+3. Toggle **"Filter by Root Cause"** in the topology card
+
+The filtered view shows only nodes reachable from the root cause through graph traversal, reducing noise and highlighting the impact scope.
+
+**Example**: If an external API (`ext_0`) fails, the filtered topology shows only:
+- The failing API
+- Services that call it
+- Upstream services and gateways
+
+See [TOPOLOGY_FILTERING.md](TOPOLOGY_FILTERING.md) for detailed documentation.
+
 ## 📈 Training Pipeline Integration
 
 ### 1. Load Data

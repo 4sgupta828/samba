@@ -158,6 +158,15 @@ app.layout = dbc.Container([
                     html.Div([
                         html.H5("🗺️ System Topology", className="mb-0 d-inline-block"),
                         html.Div([
+                            dbc.Checklist(
+                                id='use-filtered-topology',
+                                options=[{'label': ' Filter by Root Cause', 'value': 'filtered'}],
+                                value=[],
+                                inline=True,
+                                switch=True,
+                                className="me-3 d-inline-block",
+                                style={'fontSize': '0.85rem', 'fontWeight': 'bold', 'color': '#dc3545'}
+                            ),
                             html.Span("Show: ", style={'marginRight': '8px', 'fontSize': '0.85rem', 'color': '#6c757d'}),
                             dbc.Checklist(
                                 id='topology-filters',
@@ -172,7 +181,8 @@ app.layout = dbc.Container([
                     ], className="clearfix")
                 ]),
                 dbc.CardBody([
-                    dcc.Graph(id='topology-graph', style={'height': '600px'}, config={'displayModeBar': True})
+                    dcc.Graph(id='topology-graph', style={'height': '600px'}, config={'displayModeBar': True}),
+                    html.Div(id='topology-info', className="text-muted small mt-2")
                 ], style={'padding': '10px'})
             ], className="shadow-sm")
         ], width=6, className="mb-3"),
@@ -293,12 +303,13 @@ def load_episode_data(n_clicks, data_run_path, episode_id):
 @app.callback(
     Output('topology-filters', 'options'),
     Output('topology-filters', 'value'),
+    Output('use-filtered-topology', 'options'),
     Input('episode-data-store', 'data')
 )
 def populate_topology_filters(episode_id):
     """Populate topology filters based on node types in the episode."""
     if not episode_id or episode_id not in current_episode_data:
-        return [], []
+        return [], [], [{'label': ' Filter by Root Cause (unavailable)', 'value': 'filtered', 'disabled': True}]
 
     episode_data = current_episode_data[episode_id]
     # Use physical topology to get ALL available node types (including ComputeAgent)
@@ -340,34 +351,59 @@ def populate_topology_filters(episode_id):
     # All types EXCEPT ComputeAgent enabled by default (show logical view)
     default_values = [t for t in sorted_types if t != 'ComputeAgent']
 
-    return options, default_values
+    # Configure filtered topology toggle based on availability
+    has_filtered = episode_data.get('has_filtered_topology', False)
+    if has_filtered:
+        filter_options = [{'label': ' Filter by Root Cause', 'value': 'filtered'}]
+    else:
+        filter_options = [{'label': ' Filter by Root Cause (not generated)', 'value': 'filtered', 'disabled': True}]
+
+    return options, default_values, filter_options
 
 
 @app.callback(
     Output('topology-graph', 'figure'),
+    Output('topology-info', 'children'),
     Input('episode-data-store', 'data'),
-    Input('topology-filters', 'value')
+    Input('topology-filters', 'value'),
+    Input('use-filtered-topology', 'value')
 )
-def update_topology(episode_id, visible_types):
+def update_topology(episode_id, visible_types, use_filtered):
     """Update topology graph when episode is loaded or filters change."""
     if not episode_id or episode_id not in current_episode_data:
-        return {}
+        return {}, ""
 
     episode_data = current_episode_data[episode_id]
 
-    # Decide which topology to use based on whether ComputeAgent is in visible types
-    if visible_types and 'ComputeAgent' in visible_types:
-        # User wants to see compute agents - use physical topology
-        graph = episode_data['topology_graph']
+    # Determine if we should use filtered topology
+    use_filtered_topo = 'filtered' in (use_filtered or [])
+
+    # Choose graph based on filter setting
+    if use_filtered_topo and episode_data.get('has_filtered_topology'):
+        # Use filtered topology (only nodes reachable from root cause)
+        graph = episode_data['topology_graph_filtered']
+        filter_metadata = episode_data.get('topology_filtered', {}).get('filter_metadata', {})
+
+        info_text = (
+            f"Showing {filter_metadata.get('reachable_nodes', 0)} nodes reachable from root cause "
+            f"({filter_metadata.get('removed_nodes', 0)} nodes hidden)"
+        )
     else:
-        # User filtered out compute agents - use logical topology
-        graph = episode_data['logical_topology_graph']
+        # Decide which topology to use based on whether ComputeAgent is in visible types
+        if visible_types and 'ComputeAgent' in visible_types:
+            # User wants to see compute agents - use physical topology
+            graph = episode_data['topology_graph']
+        else:
+            # User filtered out compute agents - use logical topology
+            graph = episode_data['logical_topology_graph']
+
+        info_text = f"Showing full topology ({graph.number_of_nodes()} nodes)"
 
     return create_topology_chart(
         graph,
         episode_data['label'],
         visible_types=visible_types or []
-    )
+    ), info_text
 
 
 @app.callback(

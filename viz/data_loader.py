@@ -128,17 +128,25 @@ def load_label(episode_path: str) -> Dict:
         return json.load(f)
 
 
-def load_topology(episode_path: str) -> Dict:
+def load_topology(episode_path: str, use_filtered: bool = False) -> Dict:
     """
     Load topology.json containing the graph structure.
 
     Args:
         episode_path: Path to episode directory
+        use_filtered: If True, load topology_filtered.json (filtered by root cause reachability)
 
     Returns:
         Dictionary with nodes and edges
     """
-    topology_file = os.path.join(episode_path, "topology.json")
+    if use_filtered:
+        topology_file = os.path.join(episode_path, "topology_filtered.json")
+        if not os.path.exists(topology_file):
+            # Fall back to regular topology if filtered version doesn't exist
+            topology_file = os.path.join(episode_path, "topology.json")
+    else:
+        topology_file = os.path.join(episode_path, "topology.json")
+
     with open(topology_file, 'r') as f:
         return json.load(f)
 
@@ -255,8 +263,11 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
         - episode_id: Episode identifier
         - label: Ground truth metadata (includes fault details)
         - topology: Topology dictionary from topology.json
+        - topology_filtered: Filtered topology dictionary (if exists)
+        - has_filtered_topology: Boolean indicating if filtered topology exists
         - metrics_df: DataFrame with time-series metrics
         - topology_graph: NetworkX graph (logical topology)
+        - topology_graph_filtered: NetworkX graph (filtered by root cause)
         - logical_topology_graph: NetworkX graph (same as topology_graph, for backward compatibility)
         - ground_truth: Fault injection details (for backward compatibility)
         - episode_path: Path to episode directory
@@ -271,6 +282,16 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
     # Load label and topology from episode directory
     label = load_label(episode_path)
     topology = load_topology(episode_path)
+
+    # Check if filtered topology exists and load it
+    filtered_topology_path = os.path.join(episode_path, "topology_filtered.json")
+    has_filtered_topology = os.path.exists(filtered_topology_path)
+    topology_filtered = None
+    topology_graph_filtered = None
+
+    if has_filtered_topology:
+        topology_filtered = load_topology(episode_path, use_filtered=True)
+        topology_graph_filtered = build_topology_graph(topology_filtered)
 
     # Find data directory
     data_path = get_episode_data_dir(episode_path)
@@ -295,8 +316,11 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
         'episode_id': episode_id,
         'label': label,
         'topology': topology,
+        'topology_filtered': topology_filtered,
+        'has_filtered_topology': has_filtered_topology,
         'metrics_df': metrics_df,
         'topology_graph': topology_graph,
+        'topology_graph_filtered': topology_graph_filtered,
         'logical_topology_graph': topology_graph,  # For backward compatibility
         'ground_truth': ground_truth,
         'episode_path': episode_path,
