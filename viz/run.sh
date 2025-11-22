@@ -24,5 +24,5 @@ fi
 echo "Starting dashboard at http://localhost:$PORT"
 echo "Press Ctrl+C to stop"
 echo ""
-
+lsof -ti:8050 | xargs kill -9 2>/dev/null; sleep 2
 python app.py
