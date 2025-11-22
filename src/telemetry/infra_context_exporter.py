@@ -71,17 +71,34 @@ class InfrastructureContextExporter:
         }
 
     def _get_architecture_graph(self) -> Dict[str, Any]:
-        """Build the architecture graph with all components and relationships."""
+        """Build the architecture graph with all components and relationships.
+
+        NOTE: For GNN training, this file should be minimal. topology.json already
+        contains the complete graph structure. This file only adds deployment history
+        and configuration details not needed for basic GNN training.
+
+        CRITICAL: Filter out internal simulation components (ComputeAgent, NetworkLink)
+        that are implementation details, not part of the logical architecture.
+        """
         components = []
         relationships = []
 
+        # Internal component types that should not be exposed
+        INTERNAL_TYPES = ['ComputeAgent', 'NetworkLink']
+
         for comp_id, component in self.registry.items():
+            comp_type = component.__class__.__name__
+
+            # FILTER OUT INTERNAL COMPONENTS (ComputeAgents are simulation internals)
+            if comp_type in INTERNAL_TYPES:
+                continue
+
             # Calculate aggregate metrics for services
             state_info = self._get_component_state(component)
 
             component_info = {
                 "id": comp_id,
-                "type": component.__class__.__name__,
+                "type": comp_type,
                 "name": getattr(component, 'name', comp_id),
                 "config": self._extract_component_config(component),
                 "state": state_info,
@@ -90,77 +107,9 @@ class InfrastructureContextExporter:
             }
             components.append(component_info)
 
-            # Extract relationships (dependencies)
-            if hasattr(component, 'dependencies'):
-                for dep in component.dependencies:
-                    relationships.append({
-                        "source": comp_id,
-                        "target": dep.component_id if hasattr(dep, 'component_id') else str(dep),
-                        "type": "depends_on"
-                    })
-
-            # Extract connections (for services -> compute agents, etc.)
-            if hasattr(component, 'connections'):
-                # Handle compute pool connections
-                compute_pool = component.connections.get('compute_pool', [])
-                for compute_agent in compute_pool:
-                    # Extract just the ID, not the string representation
-                    agent_id = compute_agent.id if hasattr(compute_agent, 'id') else (
-                        compute_agent.component_id if hasattr(compute_agent, 'component_id') else str(compute_agent)
-                    )
-                    relationships.append({
-                        "source": comp_id,
-                        "target": agent_id,
-                        "type": "uses_compute"
-                    })
-
-                # Handle database connections
-                database = component.connections.get('database')
-                if database:
-                    db_id = database.id if hasattr(database, 'id') else (
-                        database.component_id if hasattr(database, 'component_id') else str(database)
-                    )
-                    relationships.append({
-                        "source": comp_id,
-                        "target": db_id,
-                        "type": "uses_database"
-                    })
-
-                # Handle cache connections
-                cache = component.connections.get('cache')
-                if cache:
-                    cache_id = cache.id if hasattr(cache, 'id') else (
-                        cache.component_id if hasattr(cache, 'component_id') else str(cache)
-                    )
-                    relationships.append({
-                        "source": comp_id,
-                        "target": cache_id,
-                        "type": "uses_cache"
-                    })
-
-                # Handle queue connections
-                queue = component.connections.get('queue')
-                if queue:
-                    queue_id = queue.id if hasattr(queue, 'id') else (
-                        queue.component_id if hasattr(queue, 'component_id') else str(queue)
-                    )
-                    relationships.append({
-                        "source": comp_id,
-                        "target": queue_id,
-                        "type": "uses_queue"
-                    })
-
-                # Handle service-to-service connections
-                inventory_service = component.connections.get('inventory_service')
-                if inventory_service:
-                    inv_id = inventory_service.id if hasattr(inventory_service, 'id') else (
-                        inventory_service.component_id if hasattr(inventory_service, 'component_id') else str(inventory_service)
-                    )
-                    relationships.append({
-                        "source": comp_id,
-                        "target": inv_id,
-                        "type": "calls_service"
-                    })
+            # SIMPLIFIED: Don't duplicate relationships - topology.json already has the complete graph
+            # Only include deployment-related dependencies if they exist
+            # (relationships are already in topology.json with proper edge types)
 
         return {
             "components": components,

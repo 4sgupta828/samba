@@ -172,6 +172,56 @@ class TopologyGenerator:
                     v = self.rng.choice(list(comp))
                     self._add_edge(G, u, v, 'sync_rpc')
 
+        # H. Ensure Gateway Reachability (CRITICAL FIX)
+        # All nodes must be reachable from the gateway for a valid microservice architecture
+        # This ensures traffic can flow from gateway to all parts of the system
+        if 'gateway' in G:
+            reachable = set(nx.descendants(G, 'gateway')) | {'gateway'}
+            unreachable = set(G.nodes()) - reachable
+
+            if unreachable:
+                # Connect unreachable nodes to the gateway path
+                # Strategy: Connect unreachable frontends to gateway, others to reachable services
+                for node in unreachable:
+                    node_role = G.nodes[node].get('role')
+
+                    if node_role == 'service':
+                        # Connect service to a reachable frontend service or directly to gateway
+                        reachable_frontends = [n for n in reachable
+                                             if G.nodes[n].get('role') == 'service' and
+                                             G.nodes[n].get('is_frontend')]
+                        if reachable_frontends:
+                            # Connect to a frontend via RPC
+                            target = self.rng.choice(reachable_frontends)
+                            self._add_edge(G, target, node, 'sync_rpc')
+                        else:
+                            # Make this service a frontend
+                            G.nodes[node]['is_frontend'] = True
+                            self._add_edge(G, 'gateway', node, 'sync_http')
+                    elif node_role in ['database', 'cache', 'queue', 'external']:
+                        # Infrastructure nodes should be reached from services
+                        # Connect from any reachable service
+                        reachable_services = [n for n in reachable
+                                            if G.nodes[n].get('role') == 'service']
+                        if reachable_services:
+                            source = self.rng.choice(reachable_services)
+                            # Choose appropriate edge type based on node role
+                            if node_role == 'database':
+                                edge_type = 'sync_db'
+                            elif node_role == 'cache':
+                                edge_type = 'sync_cache'
+                            elif node_role == 'queue':
+                                edge_type = 'async_produce'
+                            elif node_role == 'external':
+                                edge_type = 'sync_external'
+                            else:
+                                edge_type = 'sync_rpc'
+                            self._add_edge(G, source, node, edge_type)
+
+                    # Update reachable set
+                    reachable = set(nx.descendants(G, 'gateway')) | {'gateway'}
+                    unreachable = set(G.nodes()) - reachable
+
         return G
 
     def _add_edge(self, G: nx.DiGraph, u: str, v: str, edge_type: str):

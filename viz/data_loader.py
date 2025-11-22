@@ -2,10 +2,9 @@
 Data loader for Samba training episodes.
 
 This module handles loading all episode data including:
-- label.json: Ground truth metadata
-- infra_context.json: System topology
+- label.json: Ground truth metadata (includes fault injection details)
+- topology.json: System topology graph (nodes and edges)
 - metrics.jsonl: Time-series telemetry data
-- ground_truth.json: Detailed failure injection events
 """
 
 import json
@@ -64,33 +63,18 @@ def load_label(episode_path: str) -> Dict:
         return json.load(f)
 
 
-def load_infra_context(data_dir: str) -> Dict:
+def load_topology(episode_path: str) -> Dict:
     """
-    Load infra_context.json containing system topology.
+    Load topology.json containing the graph structure.
 
     Args:
-        data_dir: Path to episode data directory (data_*)
+        episode_path: Path to episode directory
 
     Returns:
-        Dictionary with architecture and component information
+        Dictionary with nodes and edges
     """
-    infra_file = os.path.join(data_dir, "infra_context.json")
-    with open(infra_file, 'r') as f:
-        return json.load(f)
-
-
-def load_ground_truth(data_dir: str) -> Dict:
-    """
-    Load ground_truth.json containing detailed failure injection events.
-
-    Args:
-        data_dir: Path to episode data directory (data_*)
-
-    Returns:
-        Dictionary with event details
-    """
-    gt_file = os.path.join(data_dir, "ground_truth.json")
-    with open(gt_file, 'r') as f:
+    topology_file = os.path.join(episode_path, "topology.json")
+    with open(topology_file, 'r') as f:
         return json.load(f)
 
 
@@ -150,98 +134,47 @@ def load_metrics(data_dir: str) -> pd.DataFrame:
     return df
 
 
-def build_topology_graph(infra_context: Dict) -> nx.DiGraph:
+def build_topology_graph(topology: Dict) -> nx.DiGraph:
     """
-    Build a NetworkX directed graph from infra_context.
+    Build a NetworkX directed graph from topology.json.
 
     Args:
-        infra_context: Dictionary from infra_context.json
+        topology: Dictionary from topology.json
 
     Returns:
-        NetworkX DiGraph with nodes and edges (includes all nodes, including ComputeAgents)
+        NetworkX DiGraph with nodes and edges (logical topology only)
     """
     G = nx.DiGraph()
 
     # Add nodes with attributes
-    for component in infra_context['architecture']['components']:
-        node_id = component['id']
-        node_type = component['type']
+    for node in topology['nodes']:
+        node_id = node['id']
+        node_type = node['type']
+        role = node.get('role')
+        is_frontend = node.get('is_frontend', False)
 
-        # Add node with all component data as attributes
         G.add_node(node_id,
                    type=node_type,
-                   name=component.get('name', node_id),
-                   config=component.get('config', {}),
-                   state=component.get('state', {}))
+                   role=role,
+                   is_frontend=is_frontend)
 
-    # Add edges from relationships
-    for relationship in infra_context['architecture']['relationships']:
-        source = relationship['source']
-        target = relationship['target']
-        rel_type = relationship['type']
+    # Add edges
+    for edge in topology['edges']:
+        source = edge['source']
+        target = edge['target']
+        edge_type = edge['type']
+        latency = edge.get('base_latency', 0)
 
         G.add_edge(source, target,
-                   type=rel_type,
-                   latency=relationship.get('latency_ms', 0))
+                   type=edge_type,
+                   latency=latency)
 
     return G
 
 
-def build_logical_topology(physical_graph: nx.DiGraph) -> nx.DiGraph:
-    """
-    Build a logical topology that shows direct service-to-resource connections,
-    bypassing ComputeAgent nodes.
-
-    The physical graph has edges like:
-    - service -> compute_agent (uses_compute)
-    - compute_agent -> database (uses_database)
-
-    The logical graph will have:
-    - service -> database (uses_database)
-
-    Args:
-        physical_graph: Original graph from infra_context
-
-    Returns:
-        Logical graph with ComputeAgent nodes removed and edges reconnected
-    """
-    logical_graph = nx.DiGraph()
-
-    # Add all non-ComputeAgent nodes
-    for node in physical_graph.nodes():
-        node_type = physical_graph.nodes[node].get('type')
-        if node_type != 'ComputeAgent':
-            # Copy node with all attributes
-            logical_graph.add_node(node, **physical_graph.nodes[node])
-
-    # For each service, find what resources it uses through compute agents
-    for node in logical_graph.nodes():
-        node_type = logical_graph.nodes[node].get('type')
-
-        # Find all compute agents this node uses
-        compute_agents = []
-        for successor in physical_graph.successors(node):
-            if physical_graph.nodes[successor].get('type') == 'ComputeAgent':
-                compute_agents.append(successor)
-
-        # For each compute agent, add edges to its non-compute-agent successors
-        for agent in compute_agents:
-            for resource in physical_graph.successors(agent):
-                resource_type = physical_graph.nodes[resource].get('type')
-                if resource_type != 'ComputeAgent' and resource in logical_graph:
-                    # Get edge data from agent -> resource
-                    edge_data = physical_graph.get_edge_data(agent, resource)
-                    # Add edge from node -> resource
-                    logical_graph.add_edge(node, resource, **edge_data)
-
-        # Also add direct edges that don't go through compute agents
-        for successor in physical_graph.successors(node):
-            successor_type = physical_graph.nodes[successor].get('type')
-            if successor_type != 'ComputeAgent' and successor in logical_graph:
-                edge_data = physical_graph.get_edge_data(node, successor)
-                logical_graph.add_edge(node, successor, **edge_data)
-
-    return logical_graph
+# REMOVED: build_logical_topology()
+# No longer needed - topology.json already contains the logical topology
+# without ComputeAgent nodes
 
 
 def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Dict:
@@ -254,12 +187,10 @@ def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Di
 
     Returns:
         Dictionary containing:
-        - label: Ground truth metadata
-        - infra_context: System topology
-        - ground_truth: Detailed failure events
+        - label: Ground truth metadata (includes fault details)
+        - topology: Topology dictionary from topology.json
         - metrics_df: DataFrame with time-series metrics
-        - topology_graph: NetworkX graph (physical, includes ComputeAgents)
-        - logical_topology_graph: NetworkX graph (logical, ComputeAgents removed)
+        - topology_graph: NetworkX graph (logical topology)
         - episode_path: Path to episode directory
         - data_path: Path to data subdirectory
     """
@@ -269,29 +200,27 @@ def load_episode(episode_id: str, data_dir: str = "data/final_validation") -> Di
     if not os.path.exists(episode_path):
         raise ValueError(f"Episode {episode_id} not found in {data_dir}")
 
-    # Load label
+    # Load label and topology from episode directory
     label = load_label(episode_path)
+    topology = load_topology(episode_path)
 
     # Find data directory
     data_path = get_episode_data_dir(episode_path)
     if not data_path:
         raise ValueError(f"No data directory found in {episode_path}")
 
-    # Load all components
-    infra_context = load_infra_context(data_path)
-    ground_truth = load_ground_truth(data_path)
+    # Load metrics from data subdirectory
     metrics_df = load_metrics(data_path)
-    topology_graph = build_topology_graph(infra_context)
-    logical_topology_graph = build_logical_topology(topology_graph)
+
+    # Build graph from topology
+    topology_graph = build_topology_graph(topology)
 
     return {
         'episode_id': episode_id,
         'label': label,
-        'infra_context': infra_context,
-        'ground_truth': ground_truth,
+        'topology': topology,
         'metrics_df': metrics_df,
         'topology_graph': topology_graph,
-        'logical_topology_graph': logical_topology_graph,
         'episode_path': episode_path,
         'data_path': data_path
     }
