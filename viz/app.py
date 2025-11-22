@@ -143,7 +143,17 @@ app.layout = dbc.Container([
                                     max=1000,
                                     placeholder="Number of episodes to generate"
                                 ),
-                            ], width=3),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Label("Topology Size (optional):", html_for="topology-size-input"),
+                                dbc.Input(
+                                    id='topology-size-input',
+                                    type='number',
+                                    min=2,
+                                    max=100,
+                                    placeholder="Override nodes (e.g., 2-4)"
+                                ),
+                            ], width=2),
                             dbc.Col([
                                 dbc.Label("Output Directory:", html_for="output-dir-input"),
                                 dbc.Input(
@@ -152,7 +162,7 @@ app.layout = dbc.Container([
                                     value='data',
                                     placeholder="Output directory (e.g., 'data')"
                                 ),
-                            ], width=3),
+                            ], width=2),
                             dbc.Col([
                                 dbc.Label("Random Seed (optional):", html_for="seed-input"),
                                 dbc.Input(
@@ -650,12 +660,13 @@ def toggle_generator_collapse(n_clicks, is_open):
     Output('generate-button', 'disabled'),
     Input('generate-button', 'n_clicks'),
     State('episodes-input', 'value'),
+    State('topology-size-input', 'value'),
     State('output-dir-input', 'value'),
     State('seed-input', 'value'),
     State('verbose-checkbox', 'value'),
     prevent_initial_call=True
 )
-def start_generation(n_clicks, num_episodes, output_dir, seed, verbose_list):
+def start_generation(n_clicks, num_episodes, topology_size, output_dir, seed, verbose_list):
     """Start dataset generation in background when button is clicked."""
     import subprocess
     import sys
@@ -685,6 +696,9 @@ def start_generation(n_clicks, num_episodes, output_dir, seed, verbose_list):
     # Build command
     script_path = Path(__file__).parent.parent / 'generate_dataset.py'
     cmd = [sys.executable, str(script_path), '--episodes', str(num_episodes), '--output', output_dir]
+
+    if topology_size:
+        cmd.extend(['--topology-size', str(topology_size)])
 
     if seed:
         cmd.extend(['--seed', str(seed)])

@@ -117,7 +117,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None):
     """
     Generate a single training episode.
 
@@ -126,13 +126,46 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         output_dir: Base output directory
         scenario_lib: Scenario library instance
         verbose: Print detailed progress
+        topology_size: Optional override for topology size (number of nodes)
 
     Returns:
         Dictionary with episode metadata
     """
-    # 1. Select curriculum level
-    level = scenario_lib.sample_level(seed=episode_id)
-    cfg = scenario_lib.get_episode(level, seed=episode_id)
+    # 1. Generate Topology first to see what node types are available
+    # Override topology size if specified
+    actual_topology_size = topology_size if topology_size is not None else None
+
+    # If topology_size is specified, generate topology first to determine available node types
+    if actual_topology_size is not None:
+        topo_gen = TopologyGenerator(seed=episode_id)
+        nx_graph = topo_gen.generate_complex_graph(actual_topology_size)
+
+        # Get available node roles
+        available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
+
+        # Try to find a compatible scenario (max 10 attempts)
+        cfg = None
+        for attempt in range(10):
+            level = scenario_lib.sample_level(seed=episode_id + attempt)
+            temp_cfg = scenario_lib.get_episode(level, seed=episode_id + attempt)
+            temp_cfg.topology_size = actual_topology_size
+
+            # Check if this scenario's target role exists in the topology
+            if temp_cfg.fault_target_role in available_roles:
+                cfg = temp_cfg
+                break
+
+        if cfg is None:
+            print(f"Warning: Could not find compatible scenario for topology with roles {available_roles}, skipping episode {episode_id}")
+            return None
+    else:
+        # Normal flow: select scenario first, then generate topology
+        level = scenario_lib.sample_level(seed=episode_id)
+        cfg = scenario_lib.get_episode(level, seed=episode_id)
+
+        # 2. Generate Topology
+        topo_gen = TopologyGenerator(seed=episode_id)
+        nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
 
     if verbose:
         print(f"\n{'='*60}")
@@ -142,12 +175,6 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"  Duration: {cfg.duration}s")
         print(f"  Fault: {cfg.fault_type} on {cfg.fault_target_role}")
         print(f"{'='*60}")
-
-    # 2. Generate Topology
-    topo_gen = TopologyGenerator(seed=episode_id)
-    nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
-
-    if verbose:
         print_topology_summary(nx_graph)
 
     # 3. Create Dynamic Workload
@@ -194,9 +221,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         if data.get('role') == cfg.fault_target_role
     ]
 
+    # This should never happen now since we pre-validate scenarios
     if not valid_targets:
-        print(f"Warning: No valid targets for role '{cfg.fault_target_role}', skipping episode {episode_id}")
-        return None
+        raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
 
     target_id = random.choice(valid_targets)
 
@@ -313,7 +340,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None):
     """
     Generate a full training dataset with multiple episodes.
 
@@ -321,6 +348,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False):
         num_episodes: Number of episodes to generate
         output_dir: Base output directory (e.g., 'data')
         verbose: Print detailed progress
+        topology_size: Optional override for topology size (number of nodes)
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -343,7 +371,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False):
     # Generate episodes under the run directory
     results = []
     for i in range(num_episodes):
-        result = generate_episode(i, run_dir, lib, verbose=verbose)
+        result = generate_episode(i, run_dir, lib, verbose=verbose, topology_size=topology_size)
         if result:
             results.append(result)
 
@@ -398,6 +426,12 @@ def main():
         default=None,
         help='Random seed for reproducibility'
     )
+    parser.add_argument(
+        '-t', '--topology-size',
+        type=int,
+        default=None,
+        help='Override topology size (number of nodes). Use small values like 2-3 for simple scenarios.'
+    )
 
     args = parser.parse_args()
 
@@ -409,7 +443,8 @@ def main():
     generate_dataset(
         num_episodes=args.episodes,
         output_dir=args.output,
-        verbose=args.verbose
+        verbose=args.verbose,
+        topology_size=args.topology_size
     )
 
 

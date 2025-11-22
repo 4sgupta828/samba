@@ -49,8 +49,16 @@ class TopologyGenerator:
         n_gateway = 1
         n_total_others = num_nodes - 1
 
-        # For very small topologies (< 10 nodes), use simpler allocation
-        if num_nodes < 10:
+        # For very small topologies (2-4 nodes), use minimal allocation
+        if num_nodes <= 4:
+            # Minimal topology: gateway + service + (optional db/cache)
+            n_service = 1
+            n_db = 1 if num_nodes >= 3 else 0
+            n_cache = 1 if num_nodes >= 4 else 0
+            n_queue = 0
+            n_external = 0
+        # For small topologies (5-9 nodes), use simpler allocation
+        elif num_nodes < 10:
             # Simplified allocation: prioritize services
             n_service = max(2, num_nodes - 3)  # At least 2 services
             n_db = 1
