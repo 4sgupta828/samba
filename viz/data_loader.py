@@ -5,6 +5,7 @@ This module handles loading all episode data including:
 - label.json: Ground truth metadata (includes fault injection details)
 - topology.json: System topology graph (nodes and edges)
 - metrics.jsonl: Time-series telemetry data
+- health analysis: Identifies healthy vs impacted nodes
 """
 
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import networkx as nx
+from health_analyzer import detect_healthy_nodes
 
 
 def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
@@ -312,6 +314,9 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
         'fault_duration': label.get('fault_total_duration', label.get('fault_duration', 0))
     }
 
+    # Perform health analysis to identify healthy vs impacted nodes
+    health_analysis = detect_healthy_nodes(metrics_df, topology_graph, label)
+
     return {
         'episode_id': episode_id,
         'label': label,
@@ -323,6 +328,7 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
         'topology_graph_filtered': topology_graph_filtered,
         'logical_topology_graph': topology_graph,  # For backward compatibility
         'ground_truth': ground_truth,
+        'health_analysis': health_analysis,
         'episode_path': episode_path,
         'data_path': data_path
     }

@@ -167,6 +167,15 @@ app.layout = dbc.Container([
                                 className="me-3 d-inline-block",
                                 style={'fontSize': '0.85rem', 'fontWeight': 'bold', 'color': '#dc3545'}
                             ),
+                            dbc.Checklist(
+                                id='hide-healthy-nodes',
+                                options=[{'label': ' Hide Healthy Nodes', 'value': 'hide_healthy'}],
+                                value=[],
+                                inline=True,
+                                switch=True,
+                                className="me-3 d-inline-block",
+                                style={'fontSize': '0.85rem', 'fontWeight': 'bold', 'color': '#28a745'}
+                            ),
                             html.Span("Show: ", style={'marginRight': '8px', 'fontSize': '0.85rem', 'color': '#6c757d'}),
                             dbc.Checklist(
                                 id='topology-filters',
@@ -366,9 +375,10 @@ def populate_topology_filters(episode_id):
     Output('topology-info', 'children'),
     Input('episode-data-store', 'data'),
     Input('topology-filters', 'value'),
-    Input('use-filtered-topology', 'value')
+    Input('use-filtered-topology', 'value'),
+    Input('hide-healthy-nodes', 'value')
 )
-def update_topology(episode_id, visible_types, use_filtered):
+def update_topology(episode_id, visible_types, use_filtered, hide_healthy):
     """Update topology graph when episode is loaded or filters change."""
     if not episode_id or episode_id not in current_episode_data:
         return {}, ""
@@ -377,6 +387,9 @@ def update_topology(episode_id, visible_types, use_filtered):
 
     # Determine if we should use filtered topology
     use_filtered_topo = 'filtered' in (use_filtered or [])
+
+    # Determine if we should hide healthy nodes
+    hide_healthy_nodes = 'hide_healthy' in (hide_healthy or [])
 
     # Choose graph based on filter setting
     if use_filtered_topo and episode_data.get('has_filtered_topology'):
@@ -399,10 +412,22 @@ def update_topology(episode_id, visible_types, use_filtered):
 
         info_text = f"Showing full topology ({graph.number_of_nodes()} nodes)"
 
+    # Get healthy nodes to hide if requested
+    hidden_nodes = None
+    if hide_healthy_nodes and 'health_analysis' in episode_data:
+        health_analysis = episode_data['health_analysis']
+        hidden_nodes = list(health_analysis['healthy_nodes'])
+        healthy_count = len(hidden_nodes)
+        impacted_count = len(health_analysis['impacted_nodes'])
+        info_text += f" | Healthy: {healthy_count}, Impacted: {impacted_count}"
+        if hidden_nodes:
+            info_text += f" ({healthy_count} healthy nodes hidden)"
+
     return create_topology_chart(
         graph,
         episode_data['label'],
-        visible_types=visible_types or []
+        visible_types=visible_types or [],
+        hidden_nodes=hidden_nodes
     ), info_text
 
 

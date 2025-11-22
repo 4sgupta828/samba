@@ -51,7 +51,7 @@ def get_node_symbol(node_type: str) -> str:
     return symbol_mapping.get(node_type, 'circle')
 
 
-def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: list = None) -> go.Figure:
+def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: list = None, hidden_nodes: list = None) -> go.Figure:
     """
     Create an interactive topology visualization using Plotly.
 
@@ -59,6 +59,7 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         graph: NetworkX directed graph with nodes and edges
         label_data: Label data with ground truth (root_cause_node)
         visible_types: List of node types to show (None = show all)
+        hidden_nodes: List of node IDs to hide (e.g., healthy nodes)
 
     Returns:
         Plotly figure
@@ -78,11 +79,21 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
 
         graph = graph.subgraph(filtered_nodes).copy()
 
+    # Filter out hidden nodes (e.g., healthy nodes)
+    if hidden_nodes:
+        visible_nodes = [node for node in graph.nodes() if node not in hidden_nodes]
+        # Always keep root cause visible
+        if root_cause_node and root_cause_node not in visible_nodes:
+            visible_nodes.append(root_cause_node)
+        graph = graph.subgraph(visible_nodes).copy()
+
     # Use spring layout for positioning
     pos = nx.spring_layout(graph, k=2, iterations=50, seed=42)
 
-    # Create edge traces
+    # Create edge traces with arrows
     edge_traces = []
+    edge_annotations = []
+
     for edge in graph.edges():
         source, target = edge
         x0, y0 = pos[source]
@@ -92,18 +103,50 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         edge_data = graph.get_edge_data(source, target)
         edge_type = edge_data.get('type', 'unknown') if edge_data else 'unknown'
 
-        # Async edges are dashed
+        # Async edges are dashed, sync are solid
         line_dash = 'dash' if 'async' in edge_type else 'solid'
+
+        # Color edges differently based on type
+        edge_color = '#9b59b6' if 'async' in edge_type else '#bdc3c7'
 
         edge_trace = go.Scatter(
             x=[x0, x1, None],
             y=[y0, y1, None],
             mode='lines',
-            line=dict(width=1.5, color='#bdc3c7', dash=line_dash),
-            hoverinfo='none',
+            line=dict(width=1.5, color=edge_color, dash=line_dash),
+            hoverinfo='text',
+            hovertext=f"{source} → {target}<br>Type: {edge_type}",
             showlegend=False
         )
         edge_traces.append(edge_trace)
+
+        # Add arrow annotation to show direction
+        # Calculate arrow position (80% along the edge to avoid overlap with target node)
+        arrow_x = x0 + 0.8 * (x1 - x0)
+        arrow_y = y0 + 0.8 * (y1 - y0)
+
+        # Calculate direction vector for arrow
+        dx = x1 - x0
+        dy = y1 - y0
+
+        edge_annotations.append(
+            dict(
+                x=arrow_x,
+                y=arrow_y,
+                ax=x0 + 0.6 * dx,
+                ay=y0 + 0.6 * dy,
+                xref='x',
+                yref='y',
+                axref='x',
+                ayref='y',
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=1.5,
+                arrowwidth=2,
+                arrowcolor=edge_color,
+                opacity=0.8
+            )
+        )
 
     # Create node trace
     node_x = []
@@ -189,7 +232,7 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
     # Combine all traces
     fig = go.Figure(data=edge_traces + [node_trace] + legend_traces)
 
-    # Update layout with dark theme
+    # Update layout with dark theme and add edge annotations (arrows)
     fig.update_layout(
         title=dict(
             text=f"System Topology - {label_data['topology']['nodes']} nodes, "
@@ -214,7 +257,8 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         plot_bgcolor='#374151',
         paper_bgcolor='#374151',
         font=dict(color='#f9fafb'),
-        height=600
+        height=600,
+        annotations=edge_annotations  # Add arrow annotations
     )
 
     return fig
