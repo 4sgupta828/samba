@@ -306,20 +306,9 @@ class ApiService(EnrichedComponent):
                         ))
                         dep_latency = (self.env.now - dep_start) * 1000  # Convert to ms
 
-                        # Record client-side metrics for successful dependency call
-                        self.dependency_requests_counter.add(1, {
-                            "status": "success",
-                            "dependency_type": "service",
-                            "dependency_id": target_service.id,
-                            "dependency_name": conn_name,
-                            "component.id": self.id
-                        })
-                        self.dependency_latency.record(dep_latency, {
-                            "dependency_type": "service",
-                            "dependency_id": target_service.id,
-                            "dependency_name": conn_name,
-                            "component.id": self.id
-                        })
+                        # NOTE: No dependency metrics for internal service calls
+                        # Internal services emit their own server-side metrics (service.{name}.requests, etc.)
+                        # Dependency metrics are only for external black-box services
 
                         if span:
                             span.add_event(f"downstream_call", {
@@ -328,21 +317,8 @@ class ApiService(EnrichedComponent):
                             })
 
                     except Exception as e:
-                        # Record error metrics for failed dependency call
-                        self.dependency_requests_counter.add(1, {
-                            "status": "error",
-                            "dependency_type": "service",
-                            "dependency_id": getattr(target_service, 'id', 'unknown'),
-                            "dependency_name": conn_name,
-                            "component.id": self.id
-                        })
-                        self.dependency_errors_counter.add(1, {
-                            "error_type": type(e).__name__,
-                            "dependency_type": "service",
-                            "dependency_id": getattr(target_service, 'id', 'unknown'),
-                            "dependency_name": conn_name,
-                            "component.id": self.id
-                        })
+                        # NOTE: No dependency error metrics for internal service calls
+                        # Internal services emit their own server-side error metrics
 
                         # Non-fatal - log and continue (some downstream calls are optional)
                         self._emit_log("WARN", f"[{self.service_name}] Downstream call to {conn_name} failed: {e}")

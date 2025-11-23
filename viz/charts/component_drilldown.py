@@ -124,6 +124,85 @@ def create_percentile_chart(metrics_df: pd.DataFrame, component_id: str,
     return fig
 
 
+def create_metric_chart_filtered(metrics_df: pd.DataFrame, component_id: str,
+                                  metric_name: str, title: str, ylabel: str,
+                                  filter_col: str, filter_val: str,
+                                  value_col: str = 'value') -> go.Figure:
+    """Create a time-series chart for a metric filtered by a label column."""
+    fig = go.Figure()
+
+    # Filter by component_id, metric_name, AND the specified label column
+    data = metrics_df[
+        (metrics_df['component_id'] == component_id) &
+        (metrics_df['metric_name'] == metric_name) &
+        (metrics_df[filter_col] == filter_val)
+    ].copy()
+
+    if not data.empty and value_col in data.columns:
+        fig.add_trace(go.Scatter(
+            x=data['sim_time'],
+            y=data[value_col],
+            mode='lines+markers',
+            line=dict(width=2),
+            marker=dict(size=4),
+            name=title
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time (s)",
+        yaxis_title=ylabel,
+        height=200,
+        margin=dict(l=50, r=20, t=40, b=30),
+        showlegend=False,
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
+def create_percentile_chart_filtered(metrics_df: pd.DataFrame, component_id: str,
+                                     metric_name: str, title: str,
+                                     filter_col: str, filter_val: str) -> go.Figure:
+    """Create a percentile chart filtered by a label column."""
+    data = metrics_df[
+        (metrics_df['component_id'] == component_id) &
+        (metrics_df['metric_name'] == metric_name) &
+        (metrics_df[filter_col] == filter_val)
+    ].copy()
+
+    fig = go.Figure()
+
+    percentiles = ['p50', 'p90', 'p99']
+    colors = {'p50': '#3498db', 'p90': '#f39c12', 'p99': '#e74c3c'}
+
+    for pct in percentiles:
+        if pct in data.columns and not data.empty:
+            fig.add_trace(go.Scatter(
+                x=data['sim_time'],
+                y=data[pct],
+                name=pct.upper(),
+                mode='lines',
+                line=dict(color=colors[pct], width=2)
+            ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time (s)",
+        yaxis_title="Latency (ms)",
+        height=200,
+        margin=dict(l=50, r=20, t=40, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
 def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                              label_data: Dict) -> List[dcc.Graph]:
     """Create drill-down charts for ApiService."""
@@ -298,6 +377,105 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
             html.P(f"Compute agent metrics: {', '.join(list(compute_metrics_available)[:5]) if compute_metrics_available else 'None'}",
                    style={'fontSize': '0.8em', 'color': '#666'})
         ]))
+
+    # External dependency metrics (at the bottom, grouped in accordion)
+    dependency_request_metric = f'service.{component_id}.dependency.requests'
+    dependency_duration_metric = f'service.{component_id}.dependency.duration'
+    dependency_error_metric = f'service.{component_id}.dependency.errors'
+
+    has_dependency_metrics = (dependency_request_metric in available_metrics or
+                              dependency_duration_metric in available_metrics or
+                              dependency_error_metric in available_metrics)
+
+    if has_dependency_metrics:
+        dep_metrics = component_metrics[
+            component_metrics['metric_name'].str.contains('dependency', na=False)
+        ]
+
+        external_deps = []
+        if 'dependency_id' in dep_metrics.columns:
+            external_deps = dep_metrics['dependency_id'].dropna().unique().tolist()
+
+        if external_deps:
+            # Add section header
+            charts.append(html.Hr(style={'marginTop': '40px', 'marginBottom': '20px', 'borderColor': '#555'}))
+            charts.append(html.H4("External Dependencies", style={'marginBottom': '15px'}))
+
+            # Create accordion items for each dependency
+            accordion_items = []
+            for idx, dep_id in enumerate(sorted(external_deps)):
+                dep_specific = dep_metrics[dep_metrics['dependency_id'] == dep_id]
+                dep_name = dep_specific['dependency_name'].iloc[0] if 'dependency_name' in dep_specific.columns and not dep_specific.empty else dep_id
+
+                # Create charts for this dependency
+                dep_charts = []
+
+                if dependency_request_metric in available_metrics:
+                    dep_charts.append(dcc.Graph(
+                        figure=create_metric_chart_filtered(
+                            metrics_df, component_id,
+                            dependency_request_metric,
+                            f'Request Rate',
+                            'Requests',
+                            filter_col='dependency_id',
+                            filter_val=dep_id
+                        ),
+                        config={'displayModeBar': False}
+                    ))
+
+                if dependency_duration_metric in available_metrics:
+                    dep_duration_data = dep_specific[dep_specific['metric_name'] == dependency_duration_metric]
+                    if 'p50' in dep_duration_data.columns and not dep_duration_data['p50'].isna().all():
+                        dep_charts.append(dcc.Graph(
+                            figure=create_percentile_chart_filtered(
+                                metrics_df, component_id,
+                                dependency_duration_metric,
+                                f'Latency',
+                                filter_col='dependency_id',
+                                filter_val=dep_id
+                            ),
+                            config={'displayModeBar': False}
+                        ))
+                    else:
+                        dep_charts.append(dcc.Graph(
+                            figure=create_metric_chart_filtered(
+                                metrics_df, component_id,
+                                dependency_duration_metric,
+                                f'Latency',
+                                'ms',
+                                filter_col='dependency_id',
+                                filter_val=dep_id
+                            ),
+                            config={'displayModeBar': False}
+                        ))
+
+                if dependency_error_metric in available_metrics:
+                    dep_charts.append(dcc.Graph(
+                        figure=create_metric_chart_filtered(
+                            metrics_df, component_id,
+                            dependency_error_metric,
+                            f'Errors',
+                            'Errors',
+                            filter_col='dependency_id',
+                            filter_val=dep_id
+                        ),
+                        config={'displayModeBar': False}
+                    ))
+
+                # Create accordion item
+                accordion_items.append(
+                    dbc.AccordionItem(
+                        dep_charts,
+                        title=f"→ {dep_name}",
+                    )
+                )
+
+            # Add accordion to charts
+            charts.append(dbc.Accordion(
+                accordion_items,
+                start_collapsed=True,  # All collapsed by default
+                always_open=False,  # Only one open at a time
+            ))
 
     return charts
 
