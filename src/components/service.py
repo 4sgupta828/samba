@@ -74,13 +74,20 @@ class ApiService(EnrichedComponent):
         )
 
     def run(self):
-        """Start background processes including dynamics update loop."""
-        # Call parent run() to set up the component
-        yield self.env.process(super().run())
+        """Start background processes including dynamics update loop and queue consumer."""
+        # Start background processes BEFORE calling parent run()
+        # (parent run() has an infinite loop and never completes)
 
         # Start dynamics update loop if enabled
         if self.use_dynamics:
             self.env.process(self._update_dynamics_loop())
+
+        # Start queue consumer if this service consumes from a queue
+        if 'queue_in' in self.connections:
+            self.env.process(self._consume_from_queue())
+
+        # Now call parent run() which will run forever
+        yield self.env.process(super().run())
 
     def _update_dynamics_loop(self):
         """Background process that updates the dynamics engine every simulation second."""
@@ -159,6 +166,9 @@ class ApiService(EnrichedComponent):
         This method can be overridden by subclasses to add service-to-service calls
         or other custom logic. The parent class will handle metrics recording.
 
+        For generic services: forwards to compute agent + auto-discovers downstream calls
+        For specialized services: override this method completely for custom behavior
+
         Args:
             request_type: Type of request to process
             span: OpenTelemetry span for tracing (can be None)
@@ -189,6 +199,29 @@ class ApiService(EnrichedComponent):
                     span.set_attribute("error.type", "service_error")
                 raise Exception(f"Service error in {self.service_name}")
 
+        # Forward to compute agent (handles DB and cache calls internally)
+        yield from self._process_with_compute_agent(request_type, span)
+
+        # After compute agent processing, make downstream service calls based on topology
+        # This enables generic services to follow topology edges automatically
+        # Specialized services override _execute_request_logic() entirely, so this won't run for them
+        yield from self._call_downstream_dependencies(request_type, span)
+
+        if span:
+            span.set_attribute("status", "success")
+
+    def _process_with_compute_agent(self, request_type: str, span):
+        """
+        Forward request to compute agent for processing.
+
+        This is separated from _execute_request_logic() so specialized services can
+        call this directly when they want just the compute agent processing without
+        automatic downstream dependency discovery.
+
+        Args:
+            request_type: Type of request to process
+            span: OpenTelemetry span for tracing (can be None)
+        """
         # Get a compute agent from this service's pool
         target = self.get_compute_target()
 
@@ -201,6 +234,7 @@ class ApiService(EnrichedComponent):
             raise Exception(f"No healthy compute agents available for {self.service_name}")
 
         # Forward to compute agent with span context
+        # This handles database and cache calls internally
         should_trace_compute = span is not None
         compute_span_ctx = None
         if should_trace_compute:
@@ -209,8 +243,178 @@ class ApiService(EnrichedComponent):
 
         yield self.env.process(target.handle_request(request_type, should_trace=should_trace_compute, parent_span_context=compute_span_ctx))
 
-        if span:
-            span.set_attribute("status", "success")
+    def _call_downstream_dependencies(self, request_type: str, span):
+        """
+        Automatically discover and call downstream dependencies based on topology.
+
+        This method examines self.connections to find downstream services and makes
+        probabilistic calls to them, following the pattern used by specialized services.
+
+        Specialized services can override _execute_request_logic() for custom behavior,
+        while generic services use this automatic discovery.
+
+        Args:
+            request_type: Type of request being processed
+            span: OpenTelemetry span for tracing (can be None)
+        """
+        # Iterate through connections to find service-to-service dependencies
+        for conn_name, conn_target in self.connections.items():
+            # Service-to-service RPC calls (dep_*)
+            if conn_name.startswith('dep_'):
+                target_service = conn_target
+                # Probabilistic call - not every request needs to call every dependency
+                # 70% chance to call each downstream service (realistic fan-out)
+                if random.random() < 0.7:
+                    try:
+                        self._emit_log("DEBUG", f"[{self.service_name}] Calling downstream service {conn_name}")
+
+                        # Propagate tracing to service-to-service call
+                        should_trace_dep = span is not None
+                        dep_span_ctx = None
+                        if should_trace_dep:
+                            from opentelemetry import trace
+                            dep_span_ctx = trace.set_span_in_context(span)
+
+                        # Call downstream service with one of its supported request types
+                        if hasattr(target_service, 'supported_request_types') and target_service.supported_request_types:
+                            dep_request_type = random.choice(target_service.supported_request_types)
+                        else:
+                            dep_request_type = request_type  # Use same request type as fallback
+
+                        dep_start = self.env.now
+                        yield self.env.process(target_service.handle_request(
+                            dep_request_type,
+                            should_trace=should_trace_dep,
+                            parent_span_context=dep_span_ctx
+                        ))
+                        dep_latency = (self.env.now - dep_start) * 1000  # Convert to ms
+
+                        if span:
+                            span.add_event(f"downstream_call", {
+                                "service": conn_name,
+                                "latency_ms": dep_latency
+                            })
+
+                    except Exception as e:
+                        # Non-fatal - log and continue (some downstream calls are optional)
+                        self._emit_log("WARN", f"[{self.service_name}] Downstream call to {conn_name} failed: {e}")
+                        if span:
+                            span.add_event(f"downstream_call_failed", {
+                                "service": conn_name,
+                                "error": str(e)
+                            })
+
+            # External service calls (ext_*)
+            elif conn_name.startswith('ext_'):
+                external_service = conn_target
+                # Lower probability for external calls (more expensive, often optional)
+                if random.random() < 0.3:
+                    try:
+                        self._emit_log("DEBUG", f"[{self.service_name}] Calling external service {conn_name}")
+
+                        # Propagate tracing
+                        should_trace_ext = span is not None
+                        ext_span_ctx = None
+                        if should_trace_ext:
+                            from opentelemetry import trace
+                            ext_span_ctx = trace.set_span_in_context(span)
+
+                        # External services typically use GET or POST
+                        ext_request_type = random.choice(['GET', 'POST'])
+
+                        ext_start = self.env.now
+                        yield self.env.process(external_service.handle_request(
+                            ext_request_type,
+                            should_trace=should_trace_ext,
+                            parent_span_context=ext_span_ctx
+                        ))
+                        ext_latency = (self.env.now - ext_start) * 1000
+
+                        if span:
+                            span.add_event("external_call", {
+                                "service": conn_name,
+                                "latency_ms": ext_latency
+                            })
+
+                    except Exception as e:
+                        # External calls can fail - handle gracefully
+                        self._emit_log("WARN", f"[{self.service_name}] External call to {conn_name} failed: {e}")
+                        if span:
+                            span.add_event("external_call_failed", {
+                                "service": conn_name,
+                                "error": str(e)
+                            })
+
+            # Queue publishing (queue_out for async_produce)
+            elif conn_name == 'queue_out':
+                queue = conn_target
+                # Probabilistic queue publishing (not every request generates a message)
+                if random.random() < 0.5:
+                    try:
+                        self._emit_log("DEBUG", f"[{self.service_name}] Publishing message to queue")
+                        # send_message() is a generator, so use yield from
+                        yield from queue.send_message(f"{request_type}_data_{self.env.now}")
+
+                        if span:
+                            span.add_event("message_published", {"queue": conn_name})
+
+                    except Exception as e:
+                        self._emit_log("WARN", f"[{self.service_name}] Queue publish failed: {e}")
+                        if span:
+                            span.add_event("queue_publish_failed", {"error": str(e)})
+
+    def _consume_from_queue(self):
+        """
+        Background process that continuously consumes messages from queue_in.
+
+        This implements the async consumer pattern where a service pulls messages
+        from a queue and processes them independently of incoming HTTP requests.
+
+        Common pattern for:
+        - Order fulfillment services
+        - Email notification services
+        - Background job processors
+        """
+        queue = self.connections.get('queue_in')
+        if not queue:
+            self._emit_log("ERROR", f"[{self.service_name}] queue_in connection not found")
+            return
+
+        self._emit_log("INFO", f"[{self.service_name}] Starting queue consumer for {queue.id}")
+
+        while True:
+            try:
+                # Wait for a message from the queue
+                # receive_message() is a generator, so use yield from
+                msg = yield from queue.receive_message()
+
+                self._emit_log("DEBUG", f"[{self.service_name}] Received message {msg.id} from queue")
+
+                # Process the message by calling handle_request
+                # Use a random request type from supported types
+                if self.supported_request_types:
+                    request_type = random.choice(self.supported_request_types)
+                else:
+                    request_type = "PROCESS"
+
+                try:
+                    # Process the message (this will call compute agents, DB, etc.)
+                    # Note: Queue consumers typically don't use tracing (batch processing)
+                    yield self.env.process(self.handle_request(request_type, should_trace=False))
+
+                    # Successfully processed - delete the message
+                    queue.delete_message(msg)
+                    self._emit_log("DEBUG", f"[{self.service_name}] Successfully processed message {msg.id}")
+
+                except Exception as e:
+                    # Processing failed - message will become visible again after timeout
+                    self._emit_log("ERROR", f"[{self.service_name}] Failed to process message {msg.id}: {e}")
+                    # Don't delete - let visibility timeout return it to queue for retry
+
+            except Exception as e:
+                # Queue receive failed - log and retry after delay
+                self._emit_log("WARN", f"[{self.service_name}] Queue receive failed: {e}")
+                yield self.env.timeout(1.0)  # Wait 1s before retrying
 
     def _handle_request_internal(self, request_type: str, span):
         """
@@ -300,8 +504,8 @@ class ProductCatalogService(ApiService):
             self._emit_log("DEBUG", f"[{self.service_name}] Processing {request_type} with inventory check")
 
             # First, get product data from our own compute pool (cache + DB)
-            # This is handled by the parent implementation
-            yield from super()._execute_request_logic(request_type, span)
+            # Use _process_with_compute_agent() to avoid automatic downstream discovery
+            yield from self._process_with_compute_agent(request_type, span)
 
             # Then, call InventoryService for stock availability (if available)
             inventory_service = self.connections.get('inventory_service')
@@ -410,8 +614,8 @@ class OrderService(ApiService):
                     raise Exception("Order failed: Unable to reserve inventory")
 
             # Step 2: Continue with normal order processing (write to DB)
-            # This is handled by calling the parent implementation
-            yield from super()._execute_request_logic(request_type, span)
+            # Use _process_with_compute_agent() to avoid automatic downstream discovery
+            yield from self._process_with_compute_agent(request_type, span)
 
             # Step 3: Publish to message queue for async fulfillment
             queue = self.connections.get('message_queue')
@@ -458,7 +662,8 @@ class UserAccountService(ApiService):
             self._emit_log("DEBUG", f"[{self.service_name}] Processing {request_type} with order history")
 
             # First, get user profile data from our own compute pool (cache + DB)
-            yield from super()._execute_request_logic(request_type, span)
+            # Use _process_with_compute_agent() to avoid automatic downstream discovery
+            yield from self._process_with_compute_agent(request_type, span)
 
             # Then, call OrderService to get recent orders for the dashboard
             order_service = self.connections.get('order_service')

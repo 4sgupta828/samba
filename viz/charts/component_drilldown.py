@@ -249,6 +249,19 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 config={'displayModeBar': False}
             ))
 
+        # Connection pool queue depth
+        if 'connection_pool.queue_depth' in compute_metrics_available:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    'connection_pool.queue_depth',
+                    'Connection Pool Queue Depth (from compute agents)',
+                    'Count',
+                    aggregate_pattern=compute_agent_pattern
+                ),
+                config={'displayModeBar': False}
+            ))
+
         # Thread pool
         if 'thread_pool.threads.active' in compute_metrics_available:
             charts.append(dcc.Graph(
