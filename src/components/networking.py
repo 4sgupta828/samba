@@ -196,18 +196,24 @@ class RequestGateway(EnrichedComponent):
 
         self._emit_log("DEBUG", f"Received request for {request_type}")  # Reduced from INFO to DEBUG
 
-        # NEW: Check if we have a service registered for this request type
-        service = self.get_service_for_request(request_type)
+        # Route based on actual topology connections (sync_http edges to services)
+        # Get all services connected to this gateway
+        connected_services = [
+            conn for conn in self.connections.values()
+            if hasattr(conn, 'service_name')  # Check if it's a service
+        ]
 
-        if service:
-            # Route to service (microservices architecture)
-            self._emit_log("DEBUG", f"Routing {request_type} to service: {service.service_name}")
+        if connected_services:
+            # Route to one of the connected services (round-robin/random)
+            import random
+            target = random.choice(connected_services)
+            self._emit_log("DEBUG", f"Routing {request_type} to service: {target.service_name} (topology-based)")
             span.set_attribute("routing.target", "service")
-            span.set_attribute("service.name", service.service_name)
-            target = service
+            span.set_attribute("service.name", target.service_name)
+            span.set_attribute("routing.method", "topology")
         else:
             # Fall back to direct compute routing (legacy/backward compatibility)
-            self._emit_log("DEBUG", f"No service found for {request_type}, routing to compute agents directly")
+            self._emit_log("DEBUG", f"No services connected, routing to compute agents directly")
             span.set_attribute("routing.target", "compute")
             target = self.get_backend_target()
 

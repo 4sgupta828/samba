@@ -73,6 +73,23 @@ class ApiService(EnrichedComponent):
             unit="1",
         )
 
+        # Client-side metrics for external dependencies (from caller's POV)
+        self.dependency_requests_counter = self.meter.create_counter(
+            f"service.{service_name}.dependency.requests",
+            description=f"Number of outbound requests to dependencies from {service_name}",
+            unit="1",
+        )
+        self.dependency_latency = self.meter.create_histogram(
+            f"service.{service_name}.dependency.duration",
+            description=f"Request duration to dependencies from {service_name}",
+            unit="ms"
+        )
+        self.dependency_errors_counter = self.meter.create_counter(
+            f"service.{service_name}.dependency.errors",
+            description=f"Number of errors calling dependencies from {service_name}",
+            unit="1",
+        )
+
     def run(self):
         """Start background processes including dynamics update loop and queue consumer."""
         # Start background processes BEFORE calling parent run()
@@ -289,6 +306,21 @@ class ApiService(EnrichedComponent):
                         ))
                         dep_latency = (self.env.now - dep_start) * 1000  # Convert to ms
 
+                        # Record client-side metrics for successful dependency call
+                        self.dependency_requests_counter.add(1, {
+                            "status": "success",
+                            "dependency_type": "service",
+                            "dependency_id": target_service.id,
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+                        self.dependency_latency.record(dep_latency, {
+                            "dependency_type": "service",
+                            "dependency_id": target_service.id,
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+
                         if span:
                             span.add_event(f"downstream_call", {
                                 "service": conn_name,
@@ -296,6 +328,22 @@ class ApiService(EnrichedComponent):
                             })
 
                     except Exception as e:
+                        # Record error metrics for failed dependency call
+                        self.dependency_requests_counter.add(1, {
+                            "status": "error",
+                            "dependency_type": "service",
+                            "dependency_id": getattr(target_service, 'id', 'unknown'),
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+                        self.dependency_errors_counter.add(1, {
+                            "error_type": type(e).__name__,
+                            "dependency_type": "service",
+                            "dependency_id": getattr(target_service, 'id', 'unknown'),
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+
                         # Non-fatal - log and continue (some downstream calls are optional)
                         self._emit_log("WARN", f"[{self.service_name}] Downstream call to {conn_name} failed: {e}")
                         if span:
@@ -330,6 +378,21 @@ class ApiService(EnrichedComponent):
                         ))
                         ext_latency = (self.env.now - ext_start) * 1000
 
+                        # Record client-side metrics for successful external dependency call
+                        self.dependency_requests_counter.add(1, {
+                            "status": "success",
+                            "dependency_type": "external",
+                            "dependency_id": external_service.id,
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+                        self.dependency_latency.record(ext_latency, {
+                            "dependency_type": "external",
+                            "dependency_id": external_service.id,
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+
                         if span:
                             span.add_event("external_call", {
                                 "service": conn_name,
@@ -337,6 +400,22 @@ class ApiService(EnrichedComponent):
                             })
 
                     except Exception as e:
+                        # Record error metrics for failed external dependency call
+                        self.dependency_requests_counter.add(1, {
+                            "status": "error",
+                            "dependency_type": "external",
+                            "dependency_id": getattr(external_service, 'id', 'unknown'),
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+                        self.dependency_errors_counter.add(1, {
+                            "error_type": type(e).__name__,
+                            "dependency_type": "external",
+                            "dependency_id": getattr(external_service, 'id', 'unknown'),
+                            "dependency_name": conn_name,
+                            "component.id": self.id
+                        })
+
                         # External calls can fail - handle gracefully
                         self._emit_log("WARN", f"[{self.service_name}] External call to {conn_name} failed: {e}")
                         if span:
@@ -470,256 +549,3 @@ class ApiService(EnrichedComponent):
                     "exception.message": str(e)
                 })
             raise
-
-
-class ProductCatalogService(ApiService):
-    """
-    Product Catalog Service - handles product browsing and search.
-
-    Request Types:
-    - browse_products: Browse product listings (calls InventoryService for stock)
-    - search_products: Search for products by keyword
-    - get_product_details: Get detailed product information (calls InventoryService)
-    - get_recommendations: Get product recommendations
-
-    Dependencies:
-    - product_catalog_db: Product database (read-optimized)
-    - cache: Hot products and search results
-    - inventory_service: For real-time stock availability
-    """
-
-    def __init__(self, env: simpy.Environment, component_id: str):
-        super().__init__(env, component_id, "product_catalog")
-        self.supported_request_types = [
-            "browse_products",
-            "search_products",
-            "get_product_details",
-            "get_recommendations"
-        ]
-
-    def _execute_request_logic(self, request_type: str, span):
-        """Override to add service-to-service calls for inventory availability."""
-        # Requests that need real-time inventory data
-        if request_type in ["browse_products", "get_product_details"]:
-            self._emit_log("DEBUG", f"[{self.service_name}] Processing {request_type} with inventory check")
-
-            # First, get product data from our own compute pool (cache + DB)
-            # Use _process_with_compute_agent() to avoid automatic downstream discovery
-            yield from self._process_with_compute_agent(request_type, span)
-
-            # Then, call InventoryService for stock availability (if available)
-            inventory_service = self.connections.get('inventory_service')
-            if inventory_service:
-                try:
-                    # For browse_products, we might check multiple items
-                    # For get_product_details, we check a single item
-                    num_checks = 5 if request_type == "browse_products" else 1
-
-                    for _ in range(num_checks):
-                        # Propagate tracing to service-to-service call
-                        should_trace_inventory = span is not None
-                        inventory_span_ctx = None
-                        if should_trace_inventory:
-                            from opentelemetry import trace
-                            inventory_span_ctx = trace.set_span_in_context(span)
-
-                        self._emit_log("DEBUG", f"[{self.service_name}] Calling InventoryService.check_availability")
-
-                        yield self.env.process(inventory_service.handle_request(
-                            "check_availability",
-                            should_trace=should_trace_inventory,
-                            parent_span_context=inventory_span_ctx
-                        ))
-
-                    if span:
-                        span.add_event("inventory_checked", {
-                            "service": "inventory_service",
-                            "num_checks": num_checks
-                        })
-
-                except Exception as e:
-                    # Non-fatal - can still show products without stock info
-                    self._emit_log("WARN", f"[{self.service_name}] Inventory check failed: {e}")
-                    if span:
-                        span.add_event("inventory_check_failed", {"error": str(e)})
-
-            return
-
-        # For all other request types (search_products, get_recommendations), use default handling
-        yield from super()._execute_request_logic(request_type, span)
-
-
-class OrderService(ApiService):
-    """
-    Order Service - handles order placement and management.
-
-    Request Types:
-    - place_order: Place a new order (calls InventoryService)
-    - get_order_history: Get user's order history
-    - get_order_status: Check order status
-    - cancel_order: Cancel an existing order
-
-    Dependencies:
-    - orders_db: Orders database (ACID transactions)
-    - message_queue: Async order processing
-    - inventory_service: For stock reservation (service-to-service call)
-    """
-
-    def __init__(self, env: simpy.Environment, component_id: str):
-        super().__init__(env, component_id, "order")
-        self.supported_request_types = [
-            "place_order",
-            "get_order_history",
-            "get_order_status",
-            "cancel_order"
-        ]
-
-    def _execute_request_logic(self, request_type: str, span):
-        """Override to add service-to-service call for place_order."""
-        # Special handling for place_order - needs to call InventoryService
-        if request_type == "place_order":
-            self._emit_log("DEBUG", f"[{self.service_name}] Processing place_order with inventory check")
-
-            # Step 1: Call InventoryService to reserve stock
-            inventory_service = self.connections.get('inventory_service')
-            if inventory_service:
-                try:
-                    self._emit_log("INFO", f"[{self.service_name}] Calling InventoryService.reserve_stock")
-
-                    # Propagate tracing to service-to-service call
-                    should_trace_inventory = span is not None
-                    inventory_span_ctx = None
-                    if should_trace_inventory:
-                        from opentelemetry import trace
-                        inventory_span_ctx = trace.set_span_in_context(span)
-
-                    # Phase 3.3: Measure dependency latency to inherit upstream slowness
-                    dep_start = self.env.now
-                    yield self.env.process(inventory_service.handle_request(
-                        "reserve_stock",
-                        should_trace=should_trace_inventory,
-                        parent_span_context=inventory_span_ctx
-                    ))
-                    dep_latency = (self.env.now - dep_start) * 1000  # Convert to ms
-
-                    if span:
-                        span.add_event("inventory_reserved", {"service": "inventory_service"})
-                        span.set_attribute("dependency.inventory_service.latency_ms", dep_latency)
-
-                except Exception as e:
-                    self._emit_log("ERROR", f"[{self.service_name}] Inventory reservation failed: {e}")
-                    if span:
-                        span.set_attribute("error", True)
-                        span.add_event("inventory_reservation_failed")
-                    raise Exception("Order failed: Unable to reserve inventory")
-
-            # Step 2: Continue with normal order processing (write to DB)
-            # Use _process_with_compute_agent() to avoid automatic downstream discovery
-            yield from self._process_with_compute_agent(request_type, span)
-
-            # Step 3: Publish to message queue for async fulfillment
-            queue = self.connections.get('message_queue')
-            if queue:
-                self._emit_log("DEBUG", f"[{self.service_name}] Publishing order to message queue")
-                if span:
-                    span.add_event("order_queued", {"queue": "order_fulfillment"})
-
-            return
-
-        # For all other request types, use default handling
-        yield from super()._execute_request_logic(request_type, span)
-
-
-class UserAccountService(ApiService):
-    """
-    User Account Service - handles user authentication and profiles.
-
-    Request Types:
-    - get_user_profile: Get user profile data (calls OrderService for recent orders)
-    - update_user_profile: Update user profile
-    - login: User authentication
-    - register: New user registration
-
-    Dependencies:
-    - user_db: User database (credentials, profiles)
-    - cache: Session tokens and auth data
-    - order_service: For displaying recent orders on profile page
-    """
-
-    def __init__(self, env: simpy.Environment, component_id: str):
-        super().__init__(env, component_id, "user_account")
-        self.supported_request_types = [
-            "get_user_profile",
-            "update_user_profile",
-            "login",
-            "register"
-        ]
-
-    def _execute_request_logic(self, request_type: str, span):
-        """Override to add service-to-service call for fetching recent orders."""
-        # get_user_profile shows recent orders on the profile dashboard
-        if request_type == "get_user_profile":
-            self._emit_log("DEBUG", f"[{self.service_name}] Processing {request_type} with order history")
-
-            # First, get user profile data from our own compute pool (cache + DB)
-            # Use _process_with_compute_agent() to avoid automatic downstream discovery
-            yield from self._process_with_compute_agent(request_type, span)
-
-            # Then, call OrderService to get recent orders for the dashboard
-            order_service = self.connections.get('order_service')
-            if order_service:
-                try:
-                    self._emit_log("DEBUG", f"[{self.service_name}] Calling OrderService.get_order_history")
-
-                    # Propagate tracing to service-to-service call
-                    should_trace_orders = span is not None
-                    order_span_ctx = None
-                    if should_trace_orders:
-                        from opentelemetry import trace
-                        order_span_ctx = trace.set_span_in_context(span)
-
-                    yield self.env.process(order_service.handle_request(
-                        "get_order_history",
-                        should_trace=should_trace_orders,
-                        parent_span_context=order_span_ctx
-                    ))
-
-                    if span:
-                        span.add_event("recent_orders_fetched", {"service": "order_service"})
-
-                except Exception as e:
-                    # Non-fatal - can still show profile without order history
-                    self._emit_log("WARN", f"[{self.service_name}] Order history fetch failed: {e}")
-                    if span:
-                        span.add_event("order_history_failed", {"error": str(e)})
-
-            return
-
-        # For all other request types, use default handling
-        yield from super()._execute_request_logic(request_type, span)
-
-
-class InventoryService(ApiService):
-    """
-    Inventory Service - handles stock management.
-
-    Request Types:
-    - check_availability: Check if product is in stock
-    - reserve_stock: Reserve stock for order (called by OrderService)
-    - update_stock: Update stock levels
-    - release_reservation: Release reserved stock (e.g., on order cancel)
-
-    Dependencies:
-    - inventory_db: Inventory database (strong consistency, row-level locking)
-
-    Note: This is a leaf service (no downstream service dependencies)
-    """
-
-    def __init__(self, env: simpy.Environment, component_id: str):
-        super().__init__(env, component_id, "inventory")
-        self.supported_request_types = [
-            "check_availability",
-            "reserve_stock",
-            "update_stock",
-            "release_reservation"
-        ]
