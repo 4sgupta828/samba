@@ -31,23 +31,37 @@ def inject_latency(component: SimulatedComponent, params: Dict[str, Any]):
     ADDITIVE FAULT: Adds fixed latency on top of natural latency.
     Models network delays, external API slowness.
     """
-    if not hasattr(component, 'dynamics') or component.dynamics is None:
-        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject latency")
-        return
-
     latency_ms = params.get("latency_ms", 500)
 
-    # Add fixed latency (CRITICAL FIX: additive, not multiplier)
-    component.dynamics.fault_latency_additive_ms = latency_ms
-    component._emit_log("WARN", f"Latency injection: +{latency_ms}ms")
+    # For components with dynamics engine, set dynamics fault
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        component.dynamics.fault_latency_additive_ms = latency_ms
+        component._emit_log("WARN", f"Latency injection (dynamics): +{latency_ms}ms")
+
+    # ALSO set direct attribute for components that use it directly (like ExternalService)
+    if hasattr(component, 'injected_latency_ms'):
+        component.injected_latency_ms = latency_ms
+        component._emit_log("WARN", f"Latency injection (direct): +{latency_ms}ms")
+
+    if not (hasattr(component, 'dynamics') and component.dynamics is not None) and not hasattr(component, 'injected_latency_ms'):
+        component._emit_log("ERROR", "Component does not support latency injection (no dynamics or injected_latency_ms attribute)")
 
 def revert_latency(component: SimulatedComponent, params: Dict[str, Any]):
     """Removes injected latency."""
+    reverted = False
+
     if hasattr(component, 'dynamics') and component.dynamics is not None:
         component.dynamics.fault_latency_additive_ms = 0.0
-        component._emit_log("INFO", "Latency injection reverted")
-    else:
-        component._emit_log("WARN", "Component does not have dynamics engine")
+        component._emit_log("INFO", "Latency injection reverted (dynamics)")
+        reverted = True
+
+    if hasattr(component, 'injected_latency_ms'):
+        component.injected_latency_ms = 0.0
+        component._emit_log("INFO", "Latency injection reverted (direct)")
+        reverted = True
+
+    if not reverted:
+        component._emit_log("WARN", "Component does not support latency injection")
     
 def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     """Starts or accelerates a memory leak in a ComputeAgent via dynamics engine."""
@@ -206,23 +220,37 @@ def inject_errors(component: SimulatedComponent, params: Dict[str, Any]):
     ADDITIVE FAULT: Adds base error rate on top of natural errors.
     Models external failures, flaky networks.
     """
-    if not hasattr(component, 'dynamics') or component.dynamics is None:
-        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject errors")
-        return
-
     error_rate = params.get("error_rate", 0.1)  # 10%
 
-    # Add fixed error rate (CRITICAL FIX: additive, not multiplier)
-    component.dynamics.fault_error_additive = error_rate
-    component._emit_log("WARN", f"Error injection: +{error_rate*100:.1f}% base error rate")
+    # For components with dynamics engine, set dynamics fault
+    if hasattr(component, 'dynamics') and component.dynamics is not None:
+        component.dynamics.fault_error_additive = error_rate
+        component._emit_log("WARN", f"Error injection (dynamics): +{error_rate*100:.1f}% base error rate")
+
+    # ALSO set direct attribute for components that use it directly (like ExternalService)
+    if hasattr(component, 'forced_error_rate'):
+        component.forced_error_rate = error_rate
+        component._emit_log("WARN", f"Error injection (direct): +{error_rate*100:.1f}% base error rate")
+
+    if not (hasattr(component, 'dynamics') and component.dynamics is not None) and not hasattr(component, 'forced_error_rate'):
+        component._emit_log("ERROR", "Component does not support error injection (no dynamics or forced_error_rate attribute)")
 
 def revert_errors(component: SimulatedComponent, params: Dict[str, Any]):
     """Revert error rate injection."""
+    reverted = False
+
     if hasattr(component, 'dynamics') and component.dynamics is not None:
         component.dynamics.fault_error_additive = 0.0
-        component._emit_log("INFO", "Error injection reverted")
-    else:
-        component._emit_log("WARN", "Component does not have dynamics engine")
+        component._emit_log("INFO", "Error injection reverted (dynamics)")
+        reverted = True
+
+    if hasattr(component, 'forced_error_rate'):
+        component.forced_error_rate = 0.0
+        component._emit_log("INFO", "Error injection reverted (direct)")
+        reverted = True
+
+    if not reverted:
+        component._emit_log("WARN", "Component does not support error injection")
 
 def cache_failure(component: InMemoryCache, params: Dict[str, Any]):
     """

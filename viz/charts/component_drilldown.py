@@ -731,6 +731,148 @@ def create_gateway_drilldown(metrics_df: pd.DataFrame, component_id: str,
     return charts
 
 
+def create_fault_injection_timeline(label_data: Dict, component_id: str) -> html.Div:
+    """
+    Create a visual timeline showing fault injection details.
+
+    Args:
+        label_data: Label data with fault information
+        component_id: Component ID to check if it's the root cause
+
+    Returns:
+        Dash HTML component with fault timeline
+    """
+    # Only show if this is the root cause
+    if component_id != label_data.get('root_cause_node'):
+        return html.Div()
+
+    # Extract fault information
+    fault_type = label_data.get('fault_type', 'Unknown')
+    fault_start = label_data.get('fault_start_time', 0)
+    ramp_duration = label_data.get('fault_ramp_duration', 0)
+    full_effect_time = label_data.get('fault_full_effect_time', 0)
+    total_duration = label_data.get('fault_total_duration', 0)
+    fault_end = fault_start + total_duration
+    progression_info = label_data.get('progression', {})
+    progression_type = progression_info.get('type', 'instant')
+    fault_params = label_data.get('fault_params', {})
+
+    # Create timeline visualization
+    # Timeline shows: [healthy] -> [ramp-up] -> [full effect]
+    timeline_items = []
+
+    # Healthy phase
+    timeline_items.append(
+        html.Div([
+            html.Div("Healthy", style={
+                'backgroundColor': '#22c55e',
+                'padding': '8px',
+                'borderRadius': '4px',
+                'color': 'white',
+                'fontWeight': 'bold',
+                'textAlign': 'center',
+                'marginBottom': '4px'
+            }),
+            html.Div(f"0s - {fault_start}s", style={
+                'fontSize': '0.85em',
+                'color': '#9ca3af',
+                'textAlign': 'center'
+            })
+        ], style={'flex': f'{fault_start}', 'marginRight': '8px'})
+    )
+
+    # Ramp-up phase (if gradual)
+    if ramp_duration > 0:
+        timeline_items.append(
+            html.Div([
+                html.Div(f"Degrading ({progression_type})", style={
+                    'backgroundColor': '#f59e0b',
+                    'padding': '8px',
+                    'borderRadius': '4px',
+                    'color': 'white',
+                    'fontWeight': 'bold',
+                    'textAlign': 'center',
+                    'marginBottom': '4px'
+                }),
+                html.Div(f"{fault_start}s - {full_effect_time}s", style={
+                    'fontSize': '0.85em',
+                    'color': '#9ca3af',
+                    'textAlign': 'center'
+                })
+            ], style={'flex': f'{ramp_duration}', 'marginRight': '8px'})
+        )
+
+    # Full failure phase
+    failure_duration = total_duration - ramp_duration
+    timeline_items.append(
+        html.Div([
+            html.Div("Full Failure", style={
+                'backgroundColor': '#ef4444',
+                'padding': '8px',
+                'borderRadius': '4px',
+                'color': 'white',
+                'fontWeight': 'bold',
+                'textAlign': 'center',
+                'marginBottom': '4px'
+            }),
+            html.Div(f"{full_effect_time}s - {fault_end}s", style={
+                'fontSize': '0.85em',
+                'color': '#9ca3af',
+                'textAlign': 'center'
+            })
+        ], style={'flex': f'{failure_duration}'})
+    )
+
+    # Format fault parameters
+    param_items = []
+    for key, value in fault_params.items():
+        if isinstance(value, float):
+            if key.endswith('_rate'):
+                param_items.append(f"{key}: {value*100:.1f}%")
+            else:
+                param_items.append(f"{key}: {value:.2f}")
+        else:
+            param_items.append(f"{key}: {value}")
+
+    return html.Div([
+        html.Div([
+            html.H6("⚠️ Fault Injection Details", style={
+                'color': '#ef4444',
+                'marginBottom': '15px',
+                'fontWeight': 'bold'
+            }),
+            html.Div([
+                html.Div([
+                    html.Strong("Fault Type: "),
+                    html.Span(fault_type.replace('_', ' ').title())
+                ], style={'marginBottom': '8px'}),
+                html.Div([
+                    html.Strong("Parameters: "),
+                    html.Span(', '.join(param_items) if param_items else 'None')
+                ], style={'marginBottom': '8px'}),
+                html.Div([
+                    html.Strong("Progression: "),
+                    html.Span(f"{progression_type.title()} over {ramp_duration}s" if ramp_duration > 0 else "Instant")
+                ], style={'marginBottom': '15px'}),
+            ]),
+            html.Div([
+                html.Strong("Timeline:", style={'marginBottom': '10px', 'display': 'block'}),
+                html.Div(timeline_items, style={
+                    'display': 'flex',
+                    'width': '100%',
+                    'marginTop': '10px'
+                })
+            ])
+        ], style={
+            'backgroundColor': '#1f2937',
+            'padding': '20px',
+            'borderRadius': '8px',
+            'border': '2px solid #ef4444',
+            'marginBottom': '20px'
+        })
+    ])
+
+
 def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
                               graph: nx.DiGraph, label_data: Dict):
     """
@@ -765,6 +907,9 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
             )
         ])
     ])
+
+    # Add fault injection timeline if this is the root cause
+    fault_timeline = create_fault_injection_timeline(label_data, component_id) if is_root_cause else html.Div()
 
     # Create charts based on component type
     charts = []
@@ -813,6 +958,7 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
 
     return html.Div([
         header,
+        fault_timeline,  # Add fault injection timeline for root cause
         html.Hr(),
         *chart_rows
     ])

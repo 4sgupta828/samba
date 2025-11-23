@@ -60,8 +60,10 @@ class ExternalService(ApiService):
         yield self.env.timeout(latency + injected)
 
         # 3. Random failures (external APIs are inherently less reliable)
-        # 0.5% chance of timeout/error
-        if random.random() > 0.995:
+        # Base 0.5% chance of timeout/error + any injected error rate
+        base_error_rate = 0.005  # 0.5%
+        total_error_rate = base_error_rate + self.forced_error_rate
+        if random.random() < total_error_rate:
             self._emit_log("ERROR", f"External API timeout on {self.id}")
             if span:
                 span.set_attribute("error", True)
