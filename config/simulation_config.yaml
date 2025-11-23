@@ -182,7 +182,7 @@ dynamics:
 workload_generator:
   # Connection pool settings (mimics real HTTP client libraries)
   # Examples: Python requests.Session (10 default), Java HttpClient (5 per route), browsers (6-8)
-  connection_pool_size: 50  # Max concurrent connections to backend
+  connection_pool_size: 100  # Max concurrent connections to backend (matched to 80 rps × 1.5s = 120 concurrent)
 
   # Request timeout (seconds)
   # Real-world: 30-60s typical for HTTP clients
@@ -263,20 +263,20 @@ defaults:
 # =============================================================================
 compute:
   # Phase 3.1: Thread pool configuration
-  thread_pool_size: 50  # Default thread pool size for request processing
+  thread_pool_size: 100  # Thread pool size for request processing (increased to handle fault scenarios)
 
   # Resource capacities
   resources:
     memory_base_mb: 200.0  # Base memory usage when idle
     memory_capacity_mb: 512.0  # Total memory capacity
     cpu_capacity_cores: 1.0  # Total CPU cores (overridden by IaC if specified)
-    db_connection_pool_capacity: 10  # Max concurrent DB connections (reduced for faster saturation)
+    db_connection_pool_capacity: 5  # Max concurrent DB connections (forces natural exhaustion)
 
-  # Client-side timeouts for dependencies (simulation realism)
+  # Client-side timeouts for dependencies (balanced for normal ops + fault detection)
   timeouts:
-    database_call_seconds: 5.0  # Timeout for database calls
-    cache_call_seconds: 1.0  # Timeout for cache calls
-    external_api_seconds: 10.0  # Timeout for external API calls
+    database_call_seconds: 1.5  # Timeout for database calls (allows 1s normal + margin, catches 2-3s slowdowns)
+    cache_call_seconds: 0.5  # Timeout for cache calls (allows normal ops, catches slowdowns)
+    external_api_seconds: 3.0  # Timeout for external API calls (allows normal ops)
 
   # Startup and restart behavior
   startup:
@@ -357,7 +357,7 @@ compute:
 database:
   # Resource capacities
   resources:
-    connection_pool_capacity: 30  # Max concurrent connections (reduced for faster saturation)
+    connection_pool_capacity: 25  # Max concurrent connections (reduced for natural exhaustion under fault)
     cpu_capacity_cores: 4.0  # Total CPU capacity (4 cores)
     memory_capacity_mb: 1024.0  # Total memory capacity
 

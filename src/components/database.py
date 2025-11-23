@@ -144,9 +144,13 @@ class SqlDatabase(EnrichedComponent):
             queries_delta = self.queries_processed - last_queries_count
             last_queries_count = self.queries_processed
 
-            # Get current observations
+            # Get current observations from SimPy resources
             active_connections = self.connection_pool.count
             queue_depth = len(self.connection_pool.queue)
+
+            # Pass thread pool size from actual SimPy resource
+            # DB uses CPU cores as "thread pool" - each core can handle queries
+            self.dynamics.thread_pool_size = self.cpu_resource.capacity
 
             # Update dynamics engine
             self.dynamics.update(

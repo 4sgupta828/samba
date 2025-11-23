@@ -29,7 +29,7 @@ from src.failures.training_injector import TrainingFailureInjector
 import networkx as nx
 
 
-def create_dynamic_workload(nx_graph, base_rps: int = 50, peak_rps: int = 200):
+def create_dynamic_workload(nx_graph, base_rps: int = 80, peak_rps: int = 200):
     """
     Create a workload configuration that targets the specific frontend services
     in this random topology.

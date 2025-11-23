@@ -44,12 +44,12 @@ class DynamicsConfig:
     latency_min: float = 5.0
     latency_max: float = 10000.0
 
-    # Error dynamics
-    error_base: float = 0.001  # Base error rate (0.1%)
-    error_latency_threshold: float = 200.0  # Latency (ms) where errors start
-    error_latency_scale: float = 200.0  # Scale factor for latency→error
-    error_cpu_threshold: float = 80.0  # CPU% where errors start
-    error_cpu_scale: float = 20.0  # Scale factor for CPU→error
+    # Error dynamics (adjusted for realistic fault propagation)
+    error_base: float = 0.01  # Base error rate (1% - increased from 0.1%)
+    error_latency_threshold: float = 100.0  # Latency (ms) where errors start (reduced from 200ms)
+    error_latency_scale: float = 150.0  # Scale factor for latency→error (reduced from 200 for sensitivity)
+    error_cpu_threshold: float = 50.0  # CPU% where errors start (reduced from 80%)
+    error_cpu_scale: float = 30.0  # Scale factor for CPU→error (increased from 20 for sensitivity)
     error_tau: float = 3.0  # Time constant for error response
     error_max: float = 0.5  # Maximum error rate (50%)
 
@@ -151,6 +151,7 @@ class MetricsDynamicsEngine:
         self.active_connections = 0
         self.queue_depth = 0
         self.external_throughput_demand = 0.0
+        self.thread_pool_size = 50  # Default thread pool size (can be overridden)
 
         # Deployment multipliers (from buggy code deployments)
         self.cpu_multiplier = 1.0
@@ -250,10 +251,13 @@ class MetricsDynamicsEngine:
         self.current_time += dt
 
     def _compute_cpu_derivative(self) -> float:
-        """Compute d(CPU)/dt based on concurrent requests and connections.
+        """Compute d(CPU)/dt based on concurrent requests, connections, and resource contention.
 
         Phase 2: Modified to use concurrent_requests instead of throughput.
+        Phase 3: Added resource contention modeling (queue depth, thread saturation).
+
         This creates a feedback loop: high latency → more concurrent → higher CPU → even higher latency.
+        Resource exhaustion causes additional CPU overhead from context switching and contention.
 
         Applies cpu_multiplier from deployments (e.g., inefficient algorithms
         that consume 6x more CPU per request).
@@ -266,18 +270,37 @@ class MetricsDynamicsEngine:
             self.config.cpu_from_connections_coef * self.active_connections
         )
 
+        # Phase 3: Add CPU overhead from resource contention
+        # Queue depth causes CPU spike (context switching, lock contention, thrashing)
+        queue_contention_cpu = (self.queue_depth / 10.0) * 10.0  # Each 10 queued requests adds ~10% CPU
+
+        # Thread pool saturation causes contention
+        # When many threads are blocked on slow I/O, CPU increases from context switching
+        if self.thread_pool_size > 0:
+            thread_saturation = self.concurrent_requests / self.thread_pool_size
+            # Exponential increase when saturated (>70% utilization)
+            if thread_saturation > 0.7:
+                contention_cpu = 20.0 * (thread_saturation - 0.7) ** 2
+            else:
+                contention_cpu = 0.0
+        else:
+            contention_cpu = 0.0
+
+        # Combine all CPU sources
+        target_cpu = target_cpu_from_load + queue_contention_cpu + contention_cpu
+
         # Apply CPU multiplier from deployments (e.g., buggy code using 6x CPU)
         # This is applied to the TARGET, so the dynamics naturally drive toward the new state
-        target_cpu_from_load *= self.cpu_multiplier
+        target_cpu *= self.cpu_multiplier
 
         # Apply FLOOR fault (e.g., cpu_saturation) - CPU never goes below this
         if self.fault_cpu_floor_percent is not None:
-            target_cpu_from_load = max(target_cpu_from_load, self.fault_cpu_floor_percent)
+            target_cpu = max(target_cpu, self.fault_cpu_floor_percent)
 
         # Drive CPU toward target (equilibrium-seeking behavior)
         # This allows CPU to both increase and decrease naturally
         tau = 3.0  # Time constant for CPU adjustment
-        return (target_cpu_from_load - self.cpu_percent) / tau
+        return (target_cpu - self.cpu_percent) / tau
 
     def _compute_latency_derivative(self) -> float:
         """Compute d(Latency)/dt based on CPU, queue, and wear.

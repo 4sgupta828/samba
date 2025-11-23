@@ -223,16 +223,27 @@ class ComputeAgent(EnrichedComponent):
             requests_delta = self.request_count - self.last_request_count
             self.last_request_count = self.request_count
 
-            # Get current observations
+            # Get current observations from SimPy resources
             active_connections = self.db_connection_pool.count
             queue_depth = len(self.db_connection_pool.queue)
+
+            # CRITICAL: Read actual thread pool usage from SimPy (not calculated!)
+            actual_threads_active = self.thread_pool.count  # Actual blocked threads
+            actual_queue_depth = len(self.thread_pool.queue) if hasattr(self.thread_pool, 'queue') else 0
+
+            # Pass thread pool size from actual SimPy resource
+            self.dynamics.thread_pool_size = self.thread_pool.capacity
+
+            # Override dynamics' calculated concurrent_requests with ACTUAL thread count
+            # This ensures CPU contention reflects real blocking, not just mathematical estimate
+            self.dynamics.concurrent_requests = actual_threads_active
 
             # Update dynamics engine (multipliers are managed by the dynamics engine itself)
             self.dynamics.update(
                 dt=1.0,
                 external_throughput=requests_delta,
                 active_connections=active_connections,
-                queue_depth=queue_depth
+                queue_depth=actual_queue_depth  # Use actual thread queue, not DB queue
             )
 
     def _call_with_timeout(self, process, timeout_seconds, error_message="Call timeout"):
