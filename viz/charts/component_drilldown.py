@@ -203,57 +203,392 @@ def create_percentile_chart_filtered(metrics_df: pd.DataFrame, component_id: str
     return fig
 
 
+def create_service_aggregated_chart(metrics_df: pd.DataFrame, service_id: str,
+                                   metric_name: str, title: str, ylabel: str) -> go.Figure:
+    """
+    Create aggregated chart for service by aggregating Pod metrics.
+
+    Args:
+        metrics_df: DataFrame with all metrics
+        service_id: Service ID to aggregate for
+        metric_name: Metric name to display
+        title: Chart title
+        ylabel: Y-axis label
+    """
+    # Aggregate Pod metrics by service.name tag
+    data = metrics_df[
+        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
+        (metrics_df['metric_name'] == metric_name)
+    ].copy()
+
+    if data.empty:
+        return go.Figure().update_layout(title=f"{title} (No Data)")
+
+    # Group by sim_time and aggregate (mean across all pods)
+    aggregated = data.groupby('sim_time', as_index=False)['value'].mean()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['value'],
+        mode='lines',
+        line=dict(color='#3b82f6', width=2),
+        name=ylabel
+    ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='Simulation Time (s)',
+        yaxis_title=ylabel,
+        template='plotly_dark',
+        height=300,
+        margin=dict(l=50, r=20, t=40, b=40),
+        plot_bgcolor='#1f2937',
+        paper_bgcolor='#111827',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
+def create_service_aggregated_percentile_chart(metrics_df: pd.DataFrame, service_id: str,
+                                               metric_name: str, title: str) -> go.Figure:
+    """
+    Create aggregated percentile chart for service by aggregating Pod metrics.
+
+    Args:
+        metrics_df: DataFrame with all metrics
+        service_id: Service ID to aggregate for
+        metric_name: Metric name to display
+        title: Chart title
+    """
+    # Aggregate Pod percentile metrics by service.name tag
+    data = metrics_df[
+        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
+        (metrics_df['metric_name'] == metric_name)
+    ].copy()
+
+    if data.empty:
+        return go.Figure().update_layout(title=f"{title} (No Data)")
+
+    # Group by sim_time and aggregate percentiles (mean across all pods)
+    aggregated = data.groupby('sim_time', as_index=False).agg({
+        'p50': 'mean',
+        'p95': 'mean',
+        'p99': 'mean'
+    })
+
+    fig = go.Figure()
+
+    # P99
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['p99'],
+        mode='lines',
+        name='P99',
+        line=dict(color='#ef4444', width=1.5)
+    ))
+
+    # P95
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['p95'],
+        mode='lines',
+        name='P95',
+        line=dict(color='#f59e0b', width=1.5)
+    ))
+
+    # P50 (median)
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['p50'],
+        mode='lines',
+        name='P50 (Median)',
+        line=dict(color='#3b82f6', width=2)
+    ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='Simulation Time (s)',
+        yaxis_title='Latency (ms)',
+        template='plotly_dark',
+        height=300,
+        margin=dict(l=50, r=20, t=40, b=40),
+        plot_bgcolor='#1f2937',
+        paper_bgcolor='#111827',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
+def create_service_aggregated_chart_filtered(metrics_df: pd.DataFrame, service_id: str,
+                                            metric_name: str, title: str, ylabel: str,
+                                            filter_col: str, filter_val: str) -> go.Figure:
+    """
+    Create aggregated chart for service with additional filter (e.g., for specific dependency).
+
+    Args:
+        metrics_df: DataFrame with all metrics
+        service_id: Service ID to aggregate for
+        metric_name: Metric name to display
+        title: Chart title
+        ylabel: Y-axis label
+        filter_col: Column name to filter on (e.g., 'dependency_id')
+        filter_val: Value to filter for
+    """
+    # Aggregate Pod metrics by service.name tag with additional filter
+    data = metrics_df[
+        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
+        (metrics_df['metric_name'] == metric_name) &
+        (metrics_df[filter_col] == filter_val)
+    ].copy()
+
+    if data.empty:
+        return go.Figure().update_layout(title=f"{title} (No Data)")
+
+    # Group by sim_time and aggregate (mean across all pods)
+    aggregated = data.groupby('sim_time', as_index=False)['value'].mean()
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['value'],
+        mode='lines',
+        line=dict(color='#3b82f6', width=2),
+        name=ylabel
+    ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='Simulation Time (s)',
+        yaxis_title=ylabel,
+        template='plotly_dark',
+        height=300,
+        margin=dict(l=50, r=20, t=40, b=40),
+        plot_bgcolor='#1f2937',
+        paper_bgcolor='#111827',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
+def create_service_aggregated_percentile_chart_filtered(metrics_df: pd.DataFrame, service_id: str,
+                                                        metric_name: str, title: str,
+                                                        filter_col: str, filter_val: str) -> go.Figure:
+    """
+    Create aggregated percentile chart for service with additional filter.
+
+    Args:
+        metrics_df: DataFrame with all metrics
+        service_id: Service ID to aggregate for
+        metric_name: Metric name to display
+        title: Chart title
+        filter_col: Column name to filter on (e.g., 'dependency_id')
+        filter_val: Value to filter for
+    """
+    # Aggregate Pod percentile metrics by service.name tag with additional filter
+    data = metrics_df[
+        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
+        (metrics_df['metric_name'] == metric_name) &
+        (metrics_df[filter_col] == filter_val)
+    ].copy()
+
+    if data.empty:
+        return go.Figure().update_layout(title=f"{title} (No Data)")
+
+    # Group by sim_time and aggregate percentiles (mean across all pods)
+    aggregated = data.groupby('sim_time', as_index=False).agg({
+        'p50': 'mean',
+        'p95': 'mean',
+        'p99': 'mean'
+    })
+
+    fig = go.Figure()
+
+    # P99
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['p99'],
+        mode='lines',
+        name='P99',
+        line=dict(color='#ef4444', width=1.5)
+    ))
+
+    # P95
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['p95'],
+        mode='lines',
+        name='P95',
+        line=dict(color='#f59e0b', width=1.5)
+    ))
+
+    # P50 (median)
+    fig.add_trace(go.Scatter(
+        x=aggregated['sim_time'],
+        y=aggregated['p50'],
+        mode='lines',
+        name='P50 (Median)',
+        line=dict(color='#3b82f6', width=2)
+    ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='Simulation Time (s)',
+        yaxis_title='Latency (ms)',
+        template='plotly_dark',
+        height=300,
+        margin=dict(l=50, r=20, t=40, b=40),
+        plot_bgcolor='#1f2937',
+        paper_bgcolor='#111827',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
+def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
+                        label_data: Dict) -> List[dcc.Graph]:
+    """Create drill-down charts for individual Pod."""
+    charts = []
+
+    # Get all metrics for this pod
+    pod_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    available_metrics = set(pod_metrics['metric_name'].unique())
+
+    # CPU utilization
+    if 'container.cpu.utilization' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'container.cpu.utilization',
+                'CPU Utilization',
+                'Percentage (%)'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Memory usage
+    if 'container.memory.usage_mb' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'container.memory.usage_mb',
+                'Memory Usage',
+                'MB'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Connection pool
+    if 'connection_pool.connections.active' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'connection_pool.connections.active',
+                'Active Connections',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Connection pool queue depth
+    if 'connection_pool.queue_depth' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'connection_pool.queue_depth',
+                'Connection Pool Queue Depth',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Thread pool
+    if 'thread_pool.threads.active' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'thread_pool.threads.active',
+                'Active Threads',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Thread pool queue depth
+    if 'thread_pool.queue.depth' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'thread_pool.queue.depth',
+                'Thread Pool Queue Depth',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # If no charts, show message
+    if not charts:
+        charts.append(html.Div([
+            html.P(f"No metrics available for Pod {component_id}"),
+            html.P(f"Available metrics: {', '.join(available_metrics) if available_metrics else 'None'}",
+                   style={'fontSize': '0.8em', 'color': '#666'})
+        ]))
+
+    return charts
+
+
 def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                              label_data: Dict) -> List[dcc.Graph]:
-    """Create drill-down charts for ApiService."""
+    """Create drill-down charts for Service by aggregating Pod metrics."""
     charts = []
 
     # Get all metrics for this component to see what's available
     component_metrics = metrics_df[metrics_df['component_id'] == component_id]
     available_metrics = set(component_metrics['metric_name'].unique())
 
-    # IMPORTANT: Also check compute agent metrics since detailed metrics are emitted there
-    compute_agent_pattern = f'{component_id}_compute_'
-    compute_agent_metrics = metrics_df[
-        metrics_df['component_id'].str.startswith(compute_agent_pattern, na=False)
+    # Get Pod metrics for this service (aggregate by service.name tag)
+    pod_metrics = metrics_df[
+        (metrics_df.get('service.name', pd.Series(dtype='object')) == component_id) &
+        (metrics_df['component_id'].str.startswith('pod_', na=False))
     ]
 
-    if not compute_agent_metrics.empty:
-        compute_metrics_available = set(compute_agent_metrics['metric_name'].unique())
-        # Note: We found compute agent metrics
-    else:
-        compute_metrics_available = set()
+    pod_metrics_available = set(pod_metrics['metric_name'].unique()) if not pod_metrics.empty else set()
 
-    # Request rate (looking for service.{id}.requests or similar)
+    # Request rate (aggregate from Pod metrics using service.name tag)
     request_metric = f'service.{component_id}.requests'
-    if request_metric in available_metrics:
+    if request_metric in pod_metrics_available:
         charts.append(dcc.Graph(
-            figure=create_metric_chart(
+            figure=create_service_aggregated_chart(
                 metrics_df, component_id,
                 request_metric,
                 'Request Rate',
-                'Requests'
+                'Requests/s'
             ),
             config={'displayModeBar': False}
         ))
 
-    # Request duration (looking for service.{id}.duration)
+    # Request duration (aggregate from Pod metrics)
     duration_metric = f'service.{component_id}.duration'
-    if duration_metric in available_metrics:
+    if duration_metric in pod_metrics_available:
         # Check if it has percentile data
-        duration_data = component_metrics[component_metrics['metric_name'] == duration_metric]
+        duration_data = pod_metrics[pod_metrics['metric_name'] == duration_metric]
         if 'p50' in duration_data.columns and not duration_data['p50'].isna().all():
+            # Create aggregated percentile chart for service
             charts.append(dcc.Graph(
-                figure=create_percentile_chart(
+                figure=create_service_aggregated_percentile_chart(
                     metrics_df, component_id,
                     duration_metric,
-                    'Request Duration'
+                    'Request Duration (Latency)'
                 ),
                 config={'displayModeBar': False}
             ))
         else:
             charts.append(dcc.Graph(
-                figure=create_metric_chart(
+                figure=create_service_aggregated_chart(
                     metrics_df, component_id,
                     duration_metric,
                     'Request Duration',
@@ -262,11 +597,11 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 config={'displayModeBar': False}
             ))
 
-    # Error rate
+    # Error rate (aggregate from Pod metrics)
     error_metric = f'service.{component_id}.errors'
-    if error_metric in available_metrics:
+    if error_metric in pod_metrics_available:
         charts.append(dcc.Graph(
-            figure=create_metric_chart(
+            figure=create_service_aggregated_chart(
                 metrics_df, component_id,
                 error_metric,
                 'Error Rate',
@@ -275,7 +610,7 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
-    # Total errors
+    # Total errors (if available at service level)
     if 'component.errors.total' in available_metrics:
         charts.append(dcc.Graph(
             figure=create_metric_chart(
@@ -287,109 +622,105 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
-    # Now check compute agent metrics for detailed infrastructure metrics
-    if compute_metrics_available:
-        # CPU utilization from compute agents
-        if 'container.cpu.utilization' in compute_metrics_available:
+    # Now check Pod metrics for infrastructure details
+    if pod_metrics_available:
+        # CPU utilization
+        if 'container.cpu.utilization' in pod_metrics_available:
             charts.append(dcc.Graph(
-                figure=create_metric_chart(
+                figure=create_service_aggregated_chart(
                     metrics_df, component_id,
                     'container.cpu.utilization',
-                    'CPU Utilization (from compute agents)',
-                    'Percentage (%)',
-                    aggregate_pattern=compute_agent_pattern
+                    'CPU Utilization (Pods)',
+                    'Percentage (%)'
                 ),
                 config={'displayModeBar': False}
             ))
 
-        # Memory usage from compute agents
-        if 'container.memory.usage_mb' in compute_metrics_available:
+        # Memory usage
+        if 'container.memory.usage_mb' in pod_metrics_available:
             charts.append(dcc.Graph(
-                figure=create_metric_chart(
+                figure=create_service_aggregated_chart(
                     metrics_df, component_id,
                     'container.memory.usage_mb',
-                    'Memory Usage (from compute agents)',
-                    'MB',
-                    aggregate_pattern=compute_agent_pattern
+                    'Memory Usage (Pods)',
+                    'MB'
                 ),
                 config={'displayModeBar': False}
             ))
 
         # Connection pool
-        if 'connection_pool.connections.active' in compute_metrics_available:
+        if 'connection_pool.connections.active' in pod_metrics_available:
             charts.append(dcc.Graph(
-                figure=create_metric_chart(
+                figure=create_service_aggregated_chart(
                     metrics_df, component_id,
                     'connection_pool.connections.active',
-                    'Active Connections (from compute agents)',
-                    'Count',
-                    aggregate_pattern=compute_agent_pattern
+                    'Active Connections (Pods)',
+                    'Count'
                 ),
                 config={'displayModeBar': False}
             ))
 
         # Connection pool queue depth
-        if 'connection_pool.queue_depth' in compute_metrics_available:
+        if 'connection_pool.queue_depth' in pod_metrics_available:
             charts.append(dcc.Graph(
-                figure=create_metric_chart(
+                figure=create_service_aggregated_chart(
                     metrics_df, component_id,
                     'connection_pool.queue_depth',
-                    'Connection Pool Queue Depth (from compute agents)',
-                    'Count',
-                    aggregate_pattern=compute_agent_pattern
+                    'Connection Pool Queue Depth (Pods)',
+                    'Count'
                 ),
                 config={'displayModeBar': False}
             ))
 
         # Thread pool
-        if 'thread_pool.threads.active' in compute_metrics_available:
+        if 'thread_pool.threads.active' in pod_metrics_available:
             charts.append(dcc.Graph(
-                figure=create_metric_chart(
+                figure=create_service_aggregated_chart(
                     metrics_df, component_id,
                     'thread_pool.threads.active',
-                    'Active Threads (from compute agents)',
-                    'Count',
-                    aggregate_pattern=compute_agent_pattern
+                    'Active Threads (Pods)',
+                    'Count'
                 ),
                 config={'displayModeBar': False}
             ))
 
         # Queue depth
-        if 'thread_pool.queue.depth' in compute_metrics_available:
+        if 'thread_pool.queue.depth' in pod_metrics_available:
             charts.append(dcc.Graph(
-                figure=create_metric_chart(
+                figure=create_service_aggregated_chart(
                     metrics_df, component_id,
                     'thread_pool.queue.depth',
-                    'Thread Pool Queue Depth (from compute agents)',
-                    'Count',
-                    aggregate_pattern=compute_agent_pattern
+                    'Thread Pool Queue Depth (Pods)',
+                    'Count'
                 ),
                 config={'displayModeBar': False}
             ))
 
     # If no charts were created, show a message
     if not charts:
-        all_metrics = available_metrics | compute_metrics_available
+        all_metrics = available_metrics | pod_metrics_available
         charts.append(html.Div([
             html.P(f"No detailed metrics available for {component_id}"),
             html.P(f"Service metrics: {', '.join(available_metrics) if available_metrics else 'None'}",
                    style={'fontSize': '0.8em', 'color': '#666'}),
-            html.P(f"Compute agent metrics: {', '.join(list(compute_metrics_available)[:5]) if compute_metrics_available else 'None'}",
+            html.P(f"Pod metrics: {', '.join(list(pod_metrics_available)[:5]) if pod_metrics_available else 'None'}",
                    style={'fontSize': '0.8em', 'color': '#666'})
         ]))
 
     # External dependency metrics (at the bottom, grouped in accordion)
+    # Aggregate from Pod metrics using service.name tag
     dependency_request_metric = f'service.{component_id}.dependency.requests'
     dependency_duration_metric = f'service.{component_id}.dependency.duration'
     dependency_error_metric = f'service.{component_id}.dependency.errors'
 
-    has_dependency_metrics = (dependency_request_metric in available_metrics or
-                              dependency_duration_metric in available_metrics or
-                              dependency_error_metric in available_metrics)
+    has_dependency_metrics = (dependency_request_metric in pod_metrics_available or
+                              dependency_duration_metric in pod_metrics_available or
+                              dependency_error_metric in pod_metrics_available)
 
     if has_dependency_metrics:
-        dep_metrics = component_metrics[
-            component_metrics['metric_name'].str.contains('dependency', na=False)
+        # Get dependency metrics from Pods (not Service)
+        dep_metrics = pod_metrics[
+            pod_metrics['metric_name'].str.contains('dependency', na=False)
         ]
 
         external_deps = []
@@ -407,27 +738,27 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 dep_specific = dep_metrics[dep_metrics['dependency_id'] == dep_id]
                 dep_name = dep_specific['dependency_name'].iloc[0] if 'dependency_name' in dep_specific.columns and not dep_specific.empty else dep_id
 
-                # Create charts for this dependency
+                # Create charts for this dependency (aggregated across all Pods)
                 dep_charts = []
 
-                if dependency_request_metric in available_metrics:
+                if dependency_request_metric in pod_metrics_available:
                     dep_charts.append(dcc.Graph(
-                        figure=create_metric_chart_filtered(
+                        figure=create_service_aggregated_chart_filtered(
                             metrics_df, component_id,
                             dependency_request_metric,
                             f'Request Rate',
-                            'Requests',
+                            'Requests/s',
                             filter_col='dependency_id',
                             filter_val=dep_id
                         ),
                         config={'displayModeBar': False}
                     ))
 
-                if dependency_duration_metric in available_metrics:
+                if dependency_duration_metric in pod_metrics_available:
                     dep_duration_data = dep_specific[dep_specific['metric_name'] == dependency_duration_metric]
                     if 'p50' in dep_duration_data.columns and not dep_duration_data['p50'].isna().all():
                         dep_charts.append(dcc.Graph(
-                            figure=create_percentile_chart_filtered(
+                            figure=create_service_aggregated_percentile_chart_filtered(
                                 metrics_df, component_id,
                                 dependency_duration_metric,
                                 f'Latency',
@@ -438,7 +769,7 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                         ))
                     else:
                         dep_charts.append(dcc.Graph(
-                            figure=create_metric_chart_filtered(
+                            figure=create_service_aggregated_chart_filtered(
                                 metrics_df, component_id,
                                 dependency_duration_metric,
                                 f'Latency',
@@ -449,9 +780,9 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                             config={'displayModeBar': False}
                         ))
 
-                if dependency_error_metric in available_metrics:
+                if dependency_error_metric in pod_metrics_available:
                     dep_charts.append(dcc.Graph(
-                        figure=create_metric_chart_filtered(
+                        figure=create_service_aggregated_chart_filtered(
                             metrics_df, component_id,
                             dependency_error_metric,
                             f'Errors',
@@ -913,8 +1244,12 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
 
     # Create charts based on component type
     charts = []
-    if component_type == 'ApiService':
+    if component_type == 'Service':
+        # New architecture: Service with Pods
         charts = create_service_drilldown(metrics_df, component_id, label_data)
+    elif component_type == 'Pod':
+        # New architecture: Individual Pod drill-down
+        charts = create_pod_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'SqlDatabase':
         charts = create_database_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'InMemoryCache':

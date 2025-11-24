@@ -26,6 +26,11 @@ from src.topology.adapter import TopologyAdapter, print_topology_summary
 from src.scenarios.library import ScenarioLibrary
 from src.simulation import Simulation
 from src.failures.training_injector import TrainingFailureInjector
+from src.telemetry.topology_state_exporter import TopologyStateExporter
+from src.components.service import Service
+from src.components.pod import Pod
+from src.components.compute_node import ComputeNode
+from src.components.deployment_controller import DeploymentController
 import networkx as nx
 
 
@@ -215,6 +220,27 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     duration_ns = int(cfg.duration * 1_000_000_000)
     sim.simulation_start_timestamp_ns = now_ns - duration_ns
 
+    # 6.5. Setup Topology State Exporter
+    topology_exporter = TopologyStateExporter(sim.env, episode_dir)
+
+    # Register all components with the exporter
+    for component_id, component in registry.items():
+        if isinstance(component, Service):
+            topology_exporter.register_service(component)
+        elif isinstance(component, Pod):
+            topology_exporter.register_pod(component)
+        elif isinstance(component, ComputeNode):
+            topology_exporter.register_node(component)
+        elif isinstance(component, DeploymentController):
+            topology_exporter.register_controller(component)
+
+    if verbose:
+        print(f"\n[Topology State Exporter]")
+        print(f"  Registered {len([c for c in registry.values() if isinstance(c, Service)])} services")
+        print(f"  Registered {len([c for c in registry.values() if isinstance(c, Pod)])} pods")
+        print(f"  Registered {len([c for c in registry.values() if isinstance(c, ComputeNode)])} nodes")
+        print(f"  Registered {len([c for c in registry.values() if isinstance(c, DeploymentController)])} controllers")
+
     # 7. Inject Fault Programmatically (GRADUAL APPLICATION)
     valid_targets = [
         nid for nid, data in nx_graph.nodes(data=True)
@@ -308,7 +334,14 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"  Topology saved to: {topology_path}")
         print(f"  Topology: {topology_data['num_nodes']} nodes, {topology_data['num_edges']} edges")
 
-    # 9. Run Simulation
+    # 9. Export Initial Topology State
+    topology_exporter.export_initial_state()
+
+    if verbose:
+        print(f"\n[Initial Topology State]")
+        print(f"  Exported initial snapshot at t=0")
+
+    # 10. Run Simulation
     try:
         if verbose:
             print(f"\n[Simulation]")
@@ -316,8 +349,12 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
         sim.run()
 
+        # Export final topology state
+        topology_exporter.export_final_snapshot()
+
         if verbose:
             print(f"  Completed successfully")
+            print(f"  Exported final topology snapshot")
             print(f"  Output directory: {episode_dir}")
 
     except Exception as e:

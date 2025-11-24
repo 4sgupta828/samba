@@ -244,31 +244,6 @@ class ApiService(EnrichedComponent):
                 queue_depth=0
             )
 
-    def get_compute_target(self):
-        """
-        Internal load balancing to select a compute agent from this service's pool.
-        Supports both standalone instances and ASG-managed instances.
-        """
-        # Check for standalone compute instances in this service's pool
-        standalone_instances = self.connections.get('compute_pool', [])
-        if standalone_instances:
-            # Filter to only healthy instances
-            healthy_instances = [inst for inst in standalone_instances
-                               if inst.state.operational == 'RUNNING']
-            if healthy_instances:
-                return random.choice(healthy_instances)
-
-        # Fall back to ASG-managed instances
-        asg = self.connections.get('compute_asg')
-        if not asg:
-            return None
-
-        # Get the active compute instances from the ASG
-        active_instances = asg.get_active_instances()
-        if not active_instances:
-            return None
-        return random.choice(active_instances)
-
     def handle_request(self, request_type: str, should_trace: bool = False, parent_span_context=None):
         """
         Handle incoming service request.

@@ -121,6 +121,61 @@ class Pod(EnrichedComponent):
             description="Number of requests queued waiting for thread"
         )
 
+        # Request-level metrics will be initialized after parent_service is set
+        # (See _initialize_request_metrics() method)
+        self.request_counter = None
+        self.request_duration = None
+        self.request_errors = None
+        self.dependency_requests = None
+        self.dependency_duration = None
+        self.dependency_errors = None
+
+    def _initialize_request_metrics(self):
+        """
+        Initialize request-level metrics after parent_service is set.
+        Must be called after parent_service is wired during topology setup.
+        """
+        if self.parent_service is None:
+            # Cannot initialize without parent service
+            return
+
+        service_name = self.parent_service.service_name
+
+        # Request-level metrics (use service namespace for compatibility with visualization)
+        # These will be tagged with service.name for aggregation at service level
+        self.request_counter = self.meter.create_counter(
+            f"service.{service_name}.requests",
+            unit="1",
+            description="Number of requests handled by pods of this service"
+        )
+        self.request_duration = self.meter.create_histogram(
+            f"service.{service_name}.duration",
+            unit="ms",
+            description="Request processing duration"
+        )
+        self.request_errors = self.meter.create_counter(
+            f"service.{service_name}.errors",
+            unit="1",
+            description="Number of request errors"
+        )
+
+        # External dependency call metrics (from this pod's perspective as client)
+        self.dependency_requests = self.meter.create_counter(
+            f"service.{service_name}.dependency.requests",
+            unit="1",
+            description="Requests to external dependencies"
+        )
+        self.dependency_duration = self.meter.create_histogram(
+            f"service.{service_name}.dependency.duration",
+            unit="ms",
+            description="External dependency call duration"
+        )
+        self.dependency_errors = self.meter.create_counter(
+            f"service.{service_name}.dependency.errors",
+            unit="1",
+            description="External dependency call errors"
+        )
+
     def run(self):
         """Pod lifecycle with crash/restart loop and permanent termination support."""
         self.start_time = self.env.now  # Track when pod started
@@ -384,6 +439,9 @@ class Pod(EnrichedComponent):
 
         This is the core of the new architecture where all computation happens in the Pod.
         """
+        # Track start time for latency measurement
+        start_time = self.env.now
+
         # Track request count for dynamics
         self.request_count += 1
 
@@ -405,24 +463,65 @@ class Pod(EnrichedComponent):
 
             self._emit_log("DEBUG", f"Processing request type: {request_type}")
 
-            # Check dynamics-based error before processing
-            if random.random() < self.dynamics.get_error_rate():
-                self._emit_log("ERROR", "Request failed due to dynamics-driven error")
-                if span:
-                    span.set_attribute("error", True)
-                    span.set_attribute("error.type", "dynamics_error")
-                raise Exception("Request processing failed: Service temporarily unavailable")
+            # Wrap processing in try/except to record metrics
+            try:
+                # Check dynamics-based error before processing
+                if random.random() < self.dynamics.get_error_rate():
+                    self._emit_log("ERROR", "Request failed due to dynamics-driven error")
+                    if span:
+                        span.set_attribute("error", True)
+                        span.set_attribute("error.type", "dynamics_error")
+                    raise Exception("Request processing failed: Service temporarily unavailable")
 
-            # Apply dynamics-based latency
-            service_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
-            yield self.env.timeout(service_latency)
+                # Apply dynamics-based latency
+                service_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
+                yield self.env.timeout(service_latency)
 
-            # Execute parent service's processing pipeline
-            if self.parent_service and hasattr(self.parent_service, 'processing_pipeline'):
-                yield from self._execute_processing_pipeline(request_type, span)
-            else:
-                # Fallback to legacy behavior if no pipeline defined
-                yield from self._execute_legacy_request_logic(request_type, span)
+                # Execute parent service's processing pipeline
+                if self.parent_service and hasattr(self.parent_service, 'processing_pipeline'):
+                    yield from self._execute_processing_pipeline(request_type, span)
+                else:
+                    # Fallback to legacy behavior if no pipeline defined
+                    yield from self._execute_legacy_request_logic(request_type, span)
+
+                # Record success metrics (only if metrics are initialized)
+                latency_ms = (self.env.now - start_time) * 1000
+                if self.request_counter and self.request_duration and self.parent_service:
+                    self.request_counter.add(1, {
+                        "status": "success",
+                        "request_type": request_type,
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                    self.request_duration.record(latency_ms, {
+                        "status": "success",
+                        "request_type": request_type,
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+
+            except Exception as e:
+                # Record error metrics (only if metrics are initialized)
+                latency_ms = (self.env.now - start_time) * 1000
+                if self.request_counter and self.request_duration and self.request_errors and self.parent_service:
+                    self.request_counter.add(1, {
+                        "status": "error",
+                        "request_type": request_type,
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                    self.request_duration.record(latency_ms, {
+                        "status": "error",
+                        "request_type": request_type,
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                    self.request_errors.add(1, {
+                        "request_type": request_type,
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                raise  # Re-raise the exception
 
     def _execute_processing_pipeline(self, request_type: str, span):
         """
@@ -479,7 +578,7 @@ class Pod(EnrichedComponent):
 
             # Try cache get
             cache_process = self.env.process(cache.get(cache_key, should_trace=should_trace_cache, parent_span_context=cache_span_ctx))
-            cached_data = yield from cache_process
+            cached_data = yield cache_process  # Process objects need yield, not yield from
 
             if cached_data:
                 if span:
@@ -565,6 +664,7 @@ class Pod(EnrichedComponent):
         # Find all ext_* connections
         for conn_name, conn_target in self.parent_service.connections.items():
             if conn_name.startswith('ext_'):
+                dep_start = self.env.now
                 try:
                     should_trace_ext = span is not None
                     ext_span_ctx = None
@@ -580,8 +680,51 @@ class Pod(EnrichedComponent):
                         should_trace=should_trace_ext,
                         parent_span_context=ext_span_ctx
                     ))
+
+                    # Record success metrics (only if metrics are initialized)
+                    dep_latency_ms = (self.env.now - dep_start) * 1000
+                    if self.dependency_requests and self.dependency_duration and self.parent_service:
+                        self.dependency_requests.add(1, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "success",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.dependency_duration.record(dep_latency_ms, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "success",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+
                 except Exception as e:
                     self._emit_log("WARN", f"External call to {conn_name} failed: {e}")
+
+                    # Record error metrics (only if metrics are initialized)
+                    dep_latency_ms = (self.env.now - dep_start) * 1000
+                    if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                        self.dependency_requests.add(1, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "error",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.dependency_duration.record(dep_latency_ms, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "error",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.dependency_errors.add(1, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
 
     def _execute_queue_publish(self, step, span):
         """Execute queue message publishing."""
@@ -591,7 +734,7 @@ class Pod(EnrichedComponent):
 
         try:
             message_data = f"message_from_{self.parent_service.service_name}_{self.env.now}"
-            yield from queue.send_message(message_data)
+            yield queue.send_message(message_data)  # send_message returns an event, not a generator
 
             if span:
                 span.add_event("message_published", {"queue": "queue_out"})

@@ -178,12 +178,13 @@ class WorkloadGenerator:
             has_services = len(gateway.request_to_service_map) > 0
             has_direct_compute = gateway.get_backend_target() is not None
 
-            # For services, also check that at least one service has healthy compute agents
+            # For services, check that at least one service has healthy pods
             services_ready = False
             if has_services:
                 # Check that at least one service can handle requests
                 for service in gateway.request_to_service_map.values():
-                    if service.get_compute_target() is not None:
+                    target = service.get_pod_target()
+                    if target is not None:
                         services_ready = True
                         break
 

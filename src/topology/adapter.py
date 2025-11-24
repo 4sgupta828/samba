@@ -67,21 +67,8 @@ class TopologyAdapter:
             if component:
                 registry[node_id] = component
 
-        # Phase 1.5: Create compute instances for each service
-        # (Services need compute resources to process requests and generate logs/traces)
-        for node_id, data in G.nodes(data=True):
-            if data.get('role') == 'service':
-                # Create 2 compute instances per service for redundancy
-                for i in range(2):
-                    compute_id = f'{node_id}_compute_{i}'
-                    compute = ComputeAgent(self.env, compute_id)
-                    registry[compute_id] = compute
-
-                    # Attach compute to service
-                    service = registry[node_id]
-                    if 'compute_pool' not in service.connections:
-                        service.connections['compute_pool'] = []
-                    service.connections['compute_pool'].append(compute)
+        # Phase 1.5: REMOVED - Legacy ComputeAgent creation
+        # New Service architecture uses Pods (created by topology generator)
 
         # Phase 2: Wire up connections
         for u, v, data in G.edges(data=True):
@@ -94,30 +81,8 @@ class TopologyAdapter:
 
             self._wire_connection(src, tgt, edge_type, v)
 
-        # Phase 3: Propagate service connections to compute agents
-        # CRITICAL FIX: Compute agents need access to the same database/cache/queue as their parent service
-        # This matches the behavior in ~/sim/src/iac/graph_builder.py
-        for node_id, data in G.nodes(data=True):
-            if data.get('role') == 'service':
-                service = registry[node_id]
-                compute_pool = service.connections.get('compute_pool', [])
-
-                for compute_agent in compute_pool:
-                    # Propagate database connection
-                    if 'database' in service.connections:
-                        compute_agent.connections['database'] = service.connections['database']
-
-                    # Propagate cache connection
-                    if 'cache' in service.connections:
-                        compute_agent.connections['cache'] = service.connections['cache']
-
-                    # Propagate queue connections
-                    if 'queue' in service.connections:
-                        compute_agent.connections['queue'] = service.connections['queue']
-                    if 'queue_out' in service.connections:
-                        compute_agent.connections['queue_out'] = service.connections['queue_out']
-                    if 'queue_in' in service.connections:
-                        compute_agent.connections['queue_in'] = service.connections['queue_in']
+        # Phase 3: REMOVED - Legacy ComputeAgent connection propagation
+        # New architecture: Pods inherit connections from parent Service dynamically
 
         return registry
 
@@ -189,17 +154,6 @@ class TopologyAdapter:
         elif component_type == 'DeploymentController':
             return DeploymentController(self.env, node_id)
 
-        # Legacy architecture components
-        elif component_type == 'ApiService':
-            # Generic service with generic request types (legacy)
-            component = ApiService(self.env, node_id, service_name=node_id)
-            component.supported_request_types = ['GET', 'POST', 'PROCESS']
-            return component
-
-        elif component_type == 'ComputeAgent':
-            # Legacy compute agent
-            return ComputeAgent(self.env, node_id)
-
         else:
             print(f"Warning: Unknown component type '{component_type}' for node '{node_id}'")
             return None
@@ -229,6 +183,8 @@ class TopologyAdapter:
             src.pods.append(tgt)
             # Set pod's parent service
             tgt.parent_service = src
+            # Initialize request-level metrics now that parent_service is set
+            tgt._initialize_request_metrics()
 
         # New architecture: Pod → ComputeNode (pod_placement edge)
         elif isinstance(src, Pod) and isinstance(tgt, ComputeNode) and edge_type == 'pod_placement':
