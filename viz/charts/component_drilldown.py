@@ -1233,6 +1233,106 @@ def create_gateway_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
+    # Dependencies (services gateway routes to)
+    dependency_request_metric = 'gateway.dependency.requests'
+    dependency_duration_metric = 'gateway.dependency.duration'
+    dependency_error_metric = 'gateway.dependency.errors'
+
+    has_dependency_metrics = (dependency_request_metric in available_metrics or
+                              dependency_duration_metric in available_metrics or
+                              dependency_error_metric in available_metrics)
+
+    if has_dependency_metrics:
+        # Get dependency metrics for this gateway
+        dep_metrics = component_metrics[
+            component_metrics['metric_name'].str.contains('dependency', na=False)
+        ]
+
+        external_deps = []
+        if 'dependency_id' in dep_metrics.columns:
+            external_deps = dep_metrics['dependency_id'].dropna().unique().tolist()
+
+        if external_deps:
+            # Add section header
+            charts.append(html.Hr(style={'marginTop': '40px', 'marginBottom': '20px', 'borderColor': '#555'}))
+            charts.append(html.H4("Dependencies (Routed Services)", style={'marginBottom': '15px'}))
+
+            # Create accordion items for each dependency
+            accordion_items = []
+            for dep_id in sorted(external_deps):
+                dep_specific = dep_metrics[dep_metrics['dependency_id'] == dep_id]
+                dep_name = dep_specific['dependency_name'].iloc[0] if 'dependency_name' in dep_specific.columns and not dep_specific.empty else dep_id
+
+                # Create charts for this dependency
+                dep_charts = []
+
+                if dependency_request_metric in available_metrics:
+                    dep_charts.append(dcc.Graph(
+                        figure=create_metric_chart_filtered(
+                            metrics_df, component_id,
+                            dependency_request_metric,
+                            'Request Rate',
+                            'Requests',
+                            filter_col='dependency_id',
+                            filter_val=dep_id
+                        ),
+                        config={'displayModeBar': False}
+                    ))
+
+                if dependency_duration_metric in available_metrics:
+                    dep_duration_data = dep_specific[dep_specific['metric_name'] == dependency_duration_metric]
+                    if 'p50' in dep_duration_data.columns and not dep_duration_data['p50'].isna().all():
+                        dep_charts.append(dcc.Graph(
+                            figure=create_percentile_chart_filtered(
+                                metrics_df, component_id,
+                                dependency_duration_metric,
+                                'Latency',
+                                filter_col='dependency_id',
+                                filter_val=dep_id
+                            ),
+                            config={'displayModeBar': False}
+                        ))
+                    else:
+                        dep_charts.append(dcc.Graph(
+                            figure=create_metric_chart_filtered(
+                                metrics_df, component_id,
+                                dependency_duration_metric,
+                                'Latency',
+                                'ms',
+                                filter_col='dependency_id',
+                                filter_val=dep_id
+                            ),
+                            config={'displayModeBar': False}
+                        ))
+
+                if dependency_error_metric in available_metrics:
+                    dep_charts.append(dcc.Graph(
+                        figure=create_metric_chart_filtered(
+                            metrics_df, component_id,
+                            dependency_error_metric,
+                            'Errors',
+                            'Errors',
+                            filter_col='dependency_id',
+                            filter_val=dep_id
+                        ),
+                        config={'displayModeBar': False}
+                    ))
+
+                # Create accordion item
+                accordion_items.append(
+                    dbc.AccordionItem(
+                        dep_charts,
+                        title=f"→ {dep_name}",
+                    )
+                )
+
+            # Add accordion to charts
+            charts.append(dbc.Accordion(
+                accordion_items,
+                start_collapsed=True,
+                always_open=False,
+            ))
+
     # If no charts were created, show a message
     if not charts:
         charts.append(html.Div([

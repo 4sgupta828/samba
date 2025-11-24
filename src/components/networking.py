@@ -47,6 +47,23 @@ class RequestGateway(EnrichedComponent):
             unit="ms"
         )
 
+        # Dependency metrics (for services gateway routes to)
+        self.dependency_requests = self.meter.create_counter(
+            "gateway.dependency.requests",
+            unit="1",
+            description="Number of requests routed to backend services"
+        )
+        self.dependency_duration = self.meter.create_histogram(
+            "gateway.dependency.duration",
+            unit="ms",
+            description="Duration of requests to backend services"
+        )
+        self.dependency_errors = self.meter.create_counter(
+            "gateway.dependency.errors",
+            unit="1",
+            description="Number of errors when routing to backend services"
+        )
+
         # NEW: Request type to service mapping for e-commerce architecture
         # This will be populated by connections to services
         self.request_to_service_map = {}
@@ -243,7 +260,25 @@ class RequestGateway(EnrichedComponent):
             # Forward the request to the service or compute agent with span context as parameter
             # This prevents concurrent requests from overwriting each other's tracing context
             should_trace = span_ctx is not None
+            dep_start = self.env.now
             yield self.env.process(target.handle_request(request_type, should_trace=should_trace, parent_span_context=span_ctx))
+
+            # Record dependency metrics (for services routed to)
+            dep_latency_ms = (self.env.now - dep_start) * 1000
+            if hasattr(target, 'service_name'):
+                # Target is a service
+                self.dependency_requests.add(1, {
+                    "dependency_id": target.id,
+                    "dependency_name": target.service_name,
+                    "status": "success",
+                    "component.id": self.id
+                })
+                self.dependency_duration.record(dep_latency_ms, {
+                    "dependency_id": target.id,
+                    "dependency_name": target.service_name,
+                    "status": "success",
+                    "component.id": self.id
+                })
 
             self.http_requests_counter.add(1, {
                 "http.status_code": 200,
@@ -262,6 +297,28 @@ class RequestGateway(EnrichedComponent):
             self._emit_log("ERROR", f"Request failed: {e}")
             # Explicitly record HTTP error metric
             self._record_error("http_500_internal", {"http.status_code": 500, "exception.type": type(e).__name__})
+
+            # Record dependency error metrics (for services routed to)
+            dep_latency_ms = (self.env.now - dep_start) * 1000
+            if hasattr(target, 'service_name'):
+                # Target is a service
+                self.dependency_requests.add(1, {
+                    "dependency_id": target.id,
+                    "dependency_name": target.service_name,
+                    "status": "error",
+                    "component.id": self.id
+                })
+                self.dependency_duration.record(dep_latency_ms, {
+                    "dependency_id": target.id,
+                    "dependency_name": target.service_name,
+                    "status": "error",
+                    "component.id": self.id
+                })
+                self.dependency_errors.add(1, {
+                    "dependency_id": target.id,
+                    "dependency_name": target.service_name,
+                    "component.id": self.id
+                })
 
             self.http_requests_counter.add(1, {
                 "http.status_code": 500,
