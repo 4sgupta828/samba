@@ -22,7 +22,8 @@ class DeploymentController(EnrichedComponent):
     knowledge of cluster resources to prevent cascading failures.
     """
 
-    def __init__(self, env: simpy.Environment, component_id="deployment_controller"):
+    def __init__(self, env: simpy.Environment, component_id="deployment_controller",
+                 topology_exporter=None):
         super().__init__(env, component_id, "DeploymentController")
 
         self.services = []  # All services to monitor
@@ -31,6 +32,12 @@ class DeploymentController(EnrichedComponent):
         # Rate limiting to prevent thundering herd
         self.max_pods_per_cycle = 3  # Max pods to create per reconciliation
         self.pending_creations = []  # Queue of pending pod creations
+
+        # Topology state tracking (optional)
+        self.topology_exporter = topology_exporter
+        if self.topology_exporter:
+            from src.telemetry.topology_state_exporter import TopologyEventTracker
+            self.event_tracker = TopologyEventTracker(topology_exporter)
 
         # Metrics
         self.reconciliation_counter = self.meter.create_counter(
@@ -133,6 +140,14 @@ class DeploymentController(EnrichedComponent):
                     "sim.time": self.env.now
                 })
 
+                # Track pod creation event
+                if self.topology_exporter and hasattr(self, 'event_tracker'):
+                    self.event_tracker.track_pod_created(
+                        new_pod,
+                        service,
+                        new_pod.compute_node
+                    )
+
                 # Small delay between pod creations
                 yield self.env.timeout(0.1)
 
@@ -223,6 +238,10 @@ class DeploymentController(EnrichedComponent):
 
             if hasattr(pod, 'running_process') and pod.running_process:
                 pod.running_process.interrupt("TERMINATED_BY_SCALE_DOWN")
+
+            # Track termination event
+            if self.topology_exporter and hasattr(self, 'event_tracker'):
+                self.event_tracker.track_pod_terminated(pod, "SCALE_DOWN")
 
             # Remove from node
             if pod.compute_node and pod in pod.compute_node.pods:
