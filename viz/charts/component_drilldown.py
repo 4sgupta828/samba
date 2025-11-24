@@ -610,7 +610,7 @@ def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
             if external_deps:
                 # Add section header
                 charts.append(html.Hr(style={'marginTop': '40px', 'marginBottom': '20px', 'borderColor': '#555'}))
-                charts.append(html.H4("External Dependencies", style={'marginBottom': '15px'}))
+                charts.append(html.H4("Dependencies (Outgoing Calls)", style={'marginBottom': '15px'}))
 
                 # Create accordion items for each dependency
                 accordion_items = []
@@ -888,7 +888,7 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
         if external_deps:
             # Add section header
             charts.append(html.Hr(style={'marginTop': '40px', 'marginBottom': '20px', 'borderColor': '#555'}))
-            charts.append(html.H4("External Dependencies", style={'marginBottom': '15px'}))
+            charts.append(html.H4("Dependencies (Outgoing Calls)", style={'marginBottom': '15px'}))
 
             # Create accordion items for each dependency
             accordion_items = []
@@ -978,6 +978,18 @@ def create_database_drilldown(metrics_df: pd.DataFrame, component_id: str,
     component_metrics = metrics_df[metrics_df['component_id'] == component_id]
     available_metrics = set(component_metrics['metric_name'].unique())
 
+    # CPU utilization
+    if 'db.cpu.utilization' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'db.cpu.utilization',
+                'CPU Utilization',
+                'Percentage (%)'
+            ),
+            config={'displayModeBar': False}
+        ))
+
     # Active connections
     if 'db.connections.active' in available_metrics:
         charts.append(dcc.Graph(
@@ -990,14 +1002,14 @@ def create_database_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
-    # CPU utilization
-    if 'db.cpu.utilization' in available_metrics:
+    # Connection rejections (counter)
+    if 'db.connections.rejected' in available_metrics:
         charts.append(dcc.Graph(
             figure=create_metric_chart(
                 metrics_df, component_id,
-                'db.cpu.utilization',
-                'CPU Utilization',
-                'Percentage (%)'
+                'db.connections.rejected',
+                'Connection Rejections',
+                'Count'
             ),
             config={'displayModeBar': False}
         ))

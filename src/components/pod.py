@@ -570,6 +570,7 @@ class Pod(EnrichedComponent):
         # Using 10,000 possible keys ensures cache (max 1000 items) experiences evictions
         cache_key = f"{self.parent_service.service_name}:data:{random.randint(1, 10000)}"
 
+        dep_start = self.env.now
         try:
             should_trace_cache = span is not None
             cache_span_ctx = None
@@ -585,7 +586,6 @@ class Pod(EnrichedComponent):
                 if span:
                     span.set_attribute("cache.hit", True)
                 self._emit_log("DEBUG", f"Cache hit for key {cache_key}")
-                return
             else:
                 if span:
                     span.set_attribute("cache.hit", False)
@@ -596,8 +596,51 @@ class Pod(EnrichedComponent):
                 set_process = self.env.process(cache.set(cache_key, cache_value, should_trace=should_trace_cache, parent_span_context=cache_span_ctx))
                 yield set_process
                 self._emit_log("DEBUG", f"Stored key {cache_key} in cache after miss")
+
+            # Record success metrics
+            dep_latency_ms = (self.env.now - dep_start) * 1000
+            if self.dependency_requests and self.dependency_duration and self.parent_service:
+                self.dependency_requests.add(1, {
+                    "dependency_id": cache.id,
+                    "dependency_name": "cache",
+                    "status": "success",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name
+                })
+                self.dependency_duration.record(dep_latency_ms, {
+                    "dependency_id": cache.id,
+                    "dependency_name": "cache",
+                    "status": "success",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name
+                })
+
         except Exception as e:
             self._emit_log("WARN", f"Cache operation failed: {e}")
+
+            # Record error metrics
+            dep_latency_ms = (self.env.now - dep_start) * 1000
+            if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                self.dependency_requests.add(1, {
+                    "dependency_id": cache.id,
+                    "dependency_name": "cache",
+                    "status": "error",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name
+                })
+                self.dependency_duration.record(dep_latency_ms, {
+                    "dependency_id": cache.id,
+                    "dependency_name": "cache",
+                    "status": "error",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name
+                })
+                self.dependency_errors.add(1, {
+                    "dependency_id": cache.id,
+                    "dependency_name": "cache",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name
+                })
 
     def _execute_db_logic(self, step, span):
         """Execute database query logic."""
@@ -608,6 +651,7 @@ class Pod(EnrichedComponent):
         config = get_simulation_config().compute
         max_retries = config.db_max_retries
 
+        dep_start = self.env.now
         # Acquire connection from client-side pool
         with self.db_connection_pool.request() as conn_req:
             yield conn_req  # Wait for an available connection
@@ -631,6 +675,25 @@ class Pod(EnrichedComponent):
                         db_span_ctx = trace.set_span_in_context(span)
 
                     yield self.env.process(db.handle_query(should_trace=should_trace_db, parent_span_context=db_span_ctx))
+
+                    # Record success metrics
+                    dep_latency_ms = (self.env.now - dep_start) * 1000
+                    if self.dependency_requests and self.dependency_duration and self.parent_service:
+                        self.dependency_requests.add(1, {
+                            "dependency_id": db.id,
+                            "dependency_name": "database",
+                            "status": "success",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.dependency_duration.record(dep_latency_ms, {
+                            "dependency_id": db.id,
+                            "dependency_name": "database",
+                            "status": "success",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+
                     break  # Success
                 except Exception as e:
                     self._emit_log("WARN", f"DB call failed (attempt {attempt+1}/{max_retries}): {e}")
@@ -638,6 +701,29 @@ class Pod(EnrichedComponent):
                         backoff_time = (2 ** attempt) * config.db_retry_backoff_base_seconds
                         yield self.env.timeout(backoff_time)
                     else:
+                        # Record error metrics on final failure
+                        dep_latency_ms = (self.env.now - dep_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": db.id,
+                                "dependency_name": "database",
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_duration.record(dep_latency_ms, {
+                                "dependency_id": db.id,
+                                "dependency_name": "database",
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_errors.add(1, {
+                                "dependency_id": db.id,
+                                "dependency_name": "database",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
                         raise
 
     def _execute_service_calls(self, step, span):
@@ -645,6 +731,7 @@ class Pod(EnrichedComponent):
         # Find all dep_* connections
         for conn_name, conn_target in self.parent_service.connections.items():
             if conn_name.startswith('dep_'):
+                dep_start = self.env.now
                 try:
                     should_trace_dep = span is not None
                     dep_span_ctx = None
@@ -663,8 +750,51 @@ class Pod(EnrichedComponent):
                         should_trace=should_trace_dep,
                         parent_span_context=dep_span_ctx
                     ))
+
+                    # Record success metrics
+                    dep_latency_ms = (self.env.now - dep_start) * 1000
+                    if self.dependency_requests and self.dependency_duration and self.parent_service:
+                        self.dependency_requests.add(1, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "success",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.dependency_duration.record(dep_latency_ms, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "success",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+
                 except Exception as e:
                     self._emit_log("WARN", f"Service call to {conn_name} failed: {e}")
+
+                    # Record error metrics
+                    dep_latency_ms = (self.env.now - dep_start) * 1000
+                    if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                        self.dependency_requests.add(1, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "error",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.dependency_duration.record(dep_latency_ms, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "status": "error",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.dependency_errors.add(1, {
+                            "dependency_id": conn_target.id,
+                            "dependency_name": conn_name,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
 
     def _execute_external_calls(self, step, span):
         """Execute external service calls."""
