@@ -1,17 +1,138 @@
 """
-E-Commerce Service Layer Components.
+Service Layer Components.
 
-Implements realistic microservices architecture with:
-- ProductCatalogService: Product browsing and search
-- OrderService: Order placement and management
-- UserAccountService: User authentication and profiles
-- InventoryService: Stock management and reservations
+Implements two service architectures:
+
+1. Service (New): Lightweight coordinator for Service/Pod/Node architecture
+   - Just routes requests to healthy pods
+   - Holds connections and processing pipeline definition
+   - No computation logic
+
+2. ApiService (Legacy): Original service with computation logic
+   - For backward compatibility with existing topologies
+   - Will be deprecated once all topologies migrate to Service/Pod architecture
 """
 from .base_component import EnrichedComponent
 from src.core.simulation_config import get_simulation_config
 from src.dynamics.metrics_dynamics_engine import MetricsDynamicsEngine, DynamicsConfig
 import simpy
 import random
+
+
+class Service(EnrichedComponent):
+    """
+    Lightweight service coordinator (new architecture).
+
+    A Service is a logical grouping that:
+    - Routes requests to healthy pod instances (load balancing)
+    - Holds connections (dep_*, ext_*, database, cache, queue_in, queue_out)
+    - Defines processing pipeline for pods to execute
+    - Does NOT perform any computation itself
+
+    All computation happens in Pod instances.
+    """
+
+    def __init__(self, env: simpy.Environment, component_id: str, service_name: str,
+                 supported_request_types=None, processing_pipeline=None, desired_replicas=3):
+        super().__init__(env, component_id, f"Service:{service_name}")
+        self.service_name = service_name
+        self.supported_request_types = supported_request_types or ["GET", "POST"]
+        self.processing_pipeline = processing_pipeline or self._default_pipeline()
+        self.desired_replicas = desired_replicas  # Target replica count for controller
+
+        # Pods managed by DeploymentController
+        self.pods = []  # List of Pod instances
+
+        # Metrics (service-level aggregation)
+        self.service_requests_counter = self.meter.create_counter(
+            f"service.{service_name}.requests",
+            description=f"Number of requests routed by {service_name}",
+            unit="1",
+        )
+        self.service_errors_counter = self.meter.create_counter(
+            f"service.{service_name}.errors",
+            description=f"Number of errors in {service_name}",
+            unit="1",
+        )
+
+    def _default_pipeline(self):
+        """
+        Default processing pipeline if none specified.
+
+        Pipeline execution is constrained by topology:
+        - Each step only executes if the required connection exists
+        - Missing connections cause steps to be skipped automatically
+        """
+        return [
+            {"type": "cache_check"},
+            {"type": "service_calls", "probability": 0.7},
+            {"type": "db_query"},
+            {"type": "external_calls", "probability": 0.3},
+            {"type": "queue_publish", "probability": 0.5}
+        ]
+
+    def handle_request(self, request_type: str, should_trace: bool = False, parent_span_context=None):
+        """
+        Handle incoming service request by routing to a healthy pod.
+
+        Args:
+            request_type: Type of request (must be in supported_request_types)
+            should_trace: Whether to create tracing spans
+            parent_span_context: Parent span context for distributed tracing
+        """
+        # Verify this service supports this request type
+        if request_type not in self.supported_request_types:
+            self._emit_log("ERROR", f"Unsupported request type '{request_type}' for {self.service_name}")
+            self.service_errors_counter.add(1, {
+                "error_type": "unsupported_request",
+                "request_type": request_type,
+                "component.id": self.id
+            })
+            raise Exception(f"Service {self.service_name} does not support request type: {request_type}")
+
+        # Get a healthy pod to handle the request
+        pod = self.get_pod_target()
+        if not pod:
+            self._emit_log("ERROR", f"No healthy pods available for {self.service_name}")
+            self.service_errors_counter.add(1, {
+                "error_type": "no_pods_available",
+                "request_type": request_type,
+                "component.id": self.id
+            })
+            raise Exception(f"No healthy pods available for service {self.service_name}")
+
+        # Record request
+        self.service_requests_counter.add(1, {
+            "request_type": request_type,
+            "component.id": self.id
+        })
+
+        # Forward to pod (pod executes the processing pipeline)
+        try:
+            yield from pod.handle_request(request_type, should_trace, parent_span_context)
+        except Exception as e:
+            # Record error
+            self.service_errors_counter.add(1, {
+                "error_type": type(e).__name__,
+                "request_type": request_type,
+                "component.id": self.id
+            })
+            raise
+
+    def get_pod_target(self):
+        """
+        Load balance to a healthy pod instance.
+
+        Returns:
+            Pod: A healthy pod from the pool, or None if no pods available
+        """
+        healthy_pods = [p for p in self.pods if p.state.operational == "RUNNING"]
+        if healthy_pods:
+            return random.choice(healthy_pods)
+        return None
+
+    # No run() method - Service doesn't have background processes
+    # DeploymentController handles pod lifecycle management
 
 
 class ApiService(EnrichedComponent):

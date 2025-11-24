@@ -3,17 +3,29 @@ Topology Adapter - Converts NetworkX graphs to SimPy components.
 
 This module bridges the gap between abstract topology generation (NetworkX graphs)
 and concrete simulation components (SimPy processes).
+
+Supports two architectures:
+1. New: Service/Pod/Node with DeploymentController
+2. Legacy: ApiService/ComputeAgent for backward compatibility
 """
 import networkx as nx
 from typing import Dict, Any
 
 # Import all component types
 from src.components.networking import RequestGateway
-from src.components.service import ApiService
 from src.components.database import SqlDatabase
 from src.components.storage import InMemoryCache
 from src.components.messaging import MessageQueue
 from src.components.external import ExternalService
+
+# New architecture imports
+from src.components.service import Service
+from src.components.pod import Pod
+from src.components.compute_node import ComputeNode
+from src.components.deployment_controller import DeploymentController
+
+# Legacy architecture imports (for backward compatibility)
+from src.components.service import ApiService
 from src.components.compute import ComputeAgent
 
 
@@ -122,13 +134,14 @@ class TopologyAdapter:
         """
         component_type = node_data.get('type')
 
+        # Infrastructure components
         if component_type == 'RequestGateway':
             return RequestGateway(self.env, node_id)
 
-        elif component_type == 'SqlDatabase':
+        elif component_type == 'SqlDatabase' or component_type == 'Database':
             return SqlDatabase(self.env, node_id)
 
-        elif component_type == 'InMemoryCache':
+        elif component_type == 'InMemoryCache' or component_type == 'Cache':
             return InMemoryCache(self.env, node_id)
 
         elif component_type == 'MessageQueue':
@@ -137,11 +150,55 @@ class TopologyAdapter:
         elif component_type == 'ExternalService':
             return ExternalService(self.env, node_id)
 
+        # New architecture components
+        elif component_type == 'Service':
+            # New lightweight service coordinator
+            supported_request_types = node_data.get('supported_request_types', ['GET', 'POST'])
+            processing_pipeline = node_data.get('processing_pipeline')
+            desired_replicas = node_data.get('desired_replicas', 3)
+
+            component = Service(
+                self.env,
+                node_id,
+                service_name=node_data.get('service_name', node_id),
+                supported_request_types=supported_request_types,
+                processing_pipeline=processing_pipeline,
+                desired_replicas=desired_replicas
+            )
+            return component
+
+        elif component_type == 'Pod':
+            # Pod instances (will be linked to parent service and compute node later)
+            # Note: parent_service and compute_node will be set during wiring phase
+            return Pod(self.env, node_id, parent_service=None, compute_node=None)
+
+        elif component_type == 'ComputeNode':
+            # Physical/VM resources
+            cpu_cores = node_data.get('cpu_cores', 8)
+            memory_gb = node_data.get('memory_gb', 32)
+            network_bandwidth_gbps = node_data.get('network_bandwidth_gbps', 10)
+
+            return ComputeNode(
+                self.env,
+                node_id,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                network_bandwidth_gbps=network_bandwidth_gbps
+            )
+
+        elif component_type == 'DeploymentController':
+            return DeploymentController(self.env, node_id)
+
+        # Legacy architecture components
         elif component_type == 'ApiService':
-            # Generic service with generic request types
+            # Generic service with generic request types (legacy)
             component = ApiService(self.env, node_id, service_name=node_id)
             component.supported_request_types = ['GET', 'POST', 'PROCESS']
             return component
+
+        elif component_type == 'ComputeAgent':
+            # Legacy compute agent
+            return ComputeAgent(self.env, node_id)
 
         else:
             print(f"Warning: Unknown component type '{component_type}' for node '{node_id}'")
@@ -154,10 +211,10 @@ class TopologyAdapter:
         Args:
             src: Source component
             tgt: Target component
-            edge_type: Type of connection (sync_http, sync_db, etc.)
+            edge_type: Type of connection (sync_http, sync_db, pod_pool, pod_placement, etc.)
             tgt_id: Target component ID (for connection key)
         """
-        # Gateway routing
+        # Gateway routing (works with both Service and ApiService)
         if isinstance(src, RequestGateway):
             # Gateway needs to route requests to services
             if hasattr(tgt, 'supported_request_types'):
@@ -166,7 +223,57 @@ class TopologyAdapter:
             # Also add to connections dict for direct access
             src.connections[f'svc_{tgt_id}'] = tgt
 
-        # Service connections
+        # New architecture: Service → Pod (pod_pool edge)
+        elif isinstance(src, Service) and isinstance(tgt, Pod) and edge_type == 'pod_pool':
+            # Add pod to service's pod list
+            src.pods.append(tgt)
+            # Set pod's parent service
+            tgt.parent_service = src
+
+        # New architecture: Pod → ComputeNode (pod_placement edge)
+        elif isinstance(src, Pod) and isinstance(tgt, ComputeNode) and edge_type == 'pod_placement':
+            # Set pod's compute node
+            src.compute_node = tgt
+            # Register pod with node
+            tgt.register_pod(src)
+
+        # New architecture: DeploymentController registration
+        elif isinstance(src, DeploymentController):
+            if isinstance(tgt, Service):
+                # Register service with controller
+                src.register_service(tgt)
+            elif isinstance(tgt, ComputeNode):
+                # Register node with controller
+                src.register_node(tgt)
+
+        # New architecture: Service connections (same pattern as ApiService)
+        elif isinstance(src, Service):
+            if isinstance(tgt, SqlDatabase):
+                # Service → Database
+                src.connections['database'] = tgt
+
+            elif isinstance(tgt, InMemoryCache):
+                # Service → Cache
+                src.connections['cache'] = tgt
+
+            elif isinstance(tgt, MessageQueue):
+                # Service → Queue
+                if edge_type == 'async_produce':
+                    src.connections['queue_out'] = tgt
+                elif edge_type == 'async_consume':
+                    src.connections['queue_in'] = tgt
+                else:
+                    src.connections['queue'] = tgt
+
+            elif isinstance(tgt, ExternalService):
+                # Service → External API
+                src.connections[f'ext_{tgt_id}'] = tgt
+
+            elif isinstance(tgt, Service) or isinstance(tgt, ApiService):
+                # Service → Service (RPC)
+                src.connections[f'dep_{tgt_id}'] = tgt
+
+        # Legacy: ApiService connections
         elif isinstance(src, ApiService):
             if isinstance(tgt, SqlDatabase):
                 # Service → Database
@@ -191,12 +298,16 @@ class TopologyAdapter:
                 # Service → Service (RPC)
                 src.connections[f'dep_{tgt_id}'] = tgt
 
-        # Queue → Consumer
-        elif isinstance(src, MessageQueue) and isinstance(tgt, ApiService):
-            # Implicit connection: consumer pulls from queue
-            # The service needs to know about the queue
-            if 'queue_in' not in tgt.connections:
-                tgt.connections['queue_in'] = src
+        # Queue → Consumer (works with both Service and ApiService)
+        elif isinstance(src, MessageQueue):
+            if isinstance(tgt, ApiService):
+                # Legacy: ApiService consumes from queue
+                if 'queue_in' not in tgt.connections:
+                    tgt.connections['queue_in'] = src
+            elif isinstance(tgt, Service):
+                # New: Service consumes from queue (pods will handle consumption)
+                if 'queue_in' not in tgt.connections:
+                    tgt.connections['queue_in'] = src
 
 
 def print_topology_summary(G: nx.DiGraph):
