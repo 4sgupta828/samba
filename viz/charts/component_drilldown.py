@@ -1022,7 +1022,7 @@ def create_cache_drilldown(metrics_df: pd.DataFrame, component_id: str,
     component_metrics = metrics_df[metrics_df['component_id'] == component_id]
     available_metrics = set(component_metrics['metric_name'].unique())
 
-    # Hit rate
+    # Hit rate (gauge)
     if 'cache.hit_rate' in available_metrics:
         charts.append(dcc.Graph(
             figure=create_metric_chart(
@@ -1034,19 +1034,31 @@ def create_cache_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
-    # Miss rate
-    if 'cache.miss_rate' in available_metrics:
+    # Total hits (counter)
+    if 'cache.hits.total' in available_metrics:
         charts.append(dcc.Graph(
             figure=create_metric_chart(
                 metrics_df, component_id,
-                'cache.miss_rate',
-                'Cache Miss Rate',
-                'Rate'
+                'cache.hits.total',
+                'Cache Hits',
+                'Count'
             ),
             config={'displayModeBar': False}
         ))
 
-    # Eviction rate
+    # Total misses (counter) - renamed from cache.miss_rate to cache.misses.total
+    if 'cache.misses.total' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'cache.misses.total',
+                'Cache Misses',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Eviction count (counter) - only show if data exists
     if 'cache.evictions' in available_metrics:
         charts.append(dcc.Graph(
             figure=create_metric_chart(

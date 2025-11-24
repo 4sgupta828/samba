@@ -566,8 +566,9 @@ class Pod(EnrichedComponent):
         if not cache:
             return
 
-        # Generate cache key
-        cache_key = f"{self.parent_service.service_name}:data:{random.randint(1, 100)}"
+        # Generate cache key from a larger key space to simulate realistic cache behavior
+        # Using 10,000 possible keys ensures cache (max 1000 items) experiences evictions
+        cache_key = f"{self.parent_service.service_name}:data:{random.randint(1, 10000)}"
 
         try:
             should_trace_cache = span is not None
@@ -589,6 +590,12 @@ class Pod(EnrichedComponent):
                 if span:
                     span.set_attribute("cache.hit", False)
                 self._emit_log("DEBUG", f"Cache miss for key {cache_key}")
+
+                # Populate cache after miss (simulating fetch from source + cache write)
+                cache_value = f"data_for_{cache_key}"
+                set_process = self.env.process(cache.set(cache_key, cache_value, should_trace=should_trace_cache, parent_span_context=cache_span_ctx))
+                yield set_process
+                self._emit_log("DEBUG", f"Stored key {cache_key} in cache after miss")
         except Exception as e:
             self._emit_log("WARN", f"Cache operation failed: {e}")
 
