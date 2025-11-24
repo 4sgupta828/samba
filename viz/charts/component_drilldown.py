@@ -274,7 +274,7 @@ def create_service_aggregated_percentile_chart(metrics_df: pd.DataFrame, service
     # Group by sim_time and aggregate percentiles (mean across all pods)
     aggregated = data.groupby('sim_time', as_index=False).agg({
         'p50': 'mean',
-        'p95': 'mean',
+        'p90': 'mean',
         'p99': 'mean'
     })
 
@@ -289,12 +289,12 @@ def create_service_aggregated_percentile_chart(metrics_df: pd.DataFrame, service
         line=dict(color='#ef4444', width=1.5)
     ))
 
-    # P95
+    # P90
     fig.add_trace(go.Scatter(
         x=aggregated['sim_time'],
-        y=aggregated['p95'],
+        y=aggregated['p90'],
         mode='lines',
-        name='P95',
+        name='P90',
         line=dict(color='#f59e0b', width=1.5)
     ))
 
@@ -401,7 +401,7 @@ def create_service_aggregated_percentile_chart_filtered(metrics_df: pd.DataFrame
     # Group by sim_time and aggregate percentiles (mean across all pods)
     aggregated = data.groupby('sim_time', as_index=False).agg({
         'p50': 'mean',
-        'p95': 'mean',
+        'p90': 'mean',
         'p99': 'mean'
     })
 
@@ -416,12 +416,12 @@ def create_service_aggregated_percentile_chart_filtered(metrics_df: pd.DataFrame
         line=dict(color='#ef4444', width=1.5)
     ))
 
-    # P95
+    # P90
     fig.add_trace(go.Scatter(
         x=aggregated['sim_time'],
-        y=aggregated['p95'],
+        y=aggregated['p90'],
         mode='lines',
-        name='P95',
+        name='P90',
         line=dict(color='#f59e0b', width=1.5)
     ))
 
@@ -457,6 +457,63 @@ def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
     # Get all metrics for this pod
     pod_metrics = metrics_df[metrics_df['component_id'] == component_id]
     available_metrics = set(pod_metrics['metric_name'].unique())
+
+    # Get service name from pod metrics (needed for request-level metrics)
+    service_name_values = pod_metrics['service.name'].dropna().unique()
+    service_name = service_name_values[0] if len(service_name_values) > 0 else None
+
+    # Request-level metrics (from service.{name}.* namespace)
+    if service_name:
+        request_metric = f'service.{service_name}.requests'
+        duration_metric = f'service.{service_name}.duration'
+        error_metric = f'service.{service_name}.errors'
+
+        # Request rate
+        if request_metric in available_metrics:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    request_metric,
+                    'Request Rate',
+                    'Requests'
+                ),
+                config={'displayModeBar': False}
+            ))
+
+        # Request duration/latency
+        if duration_metric in available_metrics:
+            duration_data = pod_metrics[pod_metrics['metric_name'] == duration_metric]
+            if 'p50' in duration_data.columns and not duration_data['p50'].isna().all():
+                charts.append(dcc.Graph(
+                    figure=create_percentile_chart(
+                        metrics_df, component_id,
+                        duration_metric,
+                        'Request Duration (Latency)'
+                    ),
+                    config={'displayModeBar': False}
+                ))
+            else:
+                charts.append(dcc.Graph(
+                    figure=create_metric_chart(
+                        metrics_df, component_id,
+                        duration_metric,
+                        'Request Duration',
+                        'ms'
+                    ),
+                    config={'displayModeBar': False}
+                ))
+
+        # Error rate
+        if error_metric in available_metrics:
+            charts.append(dcc.Graph(
+                figure=create_metric_chart(
+                    metrics_df, component_id,
+                    error_metric,
+                    'Error Rate',
+                    'Errors'
+                ),
+                config={'displayModeBar': False}
+            ))
 
     # CPU utilization
     if 'container.cpu.utilization' in available_metrics:
@@ -529,6 +586,107 @@ def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
             ),
             config={'displayModeBar': False}
         ))
+
+    # External dependency metrics (at the bottom, grouped in accordion)
+    if service_name:
+        dependency_request_metric = f'service.{service_name}.dependency.requests'
+        dependency_duration_metric = f'service.{service_name}.dependency.duration'
+        dependency_error_metric = f'service.{service_name}.dependency.errors'
+
+        has_dependency_metrics = (dependency_request_metric in available_metrics or
+                                  dependency_duration_metric in available_metrics or
+                                  dependency_error_metric in available_metrics)
+
+        if has_dependency_metrics:
+            # Get dependency metrics for this pod
+            dep_metrics = pod_metrics[
+                pod_metrics['metric_name'].str.contains('dependency', na=False)
+            ]
+
+            external_deps = []
+            if 'dependency_id' in dep_metrics.columns:
+                external_deps = dep_metrics['dependency_id'].dropna().unique().tolist()
+
+            if external_deps:
+                # Add section header
+                charts.append(html.Hr(style={'marginTop': '40px', 'marginBottom': '20px', 'borderColor': '#555'}))
+                charts.append(html.H4("External Dependencies", style={'marginBottom': '15px'}))
+
+                # Create accordion items for each dependency
+                accordion_items = []
+                for dep_id in sorted(external_deps):
+                    dep_specific = dep_metrics[dep_metrics['dependency_id'] == dep_id]
+                    dep_name = dep_specific['dependency_name'].iloc[0] if 'dependency_name' in dep_specific.columns and not dep_specific.empty else dep_id
+
+                    # Create charts for this dependency
+                    dep_charts = []
+
+                    if dependency_request_metric in available_metrics:
+                        dep_charts.append(dcc.Graph(
+                            figure=create_metric_chart_filtered(
+                                metrics_df, component_id,
+                                dependency_request_metric,
+                                f'Request Rate',
+                                'Requests',
+                                filter_col='dependency_id',
+                                filter_val=dep_id
+                            ),
+                            config={'displayModeBar': False}
+                        ))
+
+                    if dependency_duration_metric in available_metrics:
+                        dep_duration_data = dep_specific[dep_specific['metric_name'] == dependency_duration_metric]
+                        if 'p50' in dep_duration_data.columns and not dep_duration_data['p50'].isna().all():
+                            dep_charts.append(dcc.Graph(
+                                figure=create_percentile_chart_filtered(
+                                    metrics_df, component_id,
+                                    dependency_duration_metric,
+                                    f'Latency',
+                                    filter_col='dependency_id',
+                                    filter_val=dep_id
+                                ),
+                                config={'displayModeBar': False}
+                            ))
+                        else:
+                            dep_charts.append(dcc.Graph(
+                                figure=create_metric_chart_filtered(
+                                    metrics_df, component_id,
+                                    dependency_duration_metric,
+                                    f'Latency',
+                                    'ms',
+                                    filter_col='dependency_id',
+                                    filter_val=dep_id
+                                ),
+                                config={'displayModeBar': False}
+                            ))
+
+                    if dependency_error_metric in available_metrics:
+                        dep_charts.append(dcc.Graph(
+                            figure=create_metric_chart_filtered(
+                                metrics_df, component_id,
+                                dependency_error_metric,
+                                f'Errors',
+                                'Errors',
+                                filter_col='dependency_id',
+                                filter_val=dep_id
+                            ),
+                            config={'displayModeBar': False}
+                        ))
+
+                    # Create accordion item
+                    accordion_items.append(
+                        dbc.AccordionItem(
+                            dep_charts,
+                            title=f"→ {dep_name}",
+                        )
+                    )
+
+                # Add accordion to charts
+                charts.append(dbc.Accordion(
+                    accordion_items,
+                    start_collapsed=True,  # All collapsed by default
+                    always_open=False,  # Only one open at a time
+                ))
 
     # If no charts, show message
     if not charts:
