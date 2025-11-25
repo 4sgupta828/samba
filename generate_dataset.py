@@ -16,6 +16,7 @@ import yaml
 import tempfile
 import argparse
 from pathlib import Path
+from multiprocessing import Process
 
 # Add src to path for imports
 import sys
@@ -381,9 +382,19 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size):
+    """
+    Wrapper function to run generate_episode in a separate process.
+    Each process has completely fresh global state (including OpenTelemetry).
+    """
+    lib = ScenarioLibrary()
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size)
+
+
 def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None):
     """
     Generate a full training dataset with multiple episodes.
+    Each episode runs in its own process for complete isolation.
 
     Args:
         num_episodes: Number of episodes to generate
@@ -396,6 +407,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
     print(f"{'='*60}")
     print(f"Generating {num_episodes} training episodes...")
     print(f"Base output directory: {output_dir}")
+    print(f"Using multiprocessing for complete episode isolation")
     print(f"{'='*60}\n")
 
     # Create timestamped run directory: data/data_YYYYMMDD_HHMMSS
@@ -406,15 +418,38 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
 
     print(f"Run directory: {run_dir}\n")
 
-    # Initialize scenario library
+    # Initialize scenario library (for metadata collection)
     lib = ScenarioLibrary()
 
-    # Generate episodes under the run directory
+    # Generate episodes under the run directory - each in its own process
     results = []
     for i in range(num_episodes):
-        result = generate_episode(i, run_dir, lib, verbose=verbose, topology_size=topology_size)
-        if result:
-            results.append(result)
+        print(f"Starting episode {i}...")
+
+        # Run episode in a separate process for complete isolation
+        process = Process(
+            target=_generate_episode_process,
+            args=(i, run_dir, verbose, topology_size)
+        )
+        process.start()
+        process.join()  # Wait for completion
+
+        # Check if episode was successful by looking for the label file
+        episode_dir = os.path.join(run_dir, f'ep_{i}')
+        label_path = os.path.join(episode_dir, 'label.json')
+        if os.path.exists(label_path):
+            with open(label_path, 'r') as f:
+                label_data = json.load(f)
+                results.append({
+                    'episode_id': i,
+                    'level': label_data.get('level'),
+                    'output_dir': episode_dir,
+                    'root_cause': label_data.get('root_cause_node'),
+                    'fault_type': label_data.get('fault_type')
+                })
+            print(f"Episode {i} completed successfully\n")
+        else:
+            print(f"Episode {i} failed (no label file found)\n")
 
         if not verbose and (i + 1) % 10 == 0:
             print(f"Progress: {i + 1}/{num_episodes} episodes completed")

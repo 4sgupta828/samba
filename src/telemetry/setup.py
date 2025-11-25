@@ -19,6 +19,75 @@ from src.telemetry.collector import TelemetryCollector
 from src.telemetry.simulation_metric_reader import SimulationTimeMetricReader
 
 
+def reset_opentelemetry_globals():
+    """
+    Reset OpenTelemetry global providers to allow fresh setup for new episodes.
+
+    This is necessary when running multiple episodes in the same Python process,
+    as OpenTelemetry's design uses global singletons that normally cannot be reset.
+
+    WARNING: This uses internal OpenTelemetry APIs and should only be used in
+    controlled environments like training data generation.
+    """
+    # Reset trace globals
+    try:
+        import opentelemetry.trace as trace_module
+        from opentelemetry.util._once import Once
+
+        # Reset the provider variable
+        if hasattr(trace_module, '_TRACER_PROVIDER'):
+            trace_module._TRACER_PROVIDER = None
+
+        # Reset the "set once" guard that prevents re-setting the provider
+        if hasattr(trace_module, '_TRACER_PROVIDER_SET_ONCE'):
+            trace_module._TRACER_PROVIDER_SET_ONCE = Once()
+
+        # Reset the proxy provider's reference
+        if hasattr(trace_module, '_PROXY_TRACER_PROVIDER'):
+            if hasattr(trace_module._PROXY_TRACER_PROVIDER, '_real_provider'):
+                trace_module._PROXY_TRACER_PROVIDER._real_provider = None
+
+        print("Telemetry: Reset trace provider globals")
+    except Exception as e:
+        print(f"Warning: Could not fully reset trace provider: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Reset metrics globals
+    try:
+        import opentelemetry.metrics as metrics_module
+        from opentelemetry.util._once import Once
+
+        # Reset the provider variable
+        if hasattr(metrics_module, '_METER_PROVIDER'):
+            metrics_module._METER_PROVIDER = None
+
+        # Reset the "set once" guard that prevents re-setting the provider
+        if hasattr(metrics_module, '_internal'):
+            if hasattr(metrics_module._internal, '_METER_PROVIDER_SET_ONCE'):
+                metrics_module._internal._METER_PROVIDER_SET_ONCE = Once()
+
+        # Reset the proxy provider's reference
+        if hasattr(metrics_module, '_internal'):
+            if hasattr(metrics_module._internal, '_PROXY_METER_PROVIDER'):
+                if hasattr(metrics_module._internal._PROXY_METER_PROVIDER, '_real_provider'):
+                    metrics_module._internal._PROXY_METER_PROVIDER._real_provider = None
+
+        print("Telemetry: Reset meter provider globals")
+    except Exception as e:
+        print(f"Warning: Could not fully reset meter provider: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Reset component log handler
+    try:
+        from src.components.base_component import EnrichedComponent
+        EnrichedComponent._log_handler = None
+        print("Telemetry: Reset component log handler")
+    except Exception as e:
+        print(f"Warning: Could not reset component log handler: {e}")
+
+
 def setup_telemetry(config: Dict, output_dir: str = None, simulation_id: str = None, simulation_start_timestamp_ns: int = None, timestamp_transform_fn: Optional[Callable[[int], int]] = None) -> Tuple[Callable, TelemetryCollector, FileLogHandler, 'MeterProvider', Optional['SimulationTimeMetricReader']]:
     """
     Initializes OpenTelemetry SDK providers and exporters based on configuration.
@@ -177,16 +246,13 @@ def setup_telemetry(config: Dict, output_dir: str = None, simulation_id: str = N
     print("Telemetry setup complete.")
 
     def shutdown_telemetry():
-        """Function to gracefully flush telemetry data without shutting down global providers.
+        """Function to gracefully flush telemetry data and close file handlers.
 
-        IMPORTANT: We do NOT call shutdown() on the global providers because OpenTelemetry
-        does not allow overriding global providers once they are set. Shutting them down
-        would prevent subsequent simulations (in the same Flask server session) from
-        exporting telemetry, as they would try to use the already-shutdown providers.
-
-        Instead, we only flush pending data and close file handlers.
+        This flushes all pending data and closes file handlers but does NOT shutdown
+        the providers. The providers will be reset via reset_opentelemetry_globals()
+        in multi-episode scenarios to allow fresh setup for the next episode.
         """
-        print("Telemetry: Flushing pending data...")
+        print("Telemetry: Flushing data...")
 
         # Flush all pending telemetry data (this is crucial to ensure buffered data is exported)
         trace_provider.force_flush(timeout_millis=10000)
