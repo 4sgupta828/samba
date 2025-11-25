@@ -17,7 +17,6 @@ from data_loader import list_data_runs, list_episodes, load_episode
 from charts.topology import create_topology_chart, extract_zoom_subgraph
 from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
-from charts.propagation_timeline import create_propagation_timeline
 from charts.fault_propagation import create_fault_propagation_analysis
 
 # Configuration
@@ -375,18 +374,6 @@ app.layout = dbc.Container([
     dbc.Row([
         dbc.Col([
             html.Div(id='fault-analysis-container', style={'display': 'none'})
-        ])
-    ], className="mb-3"),
-
-    # Failure propagation timeline
-    dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader(html.H5("🌊 Failure Propagation Timeline", className="mb-0")),
-                dbc.CardBody([
-                    html.Div(id='propagation-timeline')
-                ], style={'padding': '15px'})
-            ], className="shadow-sm")
         ])
     ], className="mb-3"),
 
@@ -893,25 +880,6 @@ def update_component_drilldown(click_data, episode_id):
 
     except Exception as e:
         return html.Div(f"Error loading component details: {str(e)}", className="text-danger"), False
-
-
-@app.callback(
-    Output('propagation-timeline', 'children'),
-    Input('episode-data-store', 'data')
-)
-def update_propagation_timeline(episode_id):
-    """Update propagation timeline when episode is loaded."""
-    if not episode_id or episode_id not in current_episode_data:
-        return html.Div("No data loaded", className="text-muted")
-
-    episode_data = current_episode_data[episode_id]
-    # Use logical topology for propagation analysis (cleaner view)
-    return create_propagation_timeline(
-        episode_data['metrics_df'],
-        episode_data['logical_topology_graph'],
-        episode_data['label'],
-        episode_data['ground_truth']
-    )
 
 
 # Dataset Generator Callbacks
