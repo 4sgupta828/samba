@@ -11,6 +11,11 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, asdict
+import warnings
+
+# Suppress common warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
 
 from .timeseries_stats import characterize_timeseries
 from .distribution_analysis import compare_distributions
@@ -217,32 +222,34 @@ def compute_severity_score(
 
 def analyze_metric_impact(
     metric_name: str,
-    timeseries: np.ndarray,
-    fault_start_time: float,
-    sample_interval: int = 5,
-    expected_changepoint_index: Optional[int] = None
+    times: np.ndarray,
+    values: np.ndarray,
+    fault_start_time: float
 ) -> MetricImpactResult:
     """
     Comprehensive impact analysis for a single metric.
 
     Args:
         metric_name: Name of the metric
-        timeseries: Full time series data
+        times: Array of timestamps
+        values: Array of values corresponding to times
         fault_start_time: Time when fault was injected
-        sample_interval: Interval between samples (seconds)
-        expected_changepoint_index: Expected index for changepoint validation
 
     Returns:
         MetricImpactResult with complete analysis
     """
-    # Determine baseline/fault split
-    if expected_changepoint_index is None:
-        # Estimate index from time
-        expected_changepoint_index = int(fault_start_time / sample_interval)
+    # Find index where fault starts
+    fault_indices = np.where(times >= fault_start_time)[0]
+
+    if len(fault_indices) == 0:
+        # All data is before fault
+        expected_changepoint_index = len(times)
+    else:
+        expected_changepoint_index = fault_indices[0]
 
     # Split data
-    baseline = timeseries[:expected_changepoint_index]
-    fault = timeseries[expected_changepoint_index:]
+    baseline = values[:expected_changepoint_index]
+    fault = values[expected_changepoint_index:]
 
     # Check if we have enough data
     if len(baseline) < 3 or len(fault) < 3:
@@ -274,10 +281,26 @@ def analyze_metric_impact(
 
     # 5. Detect changepoint
     changepoint = detect_changepoint(
-        timeseries,
+        values,
         expected_location=expected_changepoint_index,
         method='auto'
     )
+
+    # Convert changepoint index to actual time
+    if changepoint.get('detected') and changepoint.get('location') is not None:
+        cp_idx = changepoint['location']
+        if 0 <= cp_idx < len(times):
+            changepoint['time'] = float(times[cp_idx])
+            changepoint['delay_from_fault'] = changepoint['time'] - fault_start_time
+
+            # Only consider changepoints that occur at or after the fault
+            if changepoint['time'] < fault_start_time:
+                changepoint['detected'] = False
+                changepoint['time'] = None
+                changepoint['delay_from_fault'] = None
+        else:
+            changepoint['time'] = None
+            changepoint['delay_from_fault'] = None
 
     # 6. Compute severity score
     severity_score, severity_class = compute_severity_score(
@@ -318,7 +341,7 @@ def extract_metric_timeseries(
     metric_name: str,
     value_column: str = 'value',
     summary_column: str = 'p99'
-) -> Optional[np.ndarray]:
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """
     Extract time series for a specific metric from metrics DataFrame.
 
@@ -330,7 +353,7 @@ def extract_metric_timeseries(
         summary_column: Which summary stat to extract (p50, p90, p99, etc.)
 
     Returns:
-        Time series array or None if not found
+        Tuple of (times, values) or None if not found
     """
     # Filter for this component and metric
     mask = (
@@ -347,15 +370,18 @@ def extract_metric_timeseries(
     metric_data['sim_time'] = metric_data['labels'].apply(lambda x: x.get('sim.time', 0))
     metric_data = metric_data.sort_values('sim_time')
 
+    # Get times
+    times = metric_data['sim_time'].values
+
     # Extract values
     if value_column in metric_data.columns:
         # Simple value metrics
         values = metric_data[value_column].values
-        return values
+        return times, values
     elif 'summary' in metric_data.columns:
         # Summary metrics (histograms)
         values = metric_data['summary'].apply(lambda x: x.get(summary_column, np.nan) if isinstance(x, dict) else np.nan).values
-        return values
+        return times, values
     else:
         return None
 
@@ -363,8 +389,7 @@ def extract_metric_timeseries(
 def analyze_all_node_metrics(
     metrics_df: pd.DataFrame,
     node_id: str,
-    fault_start_time: float,
-    sample_interval: int = 5
+    fault_start_time: float
 ) -> Dict[str, MetricImpactResult]:
     """
     Analyze all available metrics for a node.
@@ -373,7 +398,6 @@ def analyze_all_node_metrics(
         metrics_df: DataFrame with all metrics
         node_id: Node to analyze
         fault_start_time: When fault was injected
-        sample_interval: Interval between samples
 
     Returns:
         Dictionary mapping metric_name -> MetricImpactResult
@@ -387,17 +411,22 @@ def analyze_all_node_metrics(
 
     for metric_name in node_metrics:
         # Extract time series
-        timeseries = extract_metric_timeseries(metrics_df, node_id, metric_name)
+        ts_data = extract_metric_timeseries(metrics_df, node_id, metric_name)
 
-        if timeseries is None or len(timeseries) < 10:
+        if ts_data is None:
+            continue
+
+        times, values = ts_data
+
+        if len(values) < 10:
             continue
 
         # Analyze metric
         result = analyze_metric_impact(
             metric_name,
-            timeseries,
-            fault_start_time,
-            sample_interval
+            times,
+            values,
+            fault_start_time
         )
 
         results[metric_name] = result

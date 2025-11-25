@@ -13,7 +13,12 @@ from scipy.spatial import distance
 from typing import Dict, Tuple
 import warnings
 
+# Suppress common warnings from scipy
 warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', message='Ties preclude use of exact statistic')
+warnings.filterwarnings('ignore', message='p-value capped')
+warnings.filterwarnings('ignore', message='p-value floored')
 
 
 def mann_whitney_test(baseline: np.ndarray, fault: np.ndarray) -> Dict:

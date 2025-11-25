@@ -163,8 +163,7 @@ class FaultPropagationAnalyzer:
         metric_results = analyze_all_node_metrics(
             self.metrics_df,
             node_id,
-            self.fault_start_time,
-            self.sample_interval
+            self.fault_start_time
         )
 
         if len(metric_results) == 0:
@@ -207,8 +206,8 @@ class FaultPropagationAnalyzer:
         first_impact_time = None
         for _, result in ranked:
             cp = result.changepoint
-            if cp.get('detected') and cp.get('location') is not None:
-                impact_time = cp['location'] * self.sample_interval
+            if cp.get('detected') and cp.get('time') is not None:
+                impact_time = cp['time']
                 if first_impact_time is None or impact_time < first_impact_time:
                     first_impact_time = impact_time
 
