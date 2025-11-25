@@ -547,6 +547,23 @@ class FaultPropagationAnalyzer:
                 elif not self.silent:
                     print("   ℹ️  No significant metric changes detected")
 
+                # Track unimpacted metrics (healthy/stable)
+                if not self.silent and metrics_impact:
+                    unimpacted = []
+                    for metric_name, impacts in metrics_impact.items():
+                        if impacts:
+                            for impact_data in impacts:
+                                for change_key, change_val in impact_data["impact"]["changes"].items():
+                                    if "multiplier" in change_val:
+                                        if 0.9 <= change_val["multiplier"] <= 1.1:  # Within 10% is stable
+                                            unimpacted.append(metric_name)
+                                            break
+
+                    if unimpacted:
+                        print(f"\n   ✅ Stable metrics (unchanged):")
+                        for metric in set(unimpacted[:5]):  # Show up to 5
+                            print(f"      • {metric}")
+
                 results[node] = {
                     "distance": distance,
                     "type": node_type,
@@ -572,7 +589,60 @@ class FaultPropagationAnalyzer:
             # Analyze request success rates
             self._analyze_success_rates(fault_times)
 
+            # Generate chronological timeline
+            self._generate_timeline(results, fault_times)
+
         return results
+
+    def _generate_timeline(self, results: Dict, fault_times: List[int]):
+        """Generate chronological timeline of events"""
+        print(f"\n\n{'='*80}")
+        print(f"CHRONOLOGICAL TIMELINE")
+        print(f"{'='*80}\n")
+
+        # Collect all events with timestamps
+        timeline_events = []
+
+        for node, data in results.items():
+            if data["metrics"]:
+                for metric_name, impacts in data["metrics"].items():
+                    for impact_data in impacts:
+                        for change_key, change_val in impact_data["impact"]["changes"].items():
+                            if "multiplier" in change_val and "significance" in change_val:
+                                significance = change_val["significance"]
+                                if significance in ["CRITICAL", "HIGH"]:
+                                    metric_type = impact_data["impact"].get("metric_type", "other")
+                                    timeline_events.append({
+                                        "time": impact_data["time"],
+                                        "node": node,
+                                        "metric": metric_name,
+                                        "significance": significance,
+                                        "metric_type": metric_type,
+                                        "change": change_val,
+                                        "distance": data["distance"]
+                                    })
+
+        # Sort by time
+        timeline_events.sort(key=lambda x: (x["time"], x["distance"]))
+
+        # Group by time
+        events_by_time = defaultdict(list)
+        for event in timeline_events:
+            events_by_time[event["time"]].append(event)
+
+        # Display chronologically
+        for time in sorted(events_by_time.keys()):
+            events = events_by_time[time]
+            print(f"⏱️  t={time}s ({time - self.label['fault_start_time']}s after fault injection)")
+            print(f"   {'─'*70}")
+
+            for event in events:
+                symbol = "🔴" if event["metric_type"] == "error" else "⚠️" if event["significance"] == "CRITICAL" else "🟠"
+                layer_info = f"Layer {event['distance']}" if event['distance'] > 0 else "Root Cause"
+                print(f"   {symbol} [{layer_info}] {event['node']}")
+                print(f"      {event['metric']}: {event['change']['from']:.1f} → {event['change']['to']:.1f}")
+                print(f"      Impact: {event['change']['multiplier']:.1f}x [{event['significance']}]")
+            print()
 
     def _analyze_success_rates(self, fault_times: List[int]):
         """Analyze request success rates over time"""

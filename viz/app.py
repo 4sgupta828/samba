@@ -18,6 +18,7 @@ from charts.topology import create_topology_chart, extract_zoom_subgraph
 from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
 from charts.propagation_timeline import create_propagation_timeline
+from charts.fault_propagation import create_fault_propagation_analysis
 
 # Configuration
 # Default to ../data relative to this file's location
@@ -237,13 +238,24 @@ app.layout = dbc.Container([
                 placeholder="Select an episode...",
                 clearable=False
             ),
-        ], width=4),
+        ], width=3),
         dbc.Col([
-            dbc.Button("Load Episode", id="load-button", color="primary", className="mt-4"),
+            dbc.Button("Load Episode", id="load-button", color="primary", className="mt-4", style={'width': '100%'}),
+        ], width=2),
+        dbc.Col([
+            dbc.Button(
+                "🔍 Analyze Fault",
+                id="analyze-fault-button",
+                color="warning",
+                outline=True,
+                className="mt-4",
+                disabled=True,  # Enabled when episode loaded
+                style={'width': '100%'}
+            ),
         ], width=2),
         dbc.Col([
             dbc.Spinner(html.Div(id="loading-status"), size="sm", spinner_class_name="mt-4"),
-        ], width=2),
+        ], width=1),
     ], className="mb-4"),
 
     # Metadata card (hidden until episode loaded)
@@ -359,6 +371,13 @@ app.layout = dbc.Container([
         ], width=12)
     ], className="mb-3"),
 
+    # Fault Propagation Analysis Container
+    dbc.Row([
+        dbc.Col([
+            html.Div(id='fault-analysis-container', style={'display': 'none'})
+        ])
+    ], className="mb-3"),
+
     # Failure propagation timeline
     dbc.Row([
         dbc.Col([
@@ -465,6 +484,76 @@ def load_episode_data(n_clicks, data_run_path, episode_id):
 
     except Exception as e:
         return None, f"❌ Error: {str(e)}", []
+
+
+@app.callback(
+    Output('analyze-fault-button', 'disabled'),
+    [Input('episode-data-store', 'data')]
+)
+def enable_analysis_button(episode_data):
+    """Enable analysis button when episode is loaded"""
+    return episode_data is None or len(episode_data) == 0
+
+
+@app.callback(
+    [Output('fault-analysis-container', 'children'),
+     Output('fault-analysis-container', 'style')],
+    [Input('analyze-fault-button', 'n_clicks')],
+    [State('datarun-dropdown', 'value'),
+     State('episode-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def run_fault_analysis(n_clicks, datarun, episode):
+    """Run fault propagation analysis and display results"""
+    if not n_clicks or not datarun or not episode:
+        return [], {'display': 'none'}
+
+    try:
+        # Construct episode directory path
+        episode_dir = os.path.join(datarun, episode)
+
+        # Debug: Print path for troubleshooting
+        print(f"Running fault propagation analysis on: {episode_dir}")
+
+        # Run analysis and create visualization
+        analysis_view = create_fault_propagation_analysis(episode_dir)
+
+        return analysis_view, {'display': 'block'}
+
+    except Exception as e:
+        import traceback
+        print(f"Error in fault analysis: {str(e)}")
+        traceback.print_exc()
+
+        error_alert = dbc.Alert([
+            html.H5("Error running analysis", className="alert-heading"),
+            html.P(f"Error: {str(e)}"),
+            html.Hr(),
+            html.Pre(traceback.format_exc(), style={'fontSize': '0.8em'})
+        ],
+            color="danger",
+            className="mt-3"
+        )
+        return error_alert, {'display': 'block'}
+
+
+# Use clientside callback for tab switching in fault analysis
+app.clientside_callback(
+    """
+    function(active_tab) {
+        if (!active_tab) return [{'display': 'block'}, {'display': 'none'}];
+
+        if (active_tab === 'visual') {
+            return [{'display': 'block'}, {'display': 'none'}];
+        } else {
+            return [{'display': 'none'}, {'display': 'block'}];
+        }
+    }
+    """,
+    [Output('visual-tab', 'style'),
+     Output('raw-tab', 'style')],
+    [Input('analysis-tabs', 'active_tab')]
+)
 
 
 @app.callback(
