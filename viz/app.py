@@ -18,6 +18,7 @@ from charts.topology import create_topology_chart
 from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
 from charts.propagation_timeline import create_propagation_timeline
+from charts.workload import create_workload_dashboard
 
 # Configuration
 # Default to ../data relative to this file's location
@@ -260,6 +261,18 @@ app.layout = dbc.Container([
                 dbc.CardHeader(html.H5("📈 Golden Signals", className="mb-0")),
                 dbc.CardBody([
                     html.Div(id='golden-signals-dashboard')
+                ], style={'padding': '10px'})
+            ], className="shadow-sm")
+        ], width=12)
+    ], className="mb-3"),
+
+    # Workload Generator Behavior
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader(html.H5("🔌 Workload Generator", className="mb-0")),
+                dbc.CardBody([
+                    html.Div(id='workload-dashboard')
                 ], style={'padding': '10px'})
             ], className="shadow-sm")
         ], width=12)
@@ -596,6 +609,22 @@ def update_golden_signals(episode_id):
 
     episode_data = current_episode_data[episode_id]
     return create_golden_signals_dashboard(
+        episode_data['metrics_df'],
+        episode_data['label']
+    )
+
+
+@app.callback(
+    Output('workload-dashboard', 'children'),
+    Input('episode-data-store', 'data')
+)
+def update_workload_dashboard(episode_id):
+    """Update workload generator dashboard when episode is loaded."""
+    if not episode_id or episode_id not in current_episode_data:
+        return html.Div("No data loaded", className="text-muted")
+
+    episode_data = current_episode_data[episode_id]
+    return create_workload_dashboard(
         episode_data['metrics_df'],
         episode_data['label']
     )
