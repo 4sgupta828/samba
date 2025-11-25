@@ -204,7 +204,8 @@ def create_percentile_chart_filtered(metrics_df: pd.DataFrame, component_id: str
 
 
 def create_service_aggregated_chart(metrics_df: pd.DataFrame, service_id: str,
-                                   metric_name: str, title: str, ylabel: str) -> go.Figure:
+                                   metric_name: str, title: str, ylabel: str,
+                                   agg_method: str = 'auto') -> go.Figure:
     """
     Create aggregated chart for service by aggregating Pod metrics.
 
@@ -214,6 +215,10 @@ def create_service_aggregated_chart(metrics_df: pd.DataFrame, service_id: str,
         metric_name: Metric name to display
         title: Chart title
         ylabel: Y-axis label
+        agg_method: Aggregation method - 'sum', 'mean', or 'auto' (default: 'auto')
+                   'auto' chooses based on metric type:
+                   - 'sum' for requests, errors, connections, threads, queue depths
+                   - 'mean' for CPU utilization
     """
     # Aggregate Pod metrics by service.name tag
     data = metrics_df[
@@ -224,8 +229,22 @@ def create_service_aggregated_chart(metrics_df: pd.DataFrame, service_id: str,
     if data.empty:
         return go.Figure().update_layout(title=f"{title} (No Data)")
 
-    # Group by sim_time and aggregate (mean across all pods)
-    aggregated = data.groupby('sim_time', as_index=False)['value'].mean()
+    # Determine aggregation method
+    if agg_method == 'auto':
+        # Use mean for CPU utilization (it's a percentage)
+        if 'cpu.utilization' in metric_name:
+            agg_func = 'mean'
+        # Use sum for everything else (requests, errors, connections, threads, queue depths, memory)
+        else:
+            agg_func = 'sum'
+    else:
+        agg_func = agg_method
+
+    # Group by sim_time and aggregate
+    if agg_func == 'mean':
+        aggregated = data.groupby('sim_time', as_index=False)['value'].mean()
+    else:
+        aggregated = data.groupby('sim_time', as_index=False)['value'].sum()
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -324,7 +343,8 @@ def create_service_aggregated_percentile_chart(metrics_df: pd.DataFrame, service
 
 def create_service_aggregated_chart_filtered(metrics_df: pd.DataFrame, service_id: str,
                                             metric_name: str, title: str, ylabel: str,
-                                            filter_col: str, filter_val: str) -> go.Figure:
+                                            filter_col: str, filter_val: str,
+                                            agg_method: str = 'sum') -> go.Figure:
     """
     Create aggregated chart for service with additional filter (e.g., for specific dependency).
 
@@ -336,6 +356,7 @@ def create_service_aggregated_chart_filtered(metrics_df: pd.DataFrame, service_i
         ylabel: Y-axis label
         filter_col: Column name to filter on (e.g., 'dependency_id')
         filter_val: Value to filter for
+        agg_method: Aggregation method - 'sum' or 'mean' (default: 'sum' for dependency metrics)
     """
     # Aggregate Pod metrics by service.name tag with additional filter
     data = metrics_df[
@@ -347,8 +368,11 @@ def create_service_aggregated_chart_filtered(metrics_df: pd.DataFrame, service_i
     if data.empty:
         return go.Figure().update_layout(title=f"{title} (No Data)")
 
-    # Group by sim_time and aggregate (mean across all pods)
-    aggregated = data.groupby('sim_time', as_index=False)['value'].mean()
+    # Group by sim_time and aggregate (always sum for dependency metrics which are requests/errors)
+    if agg_method == 'mean':
+        aggregated = data.groupby('sim_time', as_index=False)['value'].mean()
+    else:
+        aggregated = data.groupby('sim_time', as_index=False)['value'].sum()
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(

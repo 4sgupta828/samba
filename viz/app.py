@@ -223,8 +223,9 @@ app.layout = dbc.Container([
             ),
         ], width=3),
         dbc.Col([
+            dcc.Clipboard(target_id="datarun-path-text", id="clipboard-datarun"),
             dbc.Button("📋 Copy Path", id="copy-datarun-button", color="secondary", outline=True, size="sm", className="mt-4"),
-            dcc.Clipboard(id="clipboard-datarun", style={"display": "none"}),
+            html.Div(id="datarun-path-text", style={"display": "none"}),
             html.Div(id="copy-feedback", className="mt-1 small text-success", style={"minHeight": "20px"}),
         ], width=1),
         dbc.Col([
@@ -399,7 +400,7 @@ def populate_episodes(data_run_path):
 
 
 @app.callback(
-    Output('clipboard-datarun', 'content'),
+    Output('datarun-path-text', 'children'),
     Output('copy-feedback', 'children'),
     Input('copy-datarun-button', 'n_clicks'),
     State('datarun-dropdown', 'value'),
