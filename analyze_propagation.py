@@ -16,7 +16,70 @@ Examples:
 import sys
 import argparse
 from pathlib import Path
+import numpy as np
 from analysis.propagation_analyzer import analyze_episode
+
+
+def _explain_metric_impact(fault_type, metric_name, mean_change, distance):
+    """Generate qualitative explanation of why metric changed."""
+    if mean_change is None or np.isnan(mean_change) or np.isinf(mean_change):
+        return None
+
+    metric_lower = metric_name.lower()
+    direction = "increased" if mean_change > 0 else "decreased"
+
+    # Database faults
+    if 'slow_queries' in fault_type:
+        if 'request' in metric_lower and mean_change < 0:
+            return "Database slowdown reduces request processing throughput"
+        elif 'latency' in metric_lower or 'duration' in metric_lower:
+            return "Queries taking longer due to database degradation"
+        elif 'queue' in metric_lower and mean_change > 0:
+            return "Requests backing up due to slow database responses"
+
+    # Error injection faults
+    elif 'inject_errors' in fault_type or 'error_rate' in fault_type:
+        if 'error' in metric_lower and mean_change > 0:
+            if distance == 0:
+                return "Direct fault injection increasing error rate"
+            else:
+                return f"Errors propagating from root cause ({distance} hops away)"
+        elif 'request' in metric_lower and mean_change < 0:
+            return "Failed requests reducing overall throughput"
+
+    # Latency injection faults
+    elif 'inject_latency' in fault_type or 'slow' in fault_type:
+        if 'latency' in metric_lower or 'duration' in metric_lower:
+            if distance == 0:
+                return "Artificial latency injection"
+            else:
+                return f"Latency propagating through dependency chain ({distance} hops)"
+        elif 'queue' in metric_lower and mean_change > 0:
+            return "Increased latency causing request queuing"
+
+    # Resource exhaustion
+    elif 'cpu' in fault_type or 'memory' in fault_type:
+        if 'request' in metric_lower and mean_change < 0:
+            return "Resource exhaustion limiting request processing"
+        elif 'latency' in metric_lower and mean_change > 0:
+            return "Resource contention increasing response times"
+
+    # Connection limit faults
+    elif 'connection' in fault_type or 'pool' in fault_type:
+        if 'reject' in metric_lower and mean_change > 0:
+            return "Connection limit reached, rejecting new connections"
+        elif 'request' in metric_lower and mean_change < 0:
+            return "Connection pool saturation limiting throughput"
+
+    # Generic explanations based on metric type and direction
+    if 'error' in metric_lower and mean_change > 0:
+        return f"Fault causing increased error rate ({distance} hops from root cause)"
+    elif 'request' in metric_lower and mean_change < 0:
+        return f"Degradation reducing request throughput ({distance} hops from root cause)"
+    elif 'latency' in metric_lower or 'duration' in metric_lower:
+        return f"Fault impact on response time ({distance} hops from root cause)"
+
+    return None
 
 
 def print_summary(summary):
@@ -98,13 +161,70 @@ def print_summary(summary):
         if report.primary_impact_type:
             print(f"   Primary Impact: {report.primary_impact_type}")
 
-        # Show top 3 impacted metrics
+        # Show top 3 impacted metrics with detailed analysis
         if report.ranked_metrics:
-            print(f"   Top Impacted Metrics:")
+            print(f"\n   Top Impacted Metrics:")
             for metric_info in report.ranked_metrics[:3]:
-                print(f"     • {metric_info['metric_name']}: " +
+                print(f"\n     • {metric_info['metric_name']}: " +
                       f"{metric_info['severity_class']} " +
-                      f"(score: {metric_info['severity_score']:.3f})")
+                      f"(severity: {metric_info['severity_score']:.3f})")
+
+                # Direction and magnitude
+                mean_change = metric_info.get('mean_change_pct')
+                cohens_d = metric_info.get('cohens_d')
+                cohens_d_cat = metric_info.get('cohens_d_category')
+
+                if mean_change is not None and not np.isinf(mean_change):
+                    direction = "increased" if mean_change > 0 else "decreased"
+                    print(f"       Direction: {direction} by {abs(mean_change):.1f}%")
+
+                if cohens_d is not None and not np.isnan(cohens_d) and not np.isinf(cohens_d):
+                    print(f"       Effect Size: {cohens_d_cat} (Cohen's d = {abs(cohens_d):.2f})")
+
+                # Baseline vs Fault values
+                baseline_mean = metric_info.get('baseline_mean')
+                fault_mean = metric_info.get('fault_mean')
+                baseline_std = metric_info.get('baseline_std')
+                fault_std = metric_info.get('fault_std')
+
+                if baseline_mean is not None and fault_mean is not None:
+                    print(f"       Baseline: mean={baseline_mean:.2f}, std={baseline_std:.2f}")
+                    print(f"       Fault:    mean={fault_mean:.2f}, std={fault_std:.2f}")
+
+                # Variance change
+                var_ratio = metric_info.get('variance_ratio')
+                if var_ratio is not None and not np.isnan(var_ratio) and not np.isinf(var_ratio):
+                    if var_ratio > 1.5:
+                        print(f"       Variance: increased {var_ratio:.1f}x (more unstable)")
+                    elif var_ratio < 0.67:
+                        print(f"       Variance: decreased {1/var_ratio:.1f}x (more stable)")
+
+                # Pattern changes
+                vol_ratio = metric_info.get('volatility_ratio')
+                burst_change = metric_info.get('burstiness_change')
+
+                if vol_ratio is not None and not np.isnan(vol_ratio) and not np.isinf(vol_ratio):
+                    if vol_ratio > 1.5:
+                        print(f"       Pattern: became {vol_ratio:.1f}x more volatile")
+
+                if burst_change is not None and not np.isnan(burst_change):
+                    if abs(burst_change) > 0.1:
+                        if burst_change > 0:
+                            print(f"       Pattern: became more bursty (Δ={burst_change:.2f})")
+                        else:
+                            print(f"       Pattern: became more regular (Δ={burst_change:.2f})")
+
+                # Show interpretation
+                interp = metric_info.get('interpretation', '')
+                if interp:
+                    print(f"       Summary: {interp}")
+
+                # Add qualitative explanation based on fault type and metric
+                fault_type = summary.root_cause.get('fault_type', '')
+                metric_name = metric_info['metric_name']
+                explanation = _explain_metric_impact(fault_type, metric_name, mean_change, report.distance_from_root)
+                if explanation:
+                    print(f"       Why: {explanation}")
 
     # Validation
     print(f"\n{'─'*80}")

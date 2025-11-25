@@ -215,16 +215,45 @@ class FaultPropagationAnalyzer:
         if first_impact_time is not None:
             impact_delay = first_impact_time - self.fault_start_time
 
-        # Prepare ranked metrics (top 10)
+        # Prepare ranked metrics (top 10) with detailed information
         ranked_metrics_list = []
         for rank, (metric_name, result) in enumerate(ranked[:10], start=1):
-            ranked_metrics_list.append({
+            # Extract key quantitative details
+            effect_sizes = result.effect_sizes
+            baseline_char = result.baseline_characterization
+            fault_char = result.fault_characterization
+
+            # Build detailed metric info
+            metric_detail = {
                 'rank': rank,
                 'metric_name': metric_name,
                 'severity_score': result.severity_score,
                 'severity_class': result.severity_class,
-                'interpretation': result.interpretation
-            })
+                'interpretation': result.interpretation,
+
+                # Direction and magnitude
+                'mean_change_pct': effect_sizes.get('mean_pct_change', None),
+                'median_change_pct': effect_sizes.get('median_pct_change', None),
+                'cohens_d': effect_sizes.get('cohens_d', None),
+                'cohens_d_category': effect_sizes.get('cohens_d_category', None),
+
+                # Baseline vs Fault
+                'baseline_mean': baseline_char.get('location', {}).get('mean', None),
+                'baseline_median': baseline_char.get('location', {}).get('median', None),
+                'baseline_std': baseline_char.get('spread', {}).get('std', None),
+                'fault_mean': fault_char.get('location', {}).get('mean', None),
+                'fault_median': fault_char.get('location', {}).get('median', None),
+                'fault_std': fault_char.get('spread', {}).get('std', None),
+
+                # Variance change
+                'variance_ratio': effect_sizes.get('variance_ratio', None),
+
+                # Pattern changes
+                'volatility_ratio': result.pattern_changes.get('volatility', {}).get('volatility_ratio', None),
+                'burstiness_change': result.pattern_changes.get('burstiness', {}).get('burstiness_change', None),
+            }
+
+            ranked_metrics_list.append(metric_detail)
 
         # Identify primary/secondary impact types
         impact_types = []
