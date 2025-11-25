@@ -10,10 +10,10 @@ if [ -z "$EPISODE_DIR" ]; then
 fi
 
 echo "=== Human-Readable Analysis ==="
-python analyze_fault_propagation.py "$EPISODE_DIR"
+python3 analyze_fault_propagation.py "$EPISODE_DIR"
 
 echo -e "\n\n=== JSON Summary (first few nodes) ==="
-python analyze_fault_propagation.py "$EPISODE_DIR" --json | \
+python3 analyze_fault_propagation.py "$EPISODE_DIR" --json | \
     jq '{
         scenario: .episode.scenario,
         root_cause: .episode.root_cause_node,

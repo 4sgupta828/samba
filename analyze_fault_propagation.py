@@ -201,10 +201,14 @@ class FaultPropagationAnalyzer:
         baseline = self.get_metric_summary(component_id, metric_name, baseline_time)
         fault = self.get_metric_summary(component_id, metric_name, fault_time)
 
-        if not baseline or not fault:
+        # For error metrics, treat missing baseline as 0
+        metric_type = self._classify_metric(metric_name)
+        if metric_type == "error" and not baseline and fault:
+            baseline = {"value": 0}
+        elif not baseline or not fault:
             return None
 
-        result = {"baseline": baseline, "fault": fault, "changes": {}}
+        result = {"baseline": baseline, "fault": fault, "changes": {}, "metric_type": self._classify_metric(metric_name)}
 
         # Compare p50, p90, p99 if available
         for percentile in ["p50", "p90", "p99"]:
@@ -218,24 +222,102 @@ class FaultPropagationAnalyzer:
                         "from": baseline_val,
                         "to": fault_val,
                         "change_pct": change_pct,
-                        "multiplier": change_mult
+                        "multiplier": change_mult,
+                        "significance": self._assess_significance(change_mult, metric_name)
                     }
 
         # Compare simple values
         if "value" in baseline and "value" in fault:
             baseline_val = baseline["value"]
             fault_val = fault["value"]
-            if baseline_val > 0:
+
+            # Handle error metrics specially
+            if "error" in metric_name.lower() or "reject" in metric_name.lower():
+                # For error metrics, any increase is significant
+                change_pct = ((fault_val - baseline_val) / (baseline_val + 1)) * 100  # +1 to avoid div by 0
+                multiplier = fault_val / (baseline_val + 1) if baseline_val == 0 else fault_val / baseline_val
+            elif baseline_val > 0:
                 change_pct = ((fault_val - baseline_val) / baseline_val) * 100
+                multiplier = fault_val / baseline_val
             else:
                 change_pct = 0 if fault_val == 0 else float('inf')
+                multiplier = float('inf') if fault_val > 0 else 1.0
+
             result["changes"]["value"] = {
                 "from": baseline_val,
                 "to": fault_val,
-                "change_pct": change_pct
+                "change_pct": change_pct,
+                "multiplier": multiplier if "multiplier" in locals() else (1.0 if change_pct == 0 else float('inf')),
+                "significance": self._assess_significance(multiplier if "multiplier" in locals() else 1.0, metric_name)
+            }
+
+        # Compare count metrics for error rates
+        if "count" in baseline and "count" in fault:
+            result["changes"]["count"] = {
+                "from": baseline["count"],
+                "to": fault["count"],
+                "change_pct": ((fault["count"] - baseline["count"]) / (baseline["count"] + 1)) * 100
             }
 
         return result
+
+    def _classify_metric(self, metric_name: str) -> str:
+        """Classify metric type for better interpretation"""
+        metric_lower = metric_name.lower()
+        if any(x in metric_lower for x in ["error", "fail", "reject", "timeout", "exception"]):
+            return "error"
+        elif any(x in metric_lower for x in ["latency", "duration", "time"]):
+            return "latency"
+        elif any(x in metric_lower for x in ["cpu", "memory", "utilization"]):
+            return "resource"
+        elif any(x in metric_lower for x in ["queue", "pool", "active", "connection"]):
+            return "saturation"
+        elif any(x in metric_lower for x in ["request", "throughput", "rate"]):
+            return "throughput"
+        return "other"
+
+    def _assess_significance(self, multiplier: float, metric_name: str) -> str:
+        """Assess the significance of a metric change"""
+        metric_type = self._classify_metric(metric_name)
+
+        # For error metrics, any increase is critical
+        if metric_type == "error":
+            if multiplier > 10:
+                return "CRITICAL"
+            elif multiplier > 2:
+                return "HIGH"
+            elif multiplier > 1.1:
+                return "MEDIUM"
+            return "LOW"
+
+        # For latency metrics
+        elif metric_type == "latency":
+            if multiplier > 10:
+                return "CRITICAL"
+            elif multiplier > 5:
+                return "HIGH"
+            elif multiplier > 2:
+                return "MEDIUM"
+            elif multiplier > 1.5:
+                return "LOW"
+            return "NEGLIGIBLE"
+
+        # For resource/saturation
+        elif metric_type in ["resource", "saturation"]:
+            if multiplier > 5:
+                return "CRITICAL"
+            elif multiplier > 3:
+                return "HIGH"
+            elif multiplier > 1.5:
+                return "MEDIUM"
+            return "LOW"
+
+        # Default
+        if abs(multiplier - 1.0) > 2:
+            return "HIGH"
+        elif abs(multiplier - 1.0) > 0.5:
+            return "MEDIUM"
+        return "LOW"
 
     def analyze_node_metrics(self, node_id: str, baseline_time: int,
                            fault_times: List[int]) -> Dict:
@@ -245,16 +327,29 @@ class FaultPropagationAnalyzer:
         # Define metrics to analyze based on node type
         metrics_to_check = {
             "Service": [
+                # Latency metrics
                 "service.{}.duration",
                 "service.{}.dependency.duration",
+                # Error metrics
+                "service.{}.errors",
+                "service.{}.dependency.errors",
+                "component.errors.total",
+                # Request metrics
+                "service.{}.requests",
+                "service.{}.dependency.requests",
+                # Resource metrics
                 "container.cpu.utilization",
                 "container.memory.usage_mb",
+                # Saturation metrics
                 "thread_pool.threads.active",
-                "thread_pool.queue.depth"
+                "thread_pool.queue.depth",
+                "connection_pool.connections.active",
+                "connection_pool.queue_depth"
             ],
             "SqlDatabase": [
                 "db.query.latency",
                 "db.connections.active",
+                "db.connections.rejected",
                 "db.cpu.utilization"
             ],
             "InMemoryCache": [
@@ -263,7 +358,14 @@ class FaultPropagationAnalyzer:
             ],
             "RequestGateway": [
                 "http.server.request.duration",
-                "gateway.dependency.duration"
+                "gateway.dependency.duration",
+                "gateway.dependency.errors",
+                "http.server.requests"
+            ],
+            "ExternalService": [
+                "external.response.duration",
+                "external.errors.total",
+                "external.requests.total"
             ]
         }
 
@@ -385,26 +487,59 @@ class FaultPropagationAnalyzer:
                 metrics_impact = self.analyze_node_metrics(node, baseline_time, fault_times)
 
                 if metrics_impact:
-                    for metric_name, impacts in metrics_impact.items():
-                        if not self.silent:
-                            print(f"\n   Metric: {metric_name}")
+                    # Group and sort metrics by significance
+                    critical_metrics = []
+                    high_metrics = []
+                    medium_metrics = []
 
+                    for metric_name, impacts in metrics_impact.items():
                         # Show most significant impact
                         max_impact = None
                         max_multiplier = 1.0
+                        max_significance = "LOW"
 
                         for impact_data in impacts:
                             for change_key, change_val in impact_data["impact"]["changes"].items():
                                 if "multiplier" in change_val:
                                     if abs(change_val["multiplier"] - 1.0) > abs(max_multiplier - 1.0):
                                         max_multiplier = change_val["multiplier"]
-                                        max_impact = (impact_data["time"], change_key, change_val)
+                                        max_impact = (impact_data["time"], change_key, change_val, metric_name)
+                                        max_significance = change_val.get("significance", "LOW")
 
-                        if max_impact and not self.silent:
-                            time, percentile, change = max_impact
-                            if change["multiplier"] > 1.5 or change["multiplier"] < 0.5:
-                                symbol = "📈" if change["multiplier"] > 1 else "📉"
-                                print(f"   {symbol} At t={time}s: {percentile}")
+                        if max_impact:
+                            metric_type = impact_data["impact"].get("metric_type", "other")
+                            if max_significance == "CRITICAL":
+                                critical_metrics.append((max_impact, metric_type))
+                            elif max_significance == "HIGH":
+                                high_metrics.append((max_impact, metric_type))
+                            elif max_significance == "MEDIUM":
+                                medium_metrics.append((max_impact, metric_type))
+
+                    # Display metrics by priority
+                    if not self.silent:
+                        all_metrics = critical_metrics + high_metrics + medium_metrics
+
+                        for (time, percentile, change, metric_name), metric_type in all_metrics:
+                            # Always show error metrics, or significant changes in other metrics
+                            should_display = (metric_type == "error" and change.get("from", 0) < change.get("to", 0)) or \
+                                           change["multiplier"] > 1.5 or change["multiplier"] < 0.5
+                            if should_display:
+                                # Choose symbol based on metric type and significance
+                                significance = change.get("significance", "LOW")
+                                if metric_type == "error":
+                                    if significance == "CRITICAL":
+                                        symbol = "🔴"
+                                    elif significance == "HIGH":
+                                        symbol = "🟠"
+                                    else:
+                                        symbol = "🟡"
+                                elif change["multiplier"] > 1:
+                                    symbol = "📈" if significance in ["LOW", "MEDIUM"] else "⚠️"
+                                else:
+                                    symbol = "📉"
+
+                                print(f"\n   {symbol} {metric_name} [{significance}]")
+                                print(f"      At t={time}s: {percentile}")
                                 print(f"      Baseline: {change['from']:.2f}")
                                 print(f"      Fault:    {change['to']:.2f}")
                                 print(f"      Change:   {change['multiplier']:.1f}x ({change['change_pct']:+.1f}%)")
