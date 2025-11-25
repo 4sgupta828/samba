@@ -433,8 +433,10 @@ def interpret_pattern_changes(pattern_analysis: Dict) -> str:
     if not np.isnan(vol_ratio):
         if vol_ratio > 2.0:
             interpretations.append(f"became {vol_ratio:.1f}x more volatile")
-        elif vol_ratio < 0.5:
+        elif vol_ratio < 0.5 and vol_ratio > 0:
             interpretations.append(f"became {1/vol_ratio:.1f}x less volatile")
+        elif vol_ratio == 0:
+            interpretations.append("became completely stable (zero volatility)")
 
     # Burstiness
     burst_change = pattern_analysis.get('burstiness', {}).get('burstiness_change', np.nan)

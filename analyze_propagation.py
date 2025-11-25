@@ -220,8 +220,10 @@ def print_summary(summary):
                 if var_ratio is not None and not np.isnan(var_ratio) and not np.isinf(var_ratio):
                     if var_ratio > 1.5:
                         print(f"       Variance: increased {var_ratio:.1f}x (more unstable)")
-                    elif var_ratio < 0.67:
+                    elif var_ratio < 0.67 and var_ratio > 0:
                         print(f"       Variance: decreased {1/var_ratio:.1f}x (more stable)")
+                    elif var_ratio == 0:
+                        print(f"       Variance: became zero (completely stable)")
 
                 # Pattern changes
                 vol_ratio = metric_info.get('volatility_ratio')

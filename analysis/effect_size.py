@@ -357,7 +357,9 @@ def interpret_effect_size(effect_sizes: Dict) -> str:
     if not np.isnan(var_ratio) and not np.isinf(var_ratio):
         if var_ratio > 2:
             parts.append(f"Variance increased {var_ratio:.1f}x (more unstable).")
-        elif var_ratio < 0.5:
+        elif var_ratio < 0.5 and var_ratio > 0:
             parts.append(f"Variance decreased {1/var_ratio:.1f}x (more stable).")
+        elif var_ratio == 0:
+            parts.append("Variance became zero (completely stable).")
 
     return " ".join(parts)
