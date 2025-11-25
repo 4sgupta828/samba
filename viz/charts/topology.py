@@ -129,6 +129,100 @@ def _calculate_circular_layout(graph: nx.DiGraph) -> Dict:
     return positions
 
 
+def extract_zoom_subgraph(graph: nx.DiGraph, start_node: str, max_depth: int = 2) -> nx.DiGraph:
+    """
+    Extract a focused subgraph starting from a node showing all its dependencies.
+
+    Uses bidirectional BFS to explore both upstream (callers) and downstream (dependencies)
+    from the start node equally.
+
+    Args:
+        graph: Full topology graph
+        start_node: Starting node ID (the clicked node)
+        max_depth: Maximum depth for recursive traversal
+                   0 = node only
+                   1 = node + direct neighbors (1 hop both directions)
+                   2+ = recursive traversal (default: 2)
+                   4+ = entire connected component
+
+    Returns:
+        Subgraph containing the start node and all reachable nodes within max_depth hops
+    """
+    if start_node not in graph:
+        return nx.DiGraph()
+
+    # Track nodes to include in subgraph
+    included_nodes = set([start_node])
+
+    # Depth 0: just the node itself, but include pods for service nodes
+    if max_depth == 0:
+        # If this is a service node, include its pods (direct children)
+        node_type = graph.nodes[start_node].get('type', '') if start_node in graph else ''
+        if node_type in ['ApiService', 'Service']:
+            # Add pods that belong to this service
+            for successor in graph.successors(start_node):
+                successor_type = graph.nodes[successor].get('type', '')
+                if successor_type in ['Pod', 'ComputeAgent']:
+                    # Check if this pod belongs to the service
+                    parent_service = graph.nodes[successor].get('parent_service')
+                    if parent_service == start_node:
+                        included_nodes.add(successor)
+
+        return graph.subgraph(included_nodes).copy()
+
+    # Depth 4+: return entire connected component (both directions)
+    if max_depth >= 4:
+        # Use undirected version to find connected component
+        undirected = graph.to_undirected()
+        connected_component = nx.node_connected_component(undirected, start_node)
+        return graph.subgraph(connected_component).copy()
+
+    # Bidirectional BFS: explore both upstream (predecessors) and downstream (successors)
+    # Skip pods during traversal - we'll only include pods for the start node
+    queue = [(start_node, 0)]
+    visited = set([start_node])
+
+    while queue:
+        current_node, depth = queue.pop(0)
+
+        # Don't expand beyond max_depth
+        if depth >= max_depth:
+            continue
+
+        # Explore downstream (successors) - what this node calls/depends on
+        for successor in graph.successors(current_node):
+            # Skip pods/agents unless they belong to the start node
+            successor_type = graph.nodes[successor].get('type', '')
+            if successor_type in ['Pod', 'ComputeAgent']:
+                # Only include if it's a pod of the start node
+                parent_service = graph.nodes[successor].get('parent_service')
+                if parent_service == start_node:
+                    included_nodes.add(successor)
+                continue  # Don't traverse through pods
+
+            included_nodes.add(successor)
+            if successor not in visited:
+                visited.add(successor)
+                queue.append((successor, depth + 1))
+
+        # Explore upstream (predecessors) - what calls this node
+        for predecessor in graph.predecessors(current_node):
+            # Skip pods/agents - we don't want to traverse through them
+            predecessor_type = graph.nodes[predecessor].get('type', '')
+            if predecessor_type in ['Pod', 'ComputeAgent']:
+                continue
+
+            included_nodes.add(predecessor)
+            if predecessor not in visited:
+                visited.add(predecessor)
+                queue.append((predecessor, depth + 1))
+
+    # Create subgraph with all included nodes
+    subgraph = graph.subgraph(included_nodes).copy()
+
+    return subgraph
+
+
 def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: list = None,
                          hidden_nodes: list = None, layout_type: str = 'spring') -> go.Figure:
     """

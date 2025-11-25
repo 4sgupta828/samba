@@ -14,7 +14,7 @@ import dash_bootstrap_components as dbc
 from data_loader import list_data_runs, list_episodes, load_episode
 
 # Import chart modules (will be created)
-from charts.topology import create_topology_chart
+from charts.topology import create_topology_chart, extract_zoom_subgraph
 from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
 from charts.propagation_timeline import create_propagation_timeline
@@ -304,6 +304,15 @@ app.layout = dbc.Container([
                                 className="me-3 d-inline-block",
                                 style={'fontSize': '0.85rem', 'fontWeight': 'bold', 'color': '#28a745'}
                             ),
+                            dbc.Checklist(
+                                id='zoom-mode-toggle',
+                                options=[{'label': ' Zoom Mode (click node to focus)', 'value': 'zoom'}],
+                                value=[],
+                                inline=True,
+                                switch=True,
+                                className="me-3 d-inline-block",
+                                style={'fontSize': '0.85rem', 'fontWeight': 'bold', 'color': '#17a2b8'}
+                            ),
                             html.Span("Show: ", style={'marginRight': '8px', 'fontSize': '0.85rem', 'color': '#6c757d'}),
                             dbc.Checklist(
                                 id='topology-filters',
@@ -319,7 +328,16 @@ app.layout = dbc.Container([
                 ]),
                 dbc.CardBody([
                     dcc.Graph(id='topology-graph', style={'height': '800px'}, config={'displayModeBar': True}),
-                    html.Div(id='topology-info', className="text-muted small mt-2")
+                    html.Div(id='topology-info', className="text-muted small mt-2"),
+                    html.Div(id='zoom-controls', children=[
+                        dbc.ButtonGroup([
+                            dbc.Button("Node Only", id='zoom-depth-0', size="sm", outline=True, color="info"),
+                            dbc.Button("1 Hop", id='zoom-depth-1', size="sm", outline=True, color="info"),
+                            dbc.Button("2 Hops", id='zoom-depth-2', size="sm", outline=True, color="info", active=True),
+                            dbc.Button("3 Hops", id='zoom-depth-3', size="sm", outline=True, color="info"),
+                            dbc.Button("4+ Hops", id='zoom-depth-4', size="sm", outline=True, color="info"),
+                        ], className="mt-2")
+                    ], style={'display': 'none'})
                 ], style={'padding': '10px'})
             ], className="shadow-sm")
         ], width=12)
@@ -355,6 +373,9 @@ app.layout = dbc.Container([
 
     # Hidden div to store episode data
     dcc.Store(id='episode-data-store'),
+
+    # Store for zoom mode state
+    dcc.Store(id='zoom-mode-store', data={'enabled': False, 'node': None, 'depth': 2}),
 
     # Interval for polling generation status
     dcc.Interval(id='generation-poll-interval', interval=2000, disabled=True),
@@ -510,15 +531,123 @@ def populate_topology_filters(episode_id):
 
 
 @app.callback(
+    Output('zoom-mode-store', 'data'),
+    Output('zoom-controls', 'style'),
+    Input('zoom-mode-toggle', 'value'),
+    Input('topology-graph', 'clickData'),
+    Input('zoom-depth-0', 'n_clicks'),
+    Input('zoom-depth-1', 'n_clicks'),
+    Input('zoom-depth-2', 'n_clicks'),
+    Input('zoom-depth-3', 'n_clicks'),
+    Input('zoom-depth-4', 'n_clicks'),
+    State('zoom-mode-store', 'data')
+)
+def update_zoom_mode(zoom_toggle, click_data, d0, d1, d2, d3, d4, current_zoom_state):
+    """Update zoom mode state when toggle is changed, node is clicked, or depth is changed."""
+    import dash
+
+    # Determine which input triggered the callback
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return current_zoom_state, {'display': 'none'}
+
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    # Get current depth (default to 2)
+    current_depth = current_zoom_state.get('depth', 2) if current_zoom_state else 2
+
+    # If depth button was clicked
+    if trigger_id.startswith('zoom-depth-'):
+        depth_map = {
+            'zoom-depth-0': 0,
+            'zoom-depth-1': 1,
+            'zoom-depth-2': 2,
+            'zoom-depth-3': 3,
+            'zoom-depth-4': 4
+        }
+        new_depth = depth_map.get(trigger_id, 2)
+        zoom_enabled = current_zoom_state.get('enabled', False)
+        return {
+            'enabled': zoom_enabled,
+            'node': current_zoom_state.get('node'),
+            'depth': new_depth
+        }, {'display': 'block' if zoom_enabled else 'none'}
+
+    # If zoom toggle was changed
+    if trigger_id == 'zoom-mode-toggle':
+        zoom_enabled = 'zoom' in (zoom_toggle or [])
+        if not zoom_enabled:
+            # Zoom disabled - reset state
+            return {'enabled': False, 'node': None, 'depth': current_depth}, {'display': 'none'}
+        else:
+            # Zoom enabled - keep current node and depth
+            return {
+                'enabled': True,
+                'node': current_zoom_state.get('node'),
+                'depth': current_depth
+            }, {'display': 'block'}
+
+    # If node was clicked
+    if trigger_id == 'topology-graph' and click_data:
+        zoom_enabled = current_zoom_state.get('enabled', False)
+        if zoom_enabled:
+            # Extract clicked node ID
+            point = click_data['points'][0]
+            node_id = point.get('customdata')
+
+            # Fallback methods
+            if not node_id and 'hovertext' in point:
+                hovertext = point['hovertext']
+                node_id = hovertext.split('<b>')[1].split('</b>')[0] if '<b>' in hovertext else None
+
+            if not node_id:
+                text = point.get('text', '')
+                node_id = text.split('<br>')[0] if text else None
+
+            return {
+                'enabled': True,
+                'node': node_id,
+                'depth': current_depth
+            }, {'display': 'block'}
+
+    zoom_enabled = current_zoom_state.get('enabled', False) if current_zoom_state else False
+    return current_zoom_state, {'display': 'block' if zoom_enabled else 'none'}
+
+
+@app.callback(
+    Output('zoom-depth-0', 'active'),
+    Output('zoom-depth-1', 'active'),
+    Output('zoom-depth-2', 'active'),
+    Output('zoom-depth-3', 'active'),
+    Output('zoom-depth-4', 'active'),
+    Input('zoom-mode-store', 'data')
+)
+def update_zoom_button_states(zoom_state):
+    """Update button active states based on current zoom depth."""
+    if not zoom_state:
+        return False, False, True, False, False  # Default to depth 2
+
+    depth = zoom_state.get('depth', 2)
+    return (
+        depth == 0,
+        depth == 1,
+        depth == 2,
+        depth == 3,
+        depth == 4
+    )
+
+
+@app.callback(
     Output('topology-graph', 'figure'),
     Output('topology-info', 'children'),
     Input('episode-data-store', 'data'),
     Input('topology-filters', 'value'),
     Input('use-filtered-topology', 'value'),
     Input('hide-healthy-nodes', 'value'),
-    Input('topology-layout-selector', 'value')
+    Input('topology-layout-selector', 'value'),
+    Input('zoom-mode-store', 'data')
 )
-def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layout_type):
+def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layout_type, zoom_state):
     """Update topology graph when episode is loaded or filters change."""
     if not episode_id or episode_id not in current_episode_data:
         return {}, ""
@@ -531,6 +660,11 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
     # Determine if we should hide healthy nodes
     hide_healthy_nodes = 'hide_healthy' in (hide_healthy or [])
 
+    # Check zoom mode first to determine which topology to use
+    zoom_enabled = zoom_state and zoom_state.get('enabled', False)
+    zoom_node = zoom_state.get('node') if zoom_state else None
+    zoom_depth = zoom_state.get('depth', 2) if zoom_state else 2
+
     # Choose graph based on filter setting
     if use_filtered_topo and episode_data.get('has_filtered_topology'):
         # Use filtered topology (only nodes reachable from root cause)
@@ -542,15 +676,37 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
             f"({filter_metadata.get('removed_nodes', 0)} nodes hidden)"
         )
     else:
+        # In zoom mode, always use physical topology to make pods available
+        # The visible_types filter will control whether they're shown
+        if zoom_enabled and zoom_node:
+            graph = episode_data['topology_graph']
+            info_text = f"Showing full topology ({graph.number_of_nodes()} nodes)"
         # Decide which topology to use based on whether ComputeAgent is in visible types
-        if visible_types and 'ComputeAgent' in visible_types:
+        elif visible_types and 'ComputeAgent' in visible_types:
             # User wants to see compute agents - use physical topology
             graph = episode_data['topology_graph']
+            info_text = f"Showing full topology ({graph.number_of_nodes()} nodes)"
         else:
             # User filtered out compute agents - use logical topology
             graph = episode_data['logical_topology_graph']
+            info_text = f"Showing full topology ({graph.number_of_nodes()} nodes)"
 
-        info_text = f"Showing full topology ({graph.number_of_nodes()} nodes)"
+    if zoom_enabled and zoom_node and zoom_node in graph:
+        # Extract zoom subgraph centered on the selected node
+        graph = extract_zoom_subgraph(graph, zoom_node, max_depth=zoom_depth)
+
+        # Create depth description
+        if zoom_depth == 0:
+            depth_desc = "node only"
+        elif zoom_depth == 1:
+            depth_desc = "1 hop"
+        else:
+            depth_desc = f"{zoom_depth} hops"
+
+        info_text = f"Zoom view: '{zoom_node}' ({depth_desc}) - {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
+    elif zoom_enabled and not zoom_node:
+        # Zoom mode is on but no node selected yet
+        info_text += " | Zoom Mode: Click a node to focus"
 
     # Get healthy nodes to hide if requested
     hidden_nodes = None
@@ -579,7 +735,7 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
     return create_topology_chart(
         graph,
         episode_data['label'],
-        visible_types=visible_types or [],
+        visible_types=visible_types,
         hidden_nodes=hidden_nodes,
         layout_type=layout_type or 'hierarchical'
     ), info_text
