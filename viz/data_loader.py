@@ -313,6 +313,14 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
     # Build graph from topology
     topology_graph = build_topology_graph(topology)
 
+    # Add synthetic workload generator node
+    # The workload generator is not in the topology.json but generates requests
+    topology_graph.add_node('workload', type='WorkloadGenerator', role='client')
+
+    # Connect workload to gateway (if gateway exists)
+    if 'gateway' in topology_graph:
+        topology_graph.add_edge('workload', 'gateway', type='http_request', latency=0)
+
     # Extract ground truth for backward compatibility
     ground_truth = {
         'root_cause_node': label.get('root_cause_node'),

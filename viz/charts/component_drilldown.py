@@ -12,6 +12,13 @@ from dash import dcc, html
 import dash_bootstrap_components as dbc
 from typing import Dict, List
 
+# Import workload charts
+from charts.workload import (
+    create_connection_pool_chart,
+    create_circuit_breaker_chart,
+    create_request_outcomes_chart
+)
+
 
 def get_component_type(component_id: str, graph: nx.DiGraph) -> str:
     """Get the type of a component from the graph."""
@@ -1570,6 +1577,47 @@ def create_compute_node_drilldown(metrics_df: pd.DataFrame, component_id: str,
     return components
 
 
+def create_workload_drilldown(metrics_df: pd.DataFrame, component_id: str,
+                               label_data: Dict) -> List:
+    """Create drill-down charts for WorkloadGenerator."""
+    charts = []
+
+    # Add description
+    description = html.Div([
+        html.P([
+            "The workload generator sends HTTP requests to the gateway and tracks ",
+            "connection pool usage, circuit breaker state, and request outcomes."
+        ], className="text-muted mb-3")
+    ])
+    charts.append(description)
+
+    # Connection pool chart
+    charts.append(
+        dcc.Graph(
+            figure=create_connection_pool_chart(metrics_df, label_data),
+            config={'displayModeBar': False}
+        )
+    )
+
+    # Circuit breaker chart
+    charts.append(
+        dcc.Graph(
+            figure=create_circuit_breaker_chart(metrics_df, label_data),
+            config={'displayModeBar': False}
+        )
+    )
+
+    # Request outcomes chart
+    charts.append(
+        dcc.Graph(
+            figure=create_request_outcomes_chart(metrics_df, label_data),
+            config={'displayModeBar': False}
+        )
+    )
+
+    return charts
+
+
 def create_gateway_drilldown(metrics_df: pd.DataFrame, component_id: str,
                              label_data: Dict) -> List[dcc.Graph]:
     """Create drill-down charts for RequestGateway."""
@@ -1921,6 +1969,9 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
         charts = create_queue_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'ExternalService':
         charts = create_external_drilldown(metrics_df, component_id, label_data)
+    elif component_type == 'WorkloadGenerator':
+        # Workload generator shows connection pool, circuit breaker, and request outcomes
+        charts = create_workload_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'RequestGateway':
         # Gateway uses generic HTTP server metrics
         charts = create_gateway_drilldown(metrics_df, component_id, label_data)

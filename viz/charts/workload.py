@@ -27,7 +27,7 @@ def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
     - In-flight requests / queue depth (count)
     """
     # Filter for client/workload metrics
-    workload_metrics = metrics_df[metrics_df['name'].str.startswith('workload.')].copy()
+    workload_metrics = metrics_df[metrics_df['metric_name'].str.startswith('workload.')].copy()
 
     if workload_metrics.empty:
         return go.Figure().add_annotation(
@@ -47,14 +47,12 @@ def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
         specs=[[{"secondary_y": True}], [{"secondary_y": False}]]
     )
 
-    # Extract sim_time from labels
-    workload_metrics['sim_time'] = workload_metrics['labels'].apply(
-        lambda x: x.get('sim.time', 0) if isinstance(x, dict) else 0
-    )
+    # sim_time should already be in the DataFrame
+    # If not, we can use it directly from the sim_time column
 
     # Row 1: Connection pool utilization (%) and active connections (count)
-    util_df = workload_metrics[workload_metrics['name'] == 'workload.connection_pool.utilization'].copy()
-    active_df = workload_metrics[workload_metrics['name'] == 'workload.connection_pool.active'].copy()
+    util_df = workload_metrics[workload_metrics['metric_name'] == 'workload.connection_pool.utilization'].copy()
+    active_df = workload_metrics[workload_metrics['metric_name'] == 'workload.connection_pool.active'].copy()
 
     if not util_df.empty:
         util_df = util_df.sort_values('sim_time')
@@ -91,7 +89,7 @@ def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
         )
 
     # Row 2: In-flight requests (queue depth)
-    inflight_df = workload_metrics[workload_metrics['name'] == 'workload.requests.in_flight'].copy()
+    inflight_df = workload_metrics[workload_metrics['metric_name'] == 'workload.requests.in_flight'].copy()
 
     if not inflight_df.empty:
         inflight_df = inflight_df.sort_values('sim_time')
@@ -161,7 +159,7 @@ def create_circuit_breaker_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
     - 2 = HALF_OPEN (testing recovery)
     """
     # Filter for circuit breaker state metric
-    cb_df = metrics_df[metrics_df['name'] == 'workload.circuit_breaker.state'].copy()
+    cb_df = metrics_df[metrics_df['metric_name'] == 'workload.circuit_breaker.state'].copy()
 
     if cb_df.empty:
         return go.Figure().add_annotation(
@@ -170,10 +168,7 @@ def create_circuit_breaker_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
             x=0.5, y=0.5, showarrow=False
         ).update_layout(template='plotly_dark', height=300)
 
-    # Extract sim_time
-    cb_df['sim_time'] = cb_df['labels'].apply(
-        lambda x: x.get('sim.time', 0) if isinstance(x, dict) else 0
-    )
+    # sim_time should already be in the DataFrame
     cb_df = cb_df.sort_values('sim_time')
 
     fig = go.Figure()
@@ -242,8 +237,8 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
     - Rejected requests (circuit breaker open or queue full)
     """
     # Filter for workload request metrics
-    req_df = metrics_df[metrics_df['name'] == 'workload.requests'].copy()
-    rejected_df = metrics_df[metrics_df['name'] == 'workload.requests.rejected'].copy()
+    req_df = metrics_df[metrics_df['metric_name'] == 'workload.requests'].copy()
+    rejected_df = metrics_df[metrics_df['metric_name'] == 'workload.requests.rejected'].copy()
 
     if req_df.empty and rejected_df.empty:
         return go.Figure().add_annotation(
@@ -252,34 +247,13 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
             x=0.5, y=0.5, showarrow=False
         ).update_layout(template='plotly_dark', height=400)
 
-    # Extract sim_time and type labels
-    def extract_labels(df):
-        df['sim_time'] = df['labels'].apply(
-            lambda x: x.get('sim.time', 0) if isinstance(x, dict) else 0
-        )
-        return df
-
-    req_df = extract_labels(req_df)
-    if not rejected_df.empty:
-        rejected_df = extract_labels(rejected_df)
-
-    # Calculate export interval for rate conversion
-    combined_df = pd.concat([req_df, rejected_df]) if not rejected_df.empty else req_df
-    if len(combined_df) >= 2:
-        unique_times = sorted(combined_df['sim_time'].unique())
-        if len(unique_times) >= 2:
-            time_diffs = pd.Series(unique_times).diff().dropna()
-            export_interval = time_diffs.median()
-        else:
-            export_interval = 5.0  # Default fallback
-    else:
-        export_interval = 5.0
+    # sim_time should already be in the DataFrame
 
     fig = go.Figure()
 
-    # Plot different request types
-    req_types = req_df['labels'].apply(lambda x: x.get('type', 'unknown') if isinstance(x, dict) else 'unknown')
-    req_df['type'] = req_types
+    # Plot different request types using the 'type' column directly
+    if 'type' not in req_df.columns:
+        req_df['type'] = 'unknown'
 
     colors = {
         'attempted': '#808080',  # Gray
@@ -292,29 +266,28 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
         type_df = req_df[req_df['type'] == req_type].copy()
         if not type_df.empty:
             type_df = type_df.sort_values('sim_time')
-            # Convert delta counts to rate (requests per second)
-            type_df['rate'] = type_df['value'] / export_interval
 
             fig.add_trace(
                 go.Scatter(
                     x=type_df['sim_time'],
-                    y=type_df['rate'],
+                    y=type_df['value'],
                     name=req_type.title(),
                     mode='lines',
                     line=dict(color=colors.get(req_type, '#ffffff'), width=2),
                     stackgroup='requests' if req_type != 'attempted' else None,
                     hovertemplate=f'<b>Time:</b> %{{x}}s<br>' +
-                                 f'<b>{req_type.title()}:</b> %{{y:.1f}} req/s<br>' +
+                                 f'<b>{req_type.title()}:</b> %{{y:.0f}} requests<br>' +
                                  '<extra></extra>'
                 )
             )
 
     # Plot rejections
     if not rejected_df.empty:
-        rejection_reasons = rejected_df['labels'].apply(
-            lambda x: x.get('reason', 'unknown') if isinstance(x, dict) else 'unknown'
-        )
-        rejected_df['reason'] = rejection_reasons
+        # Use the 'type' column as the rejection reason
+        if 'type' not in rejected_df.columns:
+            rejected_df['reason'] = 'unknown'
+        else:
+            rejected_df['reason'] = rejected_df['type']
 
         rejection_colors = {
             'circuit_breaker_open': '#ff00ff',  # Magenta
@@ -325,17 +298,16 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
             reason_df = rejected_df[rejected_df['reason'] == reason].copy()
             if not reason_df.empty:
                 reason_df = reason_df.sort_values('sim_time')
-                reason_df['rate'] = reason_df['value'] / export_interval
 
                 fig.add_trace(
                     go.Scatter(
                         x=reason_df['sim_time'],
-                        y=reason_df['rate'],
+                        y=reason_df['value'],
                         name=f'Rejected ({reason.replace("_", " ").title()})',
                         mode='lines',
                         line=dict(color=rejection_colors.get(reason, '#ffffff'), width=2, dash='dash'),
                         hovertemplate=f'<b>Time:</b> %{{x}}s<br>' +
-                                     f'<b>Rejected ({reason}):</b> %{{y:.1f}} req/s<br>' +
+                                     f'<b>Rejected ({reason}):</b> %{{y:.0f}} requests<br>' +
                                      '<extra></extra>'
                     )
                 )
@@ -362,7 +334,7 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
         hovermode='x unified',
         height=400,
         xaxis_title="Simulation Time (seconds)",
-        yaxis_title="Request Rate (req/s)",
+        yaxis_title="Requests",
         yaxis=dict(rangemode='tozero'),
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
