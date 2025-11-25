@@ -137,8 +137,12 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         Dictionary with episode metadata
     """
     # 1. Generate Topology first to see what node types are available
-    # Override topology size if specified
-    actual_topology_size = topology_size if topology_size is not None else None
+    # Override topology size if specified, otherwise use random size between 8-15
+    if topology_size is not None:
+        actual_topology_size = topology_size
+    else:
+        # Default: random number of nodes between 8-15
+        actual_topology_size = random.randint(8, 15)
 
     # If topology_size is specified, generate topology first to determine available node types
     if actual_topology_size is not None:
@@ -444,7 +448,7 @@ def main():
     parser.add_argument(
         '-n', '--episodes',
         type=int,
-        default=10,
+        default=1,
         help='Number of episodes to generate'
     )
     parser.add_argument(

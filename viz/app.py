@@ -6,6 +6,7 @@ from the Samba GNN training data generator.
 """
 
 import os
+import random
 from flask import Flask
 import dash
 from dash import dcc, html, Input, Output, State
@@ -23,6 +24,9 @@ from charts.propagation_timeline import create_propagation_timeline
 _default_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
 BASE_DATA_DIR = os.environ.get('SAMBA_DATA_DIR', _default_data_dir)
 PORT = int(os.environ.get('PORT', 8050))
+
+# Default topology size: random between 8-15 nodes
+DEFAULT_TOPOLOGY_SIZE = random.randint(8, 15)
 
 # Initialize Flask app
 server = Flask(__name__)
@@ -138,20 +142,21 @@ app.layout = dbc.Container([
                                 dbc.Input(
                                     id='episodes-input',
                                     type='number',
-                                    value=10,
+                                    value=1,
                                     min=1,
                                     max=1000,
                                     placeholder="Number of episodes to generate"
                                 ),
                             ], width=2),
                             dbc.Col([
-                                dbc.Label("Topology Size (optional):", html_for="topology-size-input"),
+                                dbc.Label("Topology Size:", html_for="topology-size-input"),
                                 dbc.Input(
                                     id='topology-size-input',
                                     type='number',
+                                    value=DEFAULT_TOPOLOGY_SIZE,
                                     min=2,
                                     max=100,
-                                    placeholder="Override nodes (e.g., 2-4)"
+                                    placeholder="Number of nodes (8-15 recommended)"
                                 ),
                             ], width=2),
                             dbc.Col([
@@ -216,7 +221,12 @@ app.layout = dbc.Container([
                 placeholder="Select a data run...",
                 clearable=False
             ),
-        ], width=4),
+        ], width=3),
+        dbc.Col([
+            dbc.Button("📋 Copy Path", id="copy-datarun-button", color="secondary", outline=True, size="sm", className="mt-4"),
+            dcc.Clipboard(id="clipboard-datarun", style={"display": "none"}),
+            html.Div(id="copy-feedback", className="mt-1 small text-success", style={"minHeight": "20px"}),
+        ], width=1),
         dbc.Col([
             dbc.Label("Select Episode:", html_for="episode-dropdown"),
             dcc.Dropdown(
@@ -389,6 +399,22 @@ def populate_episodes(data_run_path):
 
 
 @app.callback(
+    Output('clipboard-datarun', 'content'),
+    Output('copy-feedback', 'children'),
+    Input('copy-datarun-button', 'n_clicks'),
+    State('datarun-dropdown', 'value'),
+    prevent_initial_call=True
+)
+def copy_datarun_path(n_clicks, data_run_path):
+    """Copy data run path to clipboard when button is clicked."""
+    if not data_run_path:
+        return "", "No data run selected"
+
+    # Return the path to be copied and a feedback message
+    return data_run_path, "✓ Copied!"
+
+
+@app.callback(
     Output('episode-data-store', 'data'),
     Output('loading-status', 'children'),
     Output('metadata-card', 'children'),
@@ -467,8 +493,10 @@ def populate_topology_filters(episode_id):
         for t in sorted_types
     ]
 
-    # All types EXCEPT ComputeAgent enabled by default (show logical view)
-    default_values = [t for t in sorted_types if t != 'ComputeAgent']
+    # All types EXCEPT infrastructure components (ComputeAgent, ComputeNode, DeploymentController) enabled by default
+    # These are enabling infra components that clutter the topology view
+    infrastructure_types = {'ComputeAgent', 'ComputeNode', 'DeploymentController'}
+    default_values = [t for t in sorted_types if t not in infrastructure_types]
 
     # Configure filtered topology toggle based on availability
     has_filtered = episode_data.get('has_filtered_topology', False)
