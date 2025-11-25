@@ -122,12 +122,10 @@ def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
             line_width=0,
             row=row, col=1
         )
-        # Add fault start line
+        # Add fault start line (no annotation to avoid overlap)
         fig.add_vline(
             x=fault_start,
             line=dict(color="red", width=2, dash="dash"),
-            annotation_text="Fault Injection",
-            annotation_position="top",
             row=row, col=1
         )
 
@@ -143,7 +141,17 @@ def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
         height=600,
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=60, r=60, t=80, b=60)
+        margin=dict(l=60, r=60, t=100, b=60),
+        annotations=[
+            dict(
+                text="🔴 Red dashed line = Fault Injection",
+                xref="paper", yref="paper",
+                x=0.5, y=1.08,
+                showarrow=False,
+                font=dict(size=11, color="#ff6b6b"),
+                xanchor="center"
+            )
+        ]
     )
 
     return fig
@@ -203,9 +211,7 @@ def create_circuit_breaker_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
     )
     fig.add_vline(
         x=fault_start,
-        line=dict(color="red", width=2, dash="dash"),
-        annotation_text="Fault Injection",
-        annotation_position="top"
+        line=dict(color="red", width=2, dash="dash")
     )
 
     fig.update_layout(
@@ -220,7 +226,17 @@ def create_circuit_breaker_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
             ticktext=['CLOSED<br>(Normal)', 'OPEN<br>(Failing)', 'HALF_OPEN<br>(Testing)'],
             rangemode='tozero'
         ),
-        margin=dict(l=60, r=60, t=60, b=60)
+        margin=dict(l=60, r=60, t=60, b=60),
+        annotations=[
+            dict(
+                text="🔴 Red line = Fault Injection",
+                xref="paper", yref="paper",
+                x=0.5, y=1.1,
+                showarrow=False,
+                font=dict(size=11, color="#ff6b6b"),
+                xanchor="center"
+            )
+        ]
     )
 
     return fig
@@ -324,9 +340,7 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
     )
     fig.add_vline(
         x=fault_start,
-        line=dict(color="red", width=2, dash="dash"),
-        annotation_text="Fault Injection",
-        annotation_position="top"
+        line=dict(color="red", width=2, dash="dash")
     )
 
     fig.update_layout(
@@ -338,7 +352,17 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
         yaxis=dict(rangemode='tozero'),
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=60, r=60, t=80, b=60)
+        margin=dict(l=60, r=60, t=80, b=60),
+        annotations=[
+            dict(
+                text="🔴 Red line = Fault Injection",
+                xref="paper", yref="paper",
+                x=0.5, y=1.12,
+                showarrow=False,
+                font=dict(size=11, color="#ff6b6b"),
+                xanchor="center"
+            )
+        ]
     )
 
     return fig

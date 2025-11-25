@@ -1579,43 +1579,63 @@ def create_compute_node_drilldown(metrics_df: pd.DataFrame, component_id: str,
 
 def create_workload_drilldown(metrics_df: pd.DataFrame, component_id: str,
                                label_data: Dict) -> List:
-    """Create drill-down charts for WorkloadGenerator."""
-    charts = []
+    """Create drill-down charts for WorkloadGenerator.
 
-    # Add description
-    description = html.Div([
-        html.P([
-            "The workload generator sends HTTP requests to the gateway and tracks ",
-            "connection pool usage, circuit breaker state, and request outcomes."
-        ], className="text-muted mb-3")
-    ])
-    charts.append(description)
+    Returns charts wrapped in full-width rows.
+    """
+    return [
+        # Header with description (full width)
+        dbc.Row([
+            dbc.Col([
+                html.H5("Workload Generator Metrics", className="text-info mb-2 mt-3"),
+                html.P([
+                    "The workload generator sends HTTP requests to the gateway and tracks ",
+                    "connection pool usage, circuit breaker state, and request outcomes."
+                ], className="text-muted mb-3")
+            ], width=12)
+        ], className="mb-3"),
 
-    # Connection pool chart
-    charts.append(
-        dcc.Graph(
-            figure=create_connection_pool_chart(metrics_df, label_data),
-            config={'displayModeBar': False}
-        )
-    )
+        # Section 1: Resource Utilization (full width)
+        dbc.Row([
+            dbc.Col([
+                html.H6("Resource Utilization", className="text-secondary mb-2"),
+                dcc.Graph(
+                    figure=create_connection_pool_chart(metrics_df, label_data),
+                    config={'displayModeBar': False}
+                )
+            ], width=12)
+        ], className="mb-4"),
 
-    # Circuit breaker chart
-    charts.append(
-        dcc.Graph(
-            figure=create_circuit_breaker_chart(metrics_df, label_data),
-            config={'displayModeBar': False}
-        )
-    )
+        # Section 2: Circuit Breaker (full width)
+        dbc.Row([
+            dbc.Col([
+                html.H6("Circuit Breaker State", className="text-secondary mb-2"),
+                html.P(
+                    "Circuit breaker protects the system by stopping requests when failure rate is high.",
+                    className="text-muted small mb-2"
+                ),
+                dcc.Graph(
+                    figure=create_circuit_breaker_chart(metrics_df, label_data),
+                    config={'displayModeBar': False}
+                )
+            ], width=12)
+        ], className="mb-4"),
 
-    # Request outcomes chart
-    charts.append(
-        dcc.Graph(
-            figure=create_request_outcomes_chart(metrics_df, label_data),
-            config={'displayModeBar': False}
-        )
-    )
-
-    return charts
+        # Section 3: Request Outcomes (full width)
+        dbc.Row([
+            dbc.Col([
+                html.H6("Request Outcomes", className="text-secondary mb-2"),
+                html.P(
+                    "Shows successful, failed, timed-out, and rejected requests over time.",
+                    className="text-muted small mb-2"
+                ),
+                dcc.Graph(
+                    figure=create_request_outcomes_chart(metrics_df, label_data),
+                    config={'displayModeBar': False}
+                )
+            ], width=12)
+        ], className="mb-4")
+    ]
 
 
 def create_gateway_drilldown(metrics_df: pd.DataFrame, component_id: str,

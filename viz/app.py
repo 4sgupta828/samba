@@ -338,7 +338,7 @@ app.layout = dbc.Container([
                 id="drilldown-collapse",
                 is_open=False
             )
-        ])
+        ], width=12)
     ], className="mb-3"),
 
     # Failure propagation timeline
