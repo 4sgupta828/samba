@@ -235,14 +235,10 @@ def build_topology_graph(topology: Dict) -> nx.DiGraph:
     # Add nodes with attributes
     for node in topology['nodes']:
         node_id = node['id']
-        node_type = node['type']
-        role = node.get('role')
-        is_frontend = node.get('is_frontend', False)
-
-        G.add_node(node_id,
-                   type=node_type,
-                   role=role,
-                   is_frontend=is_frontend)
+        # Copy all attributes from the node (not just type, role, is_frontend)
+        # This includes compute_node, parent_service, etc.
+        node_attrs = {k: v for k, v in node.items() if k != 'id'}
+        G.add_node(node_id, **node_attrs)
 
     # Add edges
     for edge in topology['edges']:

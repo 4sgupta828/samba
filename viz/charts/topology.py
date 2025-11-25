@@ -21,10 +21,14 @@ def get_node_color(node_type: str, is_root_cause: bool = False) -> str:
     color_mapping = {
         'RequestGateway': '#7f8c8d',  # Gray
         'ApiService': '#3498db',      # Blue
+        'Service': '#3498db',         # Blue (same as ApiService)
         'SqlDatabase': '#27ae60',     # Green
         'InMemoryCache': '#f39c12',   # Orange
         'MessageQueue': '#9b59b6',    # Purple
-        'ExternalService': '#e74c3c'  # Red
+        'ExternalService': '#e74c3c', # Red
+        'Pod': '#5dade2',             # Light blue
+        'ComputeNode': '#85929e',     # Gray-blue
+        'ComputeAgent': '#99a3a4'     # Light gray
     }
     return color_mapping.get(node_type, '#95a5a6')
 
@@ -43,10 +47,14 @@ def get_node_symbol(node_type: str) -> str:
     symbol_mapping = {
         'RequestGateway': 'diamond',
         'ApiService': 'circle',
+        'Service': 'circle',
         'SqlDatabase': 'square',
         'InMemoryCache': 'hexagon',
         'MessageQueue': 'pentagon',
-        'ExternalService': 'star'
+        'ExternalService': 'star',
+        'Pod': 'circle-open',
+        'ComputeNode': 'square-open',
+        'ComputeAgent': 'diamond-open'
     }
     return symbol_mapping.get(node_type, 'circle')
 
@@ -63,19 +71,22 @@ def _calculate_hierarchical_layout(graph: nx.DiGraph) -> Dict:
     """
     from collections import defaultdict
 
-    # Define layer order (left to right: entry -> services -> backends)
+    # Define layer order (left to right: entry -> services -> backends -> infrastructure)
     layer_order = {
         'RequestGateway': 0,
+        'LoadBalancer': 0,
         'ApiService': 1,
+        'Service': 1,
+        'Pod': 1,
         'InMemoryCache': 2,
         'SqlDatabase': 2,
         'MessageQueue': 2,
         'ExternalService': 2,
-        'ComputeAgent': 1,
-        'ComputeInstance': 1,
-        'Container': 1,
-        'VM': 1,
-        'LoadBalancer': 0,
+        'ComputeNode': 3,
+        'ComputeAgent': 3,
+        'ComputeInstance': 3,
+        'Container': 3,
+        'VM': 3,
     }
 
     # Group nodes by layer
@@ -285,10 +296,12 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
     legend_entries = [
         ('Gateway', '#7f8c8d', 'diamond'),
         ('Service', '#3498db', 'circle'),
+        ('Pod', '#5dade2', 'circle-open'),
         ('Database', '#27ae60', 'square'),
         ('Cache', '#f39c12', 'hexagon'),
         ('Queue', '#9b59b6', 'pentagon'),
         ('External', '#e74c3c', 'star'),
+        ('Compute Node', '#85929e', 'square-open'),
         ('Root Cause', '#ff4444', 'circle'),
     ]
 

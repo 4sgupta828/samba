@@ -494,9 +494,9 @@ def populate_topology_filters(episode_id):
         for t in sorted_types
     ]
 
-    # All types EXCEPT infrastructure components (ComputeAgent, ComputeNode, DeploymentController) enabled by default
-    # These are enabling infra components that clutter the topology view
-    infrastructure_types = {'ComputeAgent', 'ComputeNode', 'DeploymentController'}
+    # All types EXCEPT infrastructure components and pods hidden by default
+    # These clutter the topology view - show services instead of individual pods
+    infrastructure_types = {'ComputeAgent', 'ComputeNode', 'DeploymentController', 'Pod'}
     default_values = [t for t in sorted_types if t not in infrastructure_types]
 
     # Configure filtered topology toggle based on availability

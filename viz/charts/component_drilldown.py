@@ -1213,6 +1213,363 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
     return charts
 
 
+def create_compute_node_drilldown(metrics_df: pd.DataFrame, component_id: str,
+                                 graph: nx.DiGraph, label_data: Dict) -> List:
+    """Create comprehensive drill-down for ComputeNode with K8s-style debugging info."""
+    components = []
+
+    # Get node specifications from topology
+    node_data = graph.nodes[component_id]
+    cpu_cores = node_data.get('cpu_cores', 0)
+    memory_gb = node_data.get('memory_gb', 0)
+    network_bandwidth = node_data.get('network_bandwidth_gbps', 0)
+
+    # Get node-level metrics
+    node_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    node_available_metrics = set(node_metrics['metric_name'].unique())
+
+    # Find all pods running on this compute node from topology
+    pod_ids = []
+    pod_to_service = {}  # Map pod to its service
+    for node in graph.nodes():
+        node_attrs = graph.nodes[node]
+        if node_attrs.get('type') == 'Pod' and node_attrs.get('compute_node') == component_id:
+            pod_ids.append(node)
+            pod_to_service[node] = node_attrs.get('parent_service', 'unknown')
+
+    # Get Pod metrics for pods running on this node
+    pod_metrics = metrics_df[metrics_df['component_id'].isin(pod_ids)] if pod_ids else pd.DataFrame()
+    pod_available_metrics = set(pod_metrics['metric_name'].unique()) if not pod_metrics.empty else set()
+
+    # Group services on this node
+    services_on_node = set(pod_to_service.values())
+    service_pod_counts = {}
+    for service in services_on_node:
+        service_pod_counts[service] = sum(1 for s in pod_to_service.values() if s == service)
+
+    # ===== SECTION 1: Node Specifications =====
+    components.append(html.Div([
+        html.H5("Node Specifications", style={'marginTop': '0px', 'marginBottom': '15px', 'color': '#3b82f6'}),
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.Strong("CPU Cores: "),
+                    html.Span(f"{cpu_cores}", style={'fontSize': '1.1em', 'color': '#10b981'})
+                ], style={'marginBottom': '8px'}),
+                html.Div([
+                    html.Strong("Total Memory: "),
+                    html.Span(f"{memory_gb} GB", style={'fontSize': '1.1em', 'color': '#10b981'})
+                ], style={'marginBottom': '8px'}),
+                html.Div([
+                    html.Strong("Network Bandwidth: "),
+                    html.Span(f"{network_bandwidth} Gbps", style={'fontSize': '1.1em', 'color': '#10b981'})
+                ], style={'marginBottom': '8px'}),
+            ], width=4),
+            dbc.Col([
+                html.Div([
+                    html.Strong("Pods Running: "),
+                    html.Span(f"{len(pod_ids)}", style={'fontSize': '1.1em', 'color': '#3b82f6'})
+                ], style={'marginBottom': '8px'}),
+                html.Div([
+                    html.Strong("Services: "),
+                    html.Span(f"{len(services_on_node)}", style={'fontSize': '1.1em', 'color': '#3b82f6'})
+                ], style={'marginBottom': '8px'}),
+                html.Div([
+                    html.Strong("Node ID: "),
+                    html.Span(component_id, style={'fontSize': '0.9em', 'color': '#9ca3af'})
+                ], style={'marginBottom': '8px'}),
+            ], width=4),
+        ])
+    ], style={
+        'backgroundColor': '#1f2937',
+        'padding': '20px',
+        'borderRadius': '8px',
+        'marginBottom': '20px',
+        'border': '1px solid #374151'
+    }))
+
+    # ===== SECTION 2: Node-Level Utilization =====
+    utilization_charts = []
+
+    # CPU Utilization with capacity indicator
+    if 'node.cpu.utilization' in node_available_metrics:
+        cpu_data = node_metrics[node_metrics['metric_name'] == 'node.cpu.utilization'].copy()
+        if not cpu_data.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=cpu_data['sim_time'],
+                y=cpu_data['value'],
+                mode='lines',
+                name='CPU Utilization',
+                line=dict(color='#3b82f6', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(59, 130, 246, 0.2)'
+            ))
+            # Add saturation line at 80%
+            fig.add_hline(y=80, line_dash="dash", line_color="orange",
+                         annotation_text="80% Saturation", annotation_position="right")
+            fig.add_hline(y=100, line_dash="dash", line_color="red",
+                         annotation_text="100% Capacity", annotation_position="right")
+
+            fig.update_layout(
+                title=f'Node CPU Utilization ({cpu_cores} cores)',
+                xaxis_title='Time (s)',
+                yaxis_title='Percentage (%)',
+                height=300,
+                margin=dict(l=50, r=20, t=40, b=40),
+                plot_bgcolor='#1f2937',
+                paper_bgcolor='#111827',
+                font=dict(color='#f9fafb'),
+                yaxis=dict(range=[0, 105])
+            )
+            utilization_charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    # Memory Utilization with capacity
+    if 'node.memory.usage_gb' in node_available_metrics:
+        mem_data = node_metrics[node_metrics['metric_name'] == 'node.memory.usage_gb'].copy()
+        if not mem_data.empty:
+            mem_data['percent'] = (mem_data['value'] / memory_gb) * 100 if memory_gb > 0 else 0
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=mem_data['sim_time'],
+                y=mem_data['percent'],
+                mode='lines',
+                name='Memory Utilization',
+                line=dict(color='#10b981', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(16, 185, 129, 0.2)',
+                customdata=mem_data[['value']],
+                hovertemplate='<b>Time</b>: %{x}s<br><b>Usage</b>: %{customdata[0]:.2f} GB (%{y:.1f}%)<extra></extra>'
+            ))
+            fig.add_hline(y=80, line_dash="dash", line_color="orange",
+                         annotation_text="80% Saturation", annotation_position="right")
+            fig.add_hline(y=100, line_dash="dash", line_color="red",
+                         annotation_text=f"100% ({memory_gb} GB)", annotation_position="right")
+
+            fig.update_layout(
+                title=f'Node Memory Utilization (Total: {memory_gb} GB)',
+                xaxis_title='Time (s)',
+                yaxis_title='Percentage (%)',
+                height=300,
+                margin=dict(l=50, r=20, t=40, b=40),
+                plot_bgcolor='#1f2937',
+                paper_bgcolor='#111827',
+                font=dict(color='#f9fafb'),
+                yaxis=dict(range=[0, 105])
+            )
+            utilization_charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    # Pod count over time
+    if 'node.pods.count' in node_available_metrics:
+        pod_count_data = node_metrics[node_metrics['metric_name'] == 'node.pods.count'].copy()
+        if not pod_count_data.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=pod_count_data['sim_time'],
+                y=pod_count_data['value'],
+                mode='lines',
+                name='Pod Count',
+                line=dict(color='#8b5cf6', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(139, 92, 246, 0.2)'
+            ))
+            fig.update_layout(
+                title='Pods Running on Node',
+                xaxis_title='Time (s)',
+                yaxis_title='Count',
+                height=300,
+                margin=dict(l=50, r=20, t=40, b=40),
+                plot_bgcolor='#1f2937',
+                paper_bgcolor='#111827',
+                font=dict(color='#f9fafb')
+            )
+            utilization_charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    if utilization_charts:
+        components.append(html.H5("Node-Level Utilization", style={'marginTop': '20px', 'marginBottom': '15px', 'color': '#3b82f6'}))
+        # Layout in 2-column grid
+        for i in range(0, len(utilization_charts), 2):
+            row_charts = utilization_charts[i:i+2]
+            components.append(dbc.Row([
+                dbc.Col(chart, width=6) for chart in row_charts
+            ], className="mb-3"))
+
+    # ===== SECTION 3: Service Distribution Pie Charts =====
+    if services_on_node and len(services_on_node) > 0:
+        components.append(html.H5("Service Resource Distribution", style={'marginTop': '20px', 'marginBottom': '15px', 'color': '#3b82f6'}))
+
+        pie_charts = []
+
+        # Create consistent color mapping for services
+        service_colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
+        sorted_services = sorted(services_on_node)
+        service_color_map = {service: service_colors[i % len(service_colors)] for i, service in enumerate(sorted_services)}
+
+        # Pie chart 1: By memory usage
+        if 'container.memory.usage_mb' in pod_available_metrics and not pod_metrics.empty:
+            mem_by_service = {}
+            for pod_id in pod_ids:
+                service = pod_to_service.get(pod_id, 'unknown')
+                pod_mem = pod_metrics[
+                    (pod_metrics['component_id'] == pod_id) &
+                    (pod_metrics['metric_name'] == 'container.memory.usage_mb')
+                ]['value'].mean()
+                if pd.notna(pod_mem):
+                    mem_by_service[service] = mem_by_service.get(service, 0) + pod_mem
+
+            if mem_by_service:
+                # Sort to ensure consistent ordering
+                sorted_mem_services = sorted(mem_by_service.keys())
+                colors = [service_color_map[s] for s in sorted_mem_services]
+
+                fig1 = go.Figure(data=[go.Pie(
+                    labels=sorted_mem_services,
+                    values=[mem_by_service[s] for s in sorted_mem_services],
+                    hole=0.3,
+                    marker=dict(colors=colors),
+                    textinfo='label+percent',
+                    textfont=dict(size=12)
+                )])
+                fig1.update_layout(
+                    title='Services by Memory Usage',
+                    height=350,
+                    margin=dict(l=20, r=20, t=40, b=20),
+                    paper_bgcolor='#111827',
+                    font=dict(color='#f9fafb'),
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+                )
+                pie_charts.append(dcc.Graph(figure=fig1, config={'displayModeBar': False}))
+
+        # Pie chart 2: By CPU usage
+        if 'container.cpu.utilization' in pod_available_metrics and not pod_metrics.empty:
+            cpu_by_service = {}
+            for pod_id in pod_ids:
+                service = pod_to_service.get(pod_id, 'unknown')
+                pod_cpu = pod_metrics[
+                    (pod_metrics['component_id'] == pod_id) &
+                    (pod_metrics['metric_name'] == 'container.cpu.utilization')
+                ]['value'].mean()
+                if pd.notna(pod_cpu):
+                    cpu_by_service[service] = cpu_by_service.get(service, 0) + pod_cpu
+
+            if cpu_by_service:
+                # Sort to ensure consistent ordering
+                sorted_cpu_services = sorted(cpu_by_service.keys())
+                colors = [service_color_map[s] for s in sorted_cpu_services]
+
+                fig2 = go.Figure(data=[go.Pie(
+                    labels=sorted_cpu_services,
+                    values=[cpu_by_service[s] for s in sorted_cpu_services],
+                    hole=0.3,
+                    marker=dict(colors=colors),
+                    textinfo='label+percent',
+                    textfont=dict(size=12)
+                )])
+                fig2.update_layout(
+                    title='Services by CPU Usage',
+                    height=350,
+                    margin=dict(l=20, r=20, t=40, b=20),
+                    paper_bgcolor='#111827',
+                    font=dict(color='#f9fafb'),
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+                )
+                pie_charts.append(dcc.Graph(figure=fig2, config={'displayModeBar': False}))
+
+        # Add pie charts in row
+        if pie_charts:
+            components.append(dbc.Row([
+                dbc.Col(chart, width=6) for chart in pie_charts
+            ], className="mb-3"))
+
+    # ===== SECTION 4: Pod Breakdown =====
+    if pod_available_metrics and pod_ids:
+        components.append(html.H5(f"Pod Resource Breakdown ({len(pod_ids)} pods)", style={'marginTop': '20px', 'marginBottom': '15px', 'color': '#3b82f6'}))
+
+        # Stacked CPU chart - show CPU per pod over time
+        if 'container.cpu.utilization' in pod_available_metrics:
+            cpu_data = pod_metrics[pod_metrics['metric_name'] == 'container.cpu.utilization'].copy()
+            if not cpu_data.empty:
+                fig = go.Figure()
+
+                # Add trace for each pod
+                colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
+                for idx, pod_id in enumerate(sorted(pod_ids)):
+                    pod_cpu = cpu_data[cpu_data['component_id'] == pod_id]
+                    if not pod_cpu.empty:
+                        service = pod_to_service.get(pod_id, 'unknown')
+                        fig.add_trace(go.Scatter(
+                            x=pod_cpu['sim_time'],
+                            y=pod_cpu['value'],
+                            mode='lines',
+                            name=f"{pod_id} ({service})",
+                            line=dict(width=2, color=colors[idx % len(colors)]),
+                            stackgroup='one'
+                        ))
+
+                fig.update_layout(
+                    title='CPU Usage by Pod (Stacked)',
+                    xaxis_title='Time (s)',
+                    yaxis_title='CPU %',
+                    height=350,
+                    margin=dict(l=50, r=20, t=40, b=40),
+                    plot_bgcolor='#1f2937',
+                    paper_bgcolor='#111827',
+                    font=dict(color='#f9fafb'),
+                    hovermode='x unified',
+                    legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+                )
+                components.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+        # Stacked Memory chart
+        if 'container.memory.usage_mb' in pod_available_metrics:
+            mem_data = pod_metrics[pod_metrics['metric_name'] == 'container.memory.usage_mb'].copy()
+            if not mem_data.empty:
+                fig = go.Figure()
+
+                colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
+                for idx, pod_id in enumerate(sorted(pod_ids)):
+                    pod_mem = mem_data[mem_data['component_id'] == pod_id]
+                    if not pod_mem.empty:
+                        service = pod_to_service.get(pod_id, 'unknown')
+                        fig.add_trace(go.Scatter(
+                            x=pod_mem['sim_time'],
+                            y=pod_mem['value'],
+                            mode='lines',
+                            name=f"{pod_id} ({service})",
+                            line=dict(width=2, color=colors[idx % len(colors)]),
+                            stackgroup='one'
+                        ))
+
+                fig.update_layout(
+                    title='Memory Usage by Pod (Stacked)',
+                    xaxis_title='Time (s)',
+                    yaxis_title='Memory (MB)',
+                    height=350,
+                    margin=dict(l=50, r=20, t=40, b=40),
+                    plot_bgcolor='#1f2937',
+                    paper_bgcolor='#111827',
+                    font=dict(color='#f9fafb'),
+                    hovermode='x unified',
+                    legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+                )
+                components.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    # If no content created, show message
+    if not components:
+        components.append(html.Div([
+            html.P(f"No detailed metrics available for {component_id}"),
+            html.P(f"Node metrics: {', '.join(node_available_metrics) if node_available_metrics else 'None'}",
+                   style={'fontSize': '0.8em', 'color': '#666'}),
+            html.P(f"Pod metrics: {', '.join(list(pod_available_metrics)[:5]) if pod_available_metrics else 'None'}",
+                   style={'fontSize': '0.8em', 'color': '#666'})
+        ]))
+
+    return components
+
+
 def create_gateway_drilldown(metrics_df: pd.DataFrame, component_id: str,
                              label_data: Dict) -> List[dcc.Graph]:
     """Create drill-down charts for RequestGateway."""
@@ -1567,6 +1924,9 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
     elif component_type == 'RequestGateway':
         # Gateway uses generic HTTP server metrics
         charts = create_gateway_drilldown(metrics_df, component_id, label_data)
+    elif component_type == 'ComputeNode':
+        # Infrastructure compute node
+        charts = create_compute_node_drilldown(metrics_df, component_id, graph, label_data)
     else:
         # Generic fallback - show whatever metrics exist
         component_metrics = metrics_df[metrics_df['component_id'] == component_id]
