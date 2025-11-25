@@ -36,6 +36,16 @@ def _explain_metric_impact(fault_type, metric_name, mean_change, distance):
             return "Queries taking longer due to database degradation"
         elif 'queue' in metric_lower and mean_change > 0:
             return "Requests backing up due to slow database responses"
+        # Message queue specific metrics
+        elif 'messages.visible' in metric_lower and mean_change > 0:
+            return "Messages accumulating due to slow consumer processing (database bottleneck)"
+        elif 'messages.age' in metric_lower and mean_change > 0:
+            return "Messages waiting longer due to slow consumer processing (database bottleneck)"
+        elif 'messages.in_flight' in metric_lower:
+            if mean_change > 0:
+                return "More messages being processed (consumers working harder to drain queue)"
+            else:
+                return "Fewer messages being processed (consumers stuck waiting on database)"
 
     # Error injection faults
     elif 'inject_errors' in fault_type or 'error_rate' in fault_type:
@@ -78,6 +88,20 @@ def _explain_metric_impact(fault_type, metric_name, mean_change, distance):
         return f"Degradation reducing request throughput ({distance} hops from root cause)"
     elif 'latency' in metric_lower or 'duration' in metric_lower:
         return f"Fault impact on response time ({distance} hops from root cause)"
+    # Message queue metrics (generic)
+    elif 'mq.' in metric_lower or 'queue' in metric_lower:
+        if 'messages.visible' in metric_lower or 'depth' in metric_lower:
+            if mean_change > 0:
+                return f"Messages accumulating due to degraded processing ({distance} hops from root cause)"
+            else:
+                return f"Queue draining (fewer messages waiting)"
+        elif 'age' in metric_lower and mean_change > 0:
+            return f"Messages waiting longer due to slow processing ({distance} hops from root cause)"
+        elif 'in_flight' in metric_lower or 'active' in metric_lower:
+            if mean_change > 0:
+                return f"More concurrent processing (attempting to handle backlog)"
+            else:
+                return f"Less concurrent processing (consumers blocked or failing)"
 
     return None
 
