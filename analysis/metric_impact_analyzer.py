@@ -252,7 +252,11 @@ def analyze_metric_impact(
     fault = values[expected_changepoint_index:]
 
     # Check if we have enough data
-    if len(baseline) < 3 or len(fault) < 3:
+    # Special case: For error/failure metrics, baseline=0 and fault>0 is CRITICAL (errors appearing)
+    is_error_metric = any(keyword in metric_name.lower() for keyword in ['error', 'failure', 'timeout', 'reject'])
+
+    if len(fault) < 3:
+        # Not enough fault data - truly insufficient
         return MetricImpactResult(
             metric_name=metric_name,
             severity_score=0.0,
@@ -265,6 +269,29 @@ def analyze_metric_impact(
             changepoint={'detected': False, 'reason': 'insufficient_data'},
             interpretation='Insufficient data for analysis'
         )
+
+    if len(baseline) < 3:
+        # Insufficient baseline data, but we have fault data
+        if is_error_metric:
+            # For error metrics: 0→N is CRITICAL (errors appearing from healthy state)
+            # Treat baseline as all zeros
+            baseline_duration = fault_start_time - times[0] if len(times) > 0 else 120
+            num_baseline_samples = max(3, int(baseline_duration / 5))  # Assume 5s sampling
+            baseline = np.zeros(num_baseline_samples)
+        else:
+            # For other metrics: can't analyze without baseline reference
+            return MetricImpactResult(
+                metric_name=metric_name,
+                severity_score=0.0,
+                severity_class='NEGLIGIBLE',
+                baseline_characterization={'error': 'insufficient_baseline'},
+                fault_characterization={'sufficient_data': len(fault)},
+                distribution_comparison={},
+                effect_sizes={},
+                pattern_changes={},
+                changepoint={'detected': False, 'reason': 'insufficient_baseline'},
+                interpretation='Insufficient baseline data for analysis'
+            )
 
     # 1. Characterize baseline and fault periods
     baseline_char = characterize_timeseries(baseline, period_label='baseline')
