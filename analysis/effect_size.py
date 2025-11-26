@@ -59,7 +59,13 @@ def cohens_d(baseline: np.ndarray, fault: np.ndarray) -> float:
     pooled_std = np.sqrt(pooled_var)
 
     if pooled_std == 0:
-        return 0.0 if mean_baseline == mean_fault else np.inf
+        # Both distributions have zero variance
+        if mean_baseline == mean_fault:
+            return 0.0  # No change
+        else:
+            # Use a large but finite value instead of infinity
+            # Indicates complete separation with no variance
+            return 999.0 if mean_fault > mean_baseline else -999.0
 
     d = (mean_fault - mean_baseline) / pooled_std
     return float(d)
@@ -92,7 +98,11 @@ def glass_delta(baseline: np.ndarray, fault: np.ndarray) -> float:
     std_baseline = np.std(baseline_clean, ddof=1)
 
     if std_baseline == 0:
-        return 0.0 if mean_baseline == mean_fault else np.inf
+        if mean_baseline == mean_fault:
+            return 0.0  # No change
+        else:
+            # Use a large but finite value instead of infinity
+            return 999.0 if mean_fault > mean_baseline else -999.0
 
     delta = (mean_fault - mean_baseline) / std_baseline
     return float(delta)
@@ -264,27 +274,69 @@ def compute_percentage_changes(baseline: np.ndarray, fault: np.ndarray) -> Dict:
     # Location changes
     mean_baseline = np.mean(baseline_clean)
     mean_fault = np.mean(fault_clean)
-    mean_pct_change = ((mean_fault - mean_baseline) / mean_baseline * 100) if mean_baseline != 0 else np.inf
+
+    # Handle division by zero for percentage changes
+    if mean_baseline != 0:
+        mean_pct_change = (mean_fault - mean_baseline) / abs(mean_baseline) * 100
+    elif mean_fault != 0:
+        # Changed from 0 to non-zero (e.g., errors appearing)
+        mean_pct_change = 10000.0  # Large but finite value indicating "new appearance"
+    else:
+        mean_pct_change = 0.0  # Both are zero, no change
 
     median_baseline = np.median(baseline_clean)
     median_fault = np.median(fault_clean)
-    median_pct_change = ((median_fault - median_baseline) / median_baseline * 100) if median_baseline != 0 else np.inf
+
+    if median_baseline != 0:
+        median_pct_change = (median_fault - median_baseline) / abs(median_baseline) * 100
+    elif median_fault != 0:
+        median_pct_change = 10000.0
+    else:
+        median_pct_change = 0.0
 
     # Spread changes
     std_baseline = np.std(baseline_clean, ddof=1)
     std_fault = np.std(fault_clean, ddof=1)
-    std_pct_change = ((std_fault - std_baseline) / std_baseline * 100) if std_baseline != 0 else np.inf
+
+    if std_baseline != 0:
+        std_pct_change = (std_fault - std_baseline) / std_baseline * 100
+    elif std_fault != 0:
+        std_pct_change = 10000.0
+    else:
+        std_pct_change = 0.0
 
     q75_b, q25_b = np.percentile(baseline_clean, [75, 25])
     q75_f, q25_f = np.percentile(fault_clean, [75, 25])
     iqr_baseline = q75_b - q25_b
     iqr_fault = q75_f - q25_f
-    iqr_pct_change = ((iqr_fault - iqr_baseline) / iqr_baseline * 100) if iqr_baseline != 0 else np.inf
+
+    if iqr_baseline != 0:
+        iqr_pct_change = (iqr_fault - iqr_baseline) / iqr_baseline * 100
+    elif iqr_fault != 0:
+        iqr_pct_change = 10000.0
+    else:
+        iqr_pct_change = 0.0
 
     # Coefficient of variation change
-    cv_baseline = std_baseline / mean_baseline if mean_baseline != 0 else np.inf
-    cv_fault = std_fault / mean_fault if mean_fault != 0 else np.inf
+    cv_baseline = std_baseline / abs(mean_baseline) if mean_baseline != 0 else 0.0
+    cv_fault = std_fault / abs(mean_fault) if mean_fault != 0 else 0.0
     cv_change = cv_fault - cv_baseline
+
+    # Variance ratio - handle zero baseline variance
+    if std_baseline != 0:
+        variance_ratio = (std_fault ** 2) / (std_baseline ** 2)
+    elif std_fault != 0:
+        variance_ratio = 10000.0  # Large but finite
+    else:
+        variance_ratio = 1.0  # Both zero, no change
+
+    # IQR ratio
+    if iqr_baseline != 0:
+        iqr_ratio = iqr_fault / iqr_baseline
+    elif iqr_fault != 0:
+        iqr_ratio = 10000.0
+    else:
+        iqr_ratio = 1.0
 
     return {
         'mean_pct_change': float(mean_pct_change),
@@ -292,8 +344,8 @@ def compute_percentage_changes(baseline: np.ndarray, fault: np.ndarray) -> Dict:
         'std_pct_change': float(std_pct_change),
         'iqr_pct_change': float(iqr_pct_change),
         'cv_change': float(cv_change),
-        'variance_ratio': float(std_fault ** 2 / std_baseline ** 2) if std_baseline != 0 else np.inf,
-        'iqr_ratio': float(iqr_fault / iqr_baseline) if iqr_baseline != 0 else np.inf
+        'variance_ratio': float(variance_ratio),
+        'iqr_ratio': float(iqr_ratio)
     }
 
 
@@ -349,13 +401,24 @@ def interpret_effect_size(effect_sizes: Dict) -> str:
     direction = "increased" if cohens_d_val > 0 else "decreased"
     abs_d = abs(cohens_d_val)
 
-    parts = [
-        f"Mean {direction} by {abs(mean_pct):.1f}%.",
-        f"Effect size: {cohens_d_cat} (Cohen's d = {abs_d:.2f})."
-    ]
+    # Handle very large percentage changes (from zero baseline)
+    if abs(mean_pct) >= 10000:
+        pct_str = "∞" if direction == "increased" else "-∞"
+        parts = [f"Mean {direction} by {pct_str}% (appeared from zero)."]
+    else:
+        parts = [f"Mean {direction} by {abs(mean_pct):.1f}%."]
 
-    if not np.isnan(var_ratio) and not np.isinf(var_ratio):
-        if var_ratio > 2:
+    # Handle very large Cohen's d
+    if abs_d >= 999:
+        parts.append(f"Effect size: {cohens_d_cat} (Cohen's d = ∞).")
+    else:
+        parts.append(f"Effect size: {cohens_d_cat} (Cohen's d = {abs_d:.2f}).")
+
+    # Handle variance ratio
+    if not np.isnan(var_ratio):
+        if var_ratio >= 10000:
+            parts.append("Variance increased from zero (became unstable).")
+        elif var_ratio > 2:
             parts.append(f"Variance increased {var_ratio:.1f}x (more unstable).")
         elif var_ratio < 0.5 and var_ratio > 0:
             parts.append(f"Variance decreased {1/var_ratio:.1f}x (more stable).")

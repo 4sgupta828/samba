@@ -141,7 +141,15 @@ def compare_volatility(baseline: np.ndarray, fault: np.ndarray, window: int = 5)
     baseline_mean_vol = np.mean(baseline_vol)
     fault_mean_vol = np.mean(fault_vol)
 
-    volatility_ratio = fault_mean_vol / baseline_mean_vol if baseline_mean_vol > 0 else np.inf
+    # Handle division by zero for volatility ratio
+    if baseline_mean_vol > 0:
+        volatility_ratio = fault_mean_vol / baseline_mean_vol
+    elif fault_mean_vol > 0:
+        # Changed from zero volatility to non-zero (became volatile)
+        volatility_ratio = 10000.0  # Large but finite value
+    else:
+        # Both zero - no volatility in either period
+        volatility_ratio = 1.0  # No change
 
     # Interpretation
     if volatility_ratio < 0.8:
@@ -431,7 +439,9 @@ def interpret_pattern_changes(pattern_analysis: Dict) -> str:
     # Volatility
     vol_ratio = pattern_analysis.get('volatility', {}).get('volatility_ratio', np.nan)
     if not np.isnan(vol_ratio):
-        if vol_ratio > 2.0:
+        if vol_ratio >= 10000:
+            interpretations.append("became volatile (from zero volatility)")
+        elif vol_ratio > 2.0:
             interpretations.append(f"became {vol_ratio:.1f}x more volatile")
         elif vol_ratio < 0.5 and vol_ratio > 0:
             interpretations.append(f"became {1/vol_ratio:.1f}x less volatile")
