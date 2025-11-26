@@ -1045,6 +1045,29 @@ def create_database_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
+    # Query latency (percentiles)
+    if 'db.query.latency' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_percentile_chart(
+                metrics_df, component_id,
+                'db.query.latency',
+                'Query Latency'
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Query errors (counter)
+    if 'db.query.errors' in available_metrics:
+        charts.append(dcc.Graph(
+            figure=create_metric_chart(
+                metrics_df, component_id,
+                'db.query.errors',
+                'Query Errors',
+                'Count'
+            ),
+            config={'displayModeBar': False}
+        ))
+
     # If no charts were created, show a message
     if not charts:
         charts.append(html.Div([

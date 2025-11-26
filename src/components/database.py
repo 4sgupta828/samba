@@ -72,6 +72,11 @@ class SqlDatabase(EnrichedComponent):
         )
         # Query latency histogram (uses default OTel buckets; size reduction via SummarizedJsonMetricExporter)
         self.query_latency = self.meter.create_histogram("db.query.latency", unit="ms")
+        # Query errors counter
+        self.query_errors_counter = self.meter.create_counter(
+            "db.query.errors",
+            description="Total number of query errors (transient errors, timeouts, dynamics-driven failures)"
+        )
         # Use observable gauge like production systems (CloudWatch RDS.CPUUtilization, etc.)
         self.cpu_util_gauge = self.meter.create_observable_gauge(
             "db.cpu.utilization",
@@ -291,12 +296,24 @@ class SqlDatabase(EnrichedComponent):
 
                 # Transient errors during query execution
                 if self._should_transient_error_occur('lock_timeout'):
+                    self.query_errors_counter.add(1, {
+                        "component.id": self.id,
+                        "error.type": "lock_timeout"
+                    })
                     self._raise_transient_error('lock_timeout')
 
                 if self._should_transient_error_occur('deadlock'):
+                    self.query_errors_counter.add(1, {
+                        "component.id": self.id,
+                        "error.type": "deadlock"
+                    })
                     self._raise_transient_error('deadlock')
 
                 if self._should_transient_error_occur('statement_timeout'):
+                    self.query_errors_counter.add(1, {
+                        "component.id": self.id,
+                        "error.type": "statement_timeout"
+                    })
                     self._raise_transient_error('statement_timeout')
 
                 # --- Query Time: Always use dynamics engine (single source of truth) ---
@@ -307,6 +324,10 @@ class SqlDatabase(EnrichedComponent):
 
                 # Check if query should fail based on dynamics error rate
                 if random.random() < self.dynamics.get_error_rate():
+                    self.query_errors_counter.add(1, {
+                        "component.id": self.id,
+                        "error.type": "query_failure"
+                    })
                     self._emit_log("ERROR", "Query failed due to dynamics-driven error")
                     raise Exception("Database query failed: Resource temporarily unavailable")
 

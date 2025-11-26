@@ -141,42 +141,6 @@ def create_fault_propagation_analysis(episode_dir):
                 ])
             ], className="mb-3 shadow-sm"),
 
-            # Analysis output card
-            dbc.Card([
-                dbc.CardHeader([
-                    html.Div([
-                        html.H5("📊 Detailed Analysis Report", className="mb-0 d-inline-block"),
-                        dbc.Badge("SOTA Statistical Methods", color="primary", className="ms-2"),
-                    ])
-                ]),
-                dbc.CardBody([
-                    # Quick guide
-                    dbc.Alert([
-                        html.Strong("Report includes:"),
-                        " Impact summary by severity • Propagation timing & delays • ",
-                        "Top impacted nodes with metric details (effect size, direction, variance, patterns) • ",
-                        "Validation of fault injection quality"
-                    ], color="info", className="mb-3 small"),
-
-                    # Raw output display
-                    html.Pre(
-                        output,
-                        style={
-                            'backgroundColor': '#1e1e1e',
-                            'color': '#d4d4d4',
-                            'padding': '20px',
-                            'borderRadius': '5px',
-                            'overflow': 'auto',
-                            'maxHeight': '1200px',
-                            'fontSize': '0.9em',
-                            'lineHeight': '1.6',
-                            'whiteSpace': 'pre-wrap',
-                            'fontFamily': "'Fira Code', 'Courier New', monospace"
-                        }
-                    )
-                ])
-            ], className="shadow-sm"),
-
             # Enhanced JSON Data Section (collapsible)
             dbc.Card([
                 dbc.CardHeader([
