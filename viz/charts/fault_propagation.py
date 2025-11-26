@@ -23,7 +23,7 @@ def run_enhanced_analysis(episode_dir):
             os.path.dirname(__file__), '..', '..', 'analyze_propagation.py'
         ))
 
-        # Run the new enhanced analyzer
+        # Run the new enhanced analyzer for text output
         result = subprocess.run(
             [sys.executable, script_path, episode_dir],
             capture_output=True,
@@ -31,15 +31,29 @@ def run_enhanced_analysis(episode_dir):
             timeout=120
         )
 
-        if result.returncode == 0:
-            return result.stdout, None
-        else:
-            return None, f"Analysis failed:\n{result.stderr}"
+        if result.returncode != 0:
+            return None, None, f"Analysis failed:\n{result.stderr}"
+
+        text_output = result.stdout
+
+        # Also run with --json-only to get the enhanced JSON
+        json_result = subprocess.run(
+            [sys.executable, script_path, episode_dir, '--json-only'],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        json_output = None
+        if json_result.returncode == 0:
+            json_output = json_result.stdout
+
+        return text_output, json_output, None
 
     except subprocess.TimeoutExpired:
-        return None, "Analysis timed out (>120s). Try analyzing a smaller episode."
+        return None, None, "Analysis timed out (>120s). Try analyzing a smaller episode."
     except Exception as e:
-        return None, f"Error running analysis: {str(e)}"
+        return None, None, f"Error running analysis: {str(e)}"
 
 
 def create_fault_propagation_analysis(episode_dir):
@@ -53,7 +67,7 @@ def create_fault_propagation_analysis(episode_dir):
 
         # Run enhanced analysis
         print("  Running SOTA analysis...")
-        output, error = run_enhanced_analysis(episode_dir)
+        text_output, json_output, error = run_enhanced_analysis(episode_dir)
 
         if error:
             print(f"  ✗ Error: {error}")
@@ -68,6 +82,7 @@ def create_fault_propagation_analysis(episode_dir):
             ])
 
         print("  ✓ Analysis complete!")
+        output = text_output  # For backward compatibility with existing code
 
         # Parse output to extract key summary info
         lines = output.split('\n')
@@ -160,7 +175,54 @@ def create_fault_propagation_analysis(episode_dir):
                         }
                     )
                 ])
-            ], className="shadow-sm")
+            ], className="shadow-sm"),
+
+            # Enhanced JSON Data Section (collapsible)
+            dbc.Card([
+                dbc.CardHeader([
+                    html.Div([
+                        html.H5("📄 Complete Enhanced Analysis (JSON)", className="mb-0 d-inline-block"),
+                        dbc.Badge("Enhanced with Latency, Config, Saturation & Causal Analysis",
+                                 color="success", className="ms-2"),
+                    ])
+                ]),
+                dbc.CardBody([
+                    dbc.Alert([
+                        html.Strong("Enhanced Analysis includes:"),
+                        html.Ul([
+                            html.Li("Latency Analysis: Actual latencies from traces (baseline vs fault, p50/p95/p99)"),
+                            html.Li("Configuration Context: Retry policies, connection pools, timeouts"),
+                            html.Li("Resource Saturation: When pools/CPU hit capacity limits"),
+                            html.Li("Causal Chains: Mechanistic explanations of HOW and WHY faults propagated")
+                        ], className="mb-0 small")
+                    ], color="info", className="mb-3"),
+
+                    # JSON output display
+                    html.Details([
+                        html.Summary([
+                            html.Strong("Click to expand full JSON data"),
+                            html.Span(" (includes all enhanced analysis fields)", className="text-muted small ms-2")
+                        ], style={'cursor': 'pointer', 'padding': '10px', 'backgroundColor': '#f8f9fa',
+                                 'borderRadius': '5px', 'fontWeight': 'bold'}),
+                        html.Pre(
+                            json_output if json_output else "JSON data not available",
+                            style={
+                                'backgroundColor': '#1e1e1e',
+                                'color': '#d4d4d4',
+                                'padding': '20px',
+                                'borderRadius': '5px',
+                                'overflow': 'auto',
+                                'maxHeight': '800px',
+                                'fontSize': '0.85em',
+                                'lineHeight': '1.5',
+                                'whiteSpace': 'pre-wrap',
+                                'fontFamily': "'Fira Code', 'Courier New', monospace",
+                                'marginTop': '10px'
+                            }
+                        )
+                    ], open=False)  # Collapsed by default
+                ])
+            ], className="shadow-sm mt-3")
         ])
 
         print("  ✓ Layout created successfully!")
