@@ -7,6 +7,8 @@ from the Samba GNN training data generator.
 
 import os
 import random
+import sys
+from pathlib import Path
 from flask import Flask
 import dash
 from dash import dcc, html, Input, Output, State
@@ -18,6 +20,10 @@ from charts.topology import create_topology_chart, extract_zoom_subgraph
 from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
 from charts.fault_propagation import create_fault_propagation_analysis
+
+# Add parent directory to path for analysis imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from analysis.propagation_analyzer import analyze_episode
 
 # Configuration
 # Default to ../data relative to this file's location
@@ -502,7 +508,17 @@ def run_fault_analysis(n_clicks, datarun, episode):
         # Debug: Print path for troubleshooting
         print(f"Running fault propagation analysis on: {episode_dir}")
 
-        # Run analysis and create visualization
+        # Run analysis and save results
+        print("  Analyzing episode and saving results...")
+        output_path = os.path.join(episode_dir, 'fault_propagation.json')
+        analyze_episode(
+            episode_dir=episode_dir,
+            sample_interval=5,
+            output_file=output_path
+        )
+        print(f"  ✅ Fault propagation analysis saved to: {output_path}")
+
+        # Create visualization
         analysis_view = create_fault_propagation_analysis(episode_dir)
 
         return analysis_view, {'display': 'block'}
@@ -541,6 +557,41 @@ app.clientside_callback(
      Output('raw-tab', 'style')],
     [Input('analysis-tabs', 'active_tab')]
 )
+
+
+@app.callback(
+    [Output('fault-analysis-container', 'children', allow_duplicate=True),
+     Output('fault-analysis-container', 'style', allow_duplicate=True)],
+    [Input('episode-data-store', 'data')],
+    [State('datarun-dropdown', 'value'),
+     State('episode-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def auto_load_fault_analysis(episode_id, datarun, episode):
+    """Automatically load existing fault propagation analysis when episode is loaded."""
+    if not episode_id or not datarun or not episode:
+        return [], {'display': 'none'}
+
+    try:
+        # Construct episode directory path
+        episode_dir = os.path.join(datarun, episode)
+        fault_analysis_path = os.path.join(episode_dir, 'fault_propagation.json')
+
+        # Check if pre-existing fault propagation analysis exists
+        if os.path.exists(fault_analysis_path):
+            print(f"Loading existing fault propagation analysis from: {fault_analysis_path}")
+
+            # Load and display the existing analysis
+            analysis_view = create_fault_propagation_analysis(episode_dir)
+            return analysis_view, {'display': 'block'}
+        else:
+            # No existing analysis, hide container
+            return [], {'display': 'none'}
+
+    except Exception as e:
+        print(f"Error loading existing fault analysis: {str(e)}")
+        # Don't show error, just hide container
+        return [], {'display': 'none'}
 
 
 @app.callback(

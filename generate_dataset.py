@@ -32,6 +32,7 @@ from src.components.service import Service
 from src.components.pod import Pod
 from src.components.compute_node import ComputeNode
 from src.components.deployment_controller import DeploymentController
+from analysis.propagation_analyzer import analyze_episode
 import networkx as nx
 
 
@@ -361,6 +362,31 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"  Completed successfully")
             print(f"  Exported final topology snapshot")
             print(f"  Output directory: {episode_dir}")
+
+        # 11. Auto-generate Fault Propagation Analysis
+        if verbose:
+            print(f"\n[Fault Propagation Analysis]")
+            print(f"  Analyzing fault propagation...")
+
+        try:
+            output_path = os.path.join(episode_dir, 'fault_propagation.json')
+            summary = analyze_episode(
+                episode_dir=episode_dir,
+                sample_interval=5,
+                output_file=output_path
+            )
+
+            if verbose:
+                print(f"  Fault propagation analysis saved to: {output_path}")
+                print(f"  Quality Score: {summary.validation['quality_score']:.2f}/1.0")
+                print(f"  Blast Radius: {summary.validation['blast_radius']} nodes")
+
+        except Exception as e:
+            # Don't fail the entire episode if analysis fails
+            print(f"  Warning: Fault propagation analysis failed: {e}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
 
     except Exception as e:
         print(f"Error in episode {episode_id}: {e}")
