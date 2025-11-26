@@ -27,6 +27,13 @@ class ExternalService(ApiService):
         self.base_latency_mean = 0.200  # 200ms
         self.base_latency_std = 0.050   # 50ms jitter
 
+        # Error counter for fault propagation analysis
+        self.errors_counter = self.meter.create_counter(
+            "component.errors.total",
+            description=f"Total errors in {component_id}",
+            unit="1"
+        )
+
     def handle_request(self, request_type: str, should_trace: bool = False, parent_span_context=None):
         """
         Simulate external API call.
@@ -65,6 +72,12 @@ class ExternalService(ApiService):
         total_error_rate = base_error_rate + self.forced_error_rate
         if random.random() < total_error_rate:
             self._emit_log("ERROR", f"External API timeout on {self.id}")
+            # Increment error counter for fault propagation analysis
+            self.errors_counter.add(1, {
+                "component.id": self.id,
+                "component.type": self.type,
+                "error_type": "external_timeout"
+            })
             if span:
                 span.set_attribute("error", True)
                 span.set_attribute("error.type", "external_timeout")

@@ -114,16 +114,17 @@ class ServicePropagationMixin:
 
     def _report_circuit_breaker_states(self, options):
         """Callback to report circuit breaker states as metrics."""
-        observations = []
+        # Return observations in the format expected by OpenTelemetry
+        # Each observation should be a dict-like object with 'value' and 'attributes'
         for dep_name, cb in self._circuit_breakers.items():
-            observations.append({
-                "attributes": {
+            from opentelemetry.metrics import Observation
+            yield Observation(
+                value=cb.state.get_state_value(),
+                attributes={
                     "dependency_name": dep_name,
                     "component.id": self.id
-                },
-                "value": cb.state.get_state_value()
-            })
-        return observations
+                }
+            )
 
     def _get_or_create_circuit_breaker(self, dep_name: str, dep_type: str) -> CircuitBreaker:
         """

@@ -10,11 +10,12 @@ A Pod is a container instance that:
 from .base_component import EnrichedComponent
 from src.core.simulation_config import get_simulation_config
 from src.dynamics.metrics_dynamics_engine import MetricsDynamicsEngine, DynamicsConfig
+from src.resilience.service_propagation_mixin import ServicePropagationMixin, DependencyFailureException
 import simpy
 import random
 
 
-class Pod(EnrichedComponent):
+class Pod(EnrichedComponent, ServicePropagationMixin):
     """
     Pod represents a container instance that executes service logic.
 
@@ -24,6 +25,9 @@ class Pod(EnrichedComponent):
     def __init__(self, env: simpy.Environment, component_id: str,
                  parent_service=None, compute_node=None):
         super().__init__(env, component_id, "Pod")
+
+        # Initialize ServicePropagationMixin for fault propagation
+        ServicePropagationMixin.__init__(self, env)
 
         # NEW: References to parent service and compute node
         self.parent_service = parent_service
@@ -175,6 +179,9 @@ class Pod(EnrichedComponent):
             unit="1",
             description="External dependency call errors"
         )
+
+        # Initialize propagation metrics (circuit breakers, retries, timeouts)
+        self._initialize_propagation_metrics(service_name)
 
     def run(self):
         """Pod lifecycle with crash/restart loop and permanent termination support."""
@@ -727,12 +734,14 @@ class Pod(EnrichedComponent):
                         raise
 
     def _execute_service_calls(self, step, span):
-        """Execute service-to-service calls."""
+        """Execute service-to-service calls with fault propagation."""
         # Find all dep_* connections
         for conn_name, conn_target in self.parent_service.connections.items():
             if conn_name.startswith('dep_'):
                 dep_start = self.env.now
-                try:
+
+                # Prepare call function for propagation
+                def make_service_call():
                     should_trace_dep = span is not None
                     dep_span_ctx = None
                     if should_trace_dep:
@@ -750,6 +759,15 @@ class Pod(EnrichedComponent):
                         should_trace=should_trace_dep,
                         parent_span_context=dep_span_ctx
                     ))
+
+                try:
+                    # Use propagation logic (circuit breaker, retry, timeout, probabilistic propagation)
+                    yield from self.call_dependency_with_propagation(
+                        dep_name=conn_name,
+                        dep_type='service',
+                        call_func=make_service_call,
+                        span=span
+                    )
 
                     # Record success metrics
                     dep_latency_ms = (self.env.now - dep_start) * 1000
@@ -769,10 +787,8 @@ class Pod(EnrichedComponent):
                             "service.name": self.parent_service.service_name
                         })
 
-                except Exception as e:
-                    self._emit_log("WARN", f"Service call to {conn_name} failed: {e}")
-
-                    # Record error metrics
+                except DependencyFailureException as e:
+                    # Error propagated from dependency - fail this request too
                     dep_latency_ms = (self.env.now - dep_start) * 1000
                     if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
                         self.dependency_requests.add(1, {
@@ -795,14 +811,18 @@ class Pod(EnrichedComponent):
                             "component.id": self.id,
                             "service.name": self.parent_service.service_name
                         })
+                    # Re-raise to propagate to caller
+                    raise
 
     def _execute_external_calls(self, step, span):
-        """Execute external service calls."""
+        """Execute external service calls with fault propagation."""
         # Find all ext_* connections
         for conn_name, conn_target in self.parent_service.connections.items():
             if conn_name.startswith('ext_'):
                 dep_start = self.env.now
-                try:
+
+                # Prepare call function for propagation
+                def make_external_call():
                     should_trace_ext = span is not None
                     ext_span_ctx = None
                     if should_trace_ext:
@@ -811,12 +831,20 @@ class Pod(EnrichedComponent):
 
                     # Call external service
                     ext_request_type = random.choice(['GET', 'POST'])
-
                     yield self.env.process(conn_target.handle_request(
                         ext_request_type,
                         should_trace=should_trace_ext,
                         parent_span_context=ext_span_ctx
                     ))
+
+                try:
+                    # Use propagation logic (circuit breaker, retry, timeout, probabilistic propagation)
+                    yield from self.call_dependency_with_propagation(
+                        dep_name=conn_name,
+                        dep_type='external',
+                        call_func=make_external_call,
+                        span=span
+                    )
 
                     # Record success metrics (only if metrics are initialized)
                     dep_latency_ms = (self.env.now - dep_start) * 1000
@@ -836,10 +864,8 @@ class Pod(EnrichedComponent):
                             "service.name": self.parent_service.service_name
                         })
 
-                except Exception as e:
-                    self._emit_log("WARN", f"External call to {conn_name} failed: {e}")
-
-                    # Record error metrics (only if metrics are initialized)
+                except DependencyFailureException as e:
+                    # Error propagated from dependency - fail this request too
                     dep_latency_ms = (self.env.now - dep_start) * 1000
                     if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
                         self.dependency_requests.add(1, {
@@ -862,6 +888,8 @@ class Pod(EnrichedComponent):
                             "component.id": self.id,
                             "service.name": self.parent_service.service_name
                         })
+                    # Re-raise to propagate to caller
+                    raise
 
     def _execute_queue_publish(self, step, span):
         """Execute queue message publishing."""
