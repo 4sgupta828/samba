@@ -450,7 +450,8 @@ class FaultPropagationAnalyzer:
 def analyze_episode(
     episode_dir: str,
     sample_interval: int = 5,
-    output_file: Optional[str] = None
+    output_file: Optional[str] = None,
+    enable_enhanced_analysis: bool = True
 ) -> PropagationSummary:
     """
     Analyze fault propagation for a complete episode.
@@ -459,6 +460,7 @@ def analyze_episode(
         episode_dir: Path to episode directory
         sample_interval: Time interval between samples
         output_file: Optional JSON output file
+        enable_enhanced_analysis: Whether to run enhanced analysis (latency, config, causal chains)
 
     Returns:
         PropagationSummary with results
@@ -497,7 +499,99 @@ def analyze_episode(
     # Run analysis
     summary = analyzer.analyze_propagation()
 
-    # Save if requested
+    # Enhanced analysis (if enabled and files exist)
+    if enable_enhanced_analysis:
+        traces_file = episode_path / 'traces.jsonl'
+        metrics_file = episode_path / 'metrics.jsonl'
+
+        fault_start_time = label_data.get('fault_start_time', 0)
+        root_cause_node = label_data.get('root_cause_node')
+
+        enhanced_data = {}
+
+        # 1. Trace-based latency analysis
+        if traces_file.exists():
+            from .trace_latency_analyzer import TraceLatencyAnalyzer
+            try:
+                latency_analyzer = TraceLatencyAnalyzer(traces_file, fault_start_time)
+                latency_analyses = latency_analyzer.analyze_all(topology_data)
+                enhanced_data['latency_analyses'] = {
+                    node_id: analysis.to_dict()
+                    for node_id, analysis in latency_analyses.items()
+                }
+            except Exception as e:
+                print(f"Warning: Latency analysis failed: {e}")
+                enhanced_data['latency_analyses'] = {}
+        else:
+            enhanced_data['latency_analyses'] = {}
+
+        # 2. Configuration context extraction
+        try:
+            from .config_extractor import ConfigExtractor
+            config_extractor = ConfigExtractor()  # Will use defaults if no config file
+            configs = config_extractor.extract_all(topology_data)
+            enhanced_data['configurations'] = configs
+        except Exception as e:
+            print(f"Warning: Config extraction failed: {e}")
+            enhanced_data['configurations'] = {}
+
+        # 3. Resource saturation detection
+        if metrics_file.exists():
+            from .resource_saturation_detector import ResourceSaturationDetector
+            try:
+                saturation_detector = ResourceSaturationDetector(metrics_file, fault_start_time)
+                saturation_reports = saturation_detector.analyze_all(topology_data, enhanced_data['configurations'])
+                enhanced_data['saturation_reports'] = {
+                    node_id: report.to_dict()
+                    for node_id, report in saturation_reports.items()
+                }
+            except Exception as e:
+                print(f"Warning: Saturation detection failed: {e}")
+                enhanced_data['saturation_reports'] = {}
+        else:
+            enhanced_data['saturation_reports'] = {}
+
+        # 4. Causal chain analysis
+        try:
+            from .causal_chain_analyzer import CausalChainAnalyzer
+            causal_analyzer = CausalChainAnalyzer(graph, root_cause_node)
+            causal_analyses = causal_analyzer.analyze_all(
+                [report.to_dict() for report in summary.node_reports],
+                enhanced_data['latency_analyses'],
+                enhanced_data['saturation_reports'],
+                enhanced_data['configurations']
+            )
+            enhanced_data['causal_analyses'] = {
+                node_id: analysis.to_dict()
+                for node_id, analysis in causal_analyses.items()
+            }
+        except Exception as e:
+            print(f"Warning: Causal analysis failed: {e}")
+            enhanced_data['causal_analyses'] = {}
+
+        # Add enhanced data to summary
+        summary_dict = summary.to_dict()
+        summary_dict['enhanced_analysis'] = enhanced_data
+
+        # Enhance node reports with new data
+        for report_dict in summary_dict['node_reports']:
+            node_id = report_dict['node_id']
+            if node_id in enhanced_data.get('latency_analyses', {}):
+                report_dict['latency_analysis'] = enhanced_data['latency_analyses'][node_id]
+            if node_id in enhanced_data.get('configurations', {}):
+                report_dict['configuration_context'] = enhanced_data['configurations'][node_id]
+            if node_id in enhanced_data.get('saturation_reports', {}):
+                report_dict['saturation_report'] = enhanced_data['saturation_reports'][node_id]
+            if node_id in enhanced_data.get('causal_analyses', {}):
+                report_dict['causal_analysis'] = enhanced_data['causal_analyses'][node_id]
+
+        # Save with enhanced data if requested
+        if output_file:
+            with open(output_file, 'w') as f:
+                json.dump(summary_dict, f, indent=2, default=str)
+            return summary
+
+    # Save if requested (without enhanced data)
     if output_file:
         summary.to_json(output_file)
 
