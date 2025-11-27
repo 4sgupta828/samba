@@ -55,7 +55,7 @@ class EpisodeConfig:
                 'error_rate': 0.3
             },
             'queue_consumer_slowdown': {
-                'latency_ms': 1500
+                'latency_ms': 8000  # 8 seconds - exceeds visibility timeout to cause redelivery
             }
         }
 

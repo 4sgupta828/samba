@@ -124,7 +124,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None):
     """
     Generate a single training episode.
 
@@ -134,6 +134,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         scenario_lib: Scenario library instance
         verbose: Print detailed progress
         topology_size: Optional override for topology size (number of nodes)
+        force_fault_type: Force a specific fault type (e.g., 'queue_consumer_slowdown')
+        force_fault_role: Force a specific fault role (e.g., 'queue')
 
     Returns:
         Dictionary with episode metadata
@@ -146,8 +148,37 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         # Default: random number of nodes between 8-15
         actual_topology_size = random.randint(8, 15)
 
+    # If force_fault_type and force_fault_role are specified, find matching scenario
+    if force_fault_type and force_fault_role:
+        # Find a scenario that matches the forced parameters
+        cfg = None
+        for attempt in range(100):  # Try many times to find a match
+            level = scenario_lib.sample_level(seed=episode_id + attempt)
+            temp_cfg = scenario_lib.get_episode(level, seed=episode_id + attempt)
+
+            if temp_cfg.fault_type == force_fault_type and temp_cfg.fault_target_role == force_fault_role:
+                cfg = temp_cfg
+                if actual_topology_size is not None:
+                    cfg.topology_size = actual_topology_size
+                break
+
+        if cfg is None:
+            print(f"Error: Could not find scenario with fault_type='{force_fault_type}' and role='{force_fault_role}'")
+            return None
+
+        # Generate topology that includes the required role
+        topo_gen = TopologyGenerator(seed=episode_id)
+        nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
+
+        # Verify the topology has the required role
+        available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
+        if cfg.fault_target_role not in available_roles:
+            print(f"Error: Generated topology doesn't have required role '{cfg.fault_target_role}'")
+            return None
+
+        level = cfg.topology_size  # Use topology size as level for display
     # If topology_size is specified, generate topology first to determine available node types
-    if actual_topology_size is not None:
+    elif actual_topology_size is not None:
         topo_gen = TopologyGenerator(seed=episode_id)
         nx_graph = topo_gen.generate_complex_graph(actual_topology_size)
 
@@ -408,16 +439,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -427,6 +458,8 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         output_dir: Base output directory (e.g., 'data')
         verbose: Print detailed progress
         topology_size: Optional override for topology size (number of nodes)
+        force_fault_type: Force a specific fault type for all episodes
+        force_fault_role: Force a specific fault role for all episodes
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -455,7 +488,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         # Run episode in a separate process for complete isolation
         process = Process(
             target=_generate_episode_process,
-            args=(i, run_dir, verbose, topology_size)
+            args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role)
         )
         process.start()
         process.join()  # Wait for completion
@@ -534,6 +567,18 @@ def main():
         default=None,
         help='Override topology size (number of nodes). Use small values like 2-3 for simple scenarios.'
     )
+    parser.add_argument(
+        '--fault-type',
+        type=str,
+        default=None,
+        help='Force a specific fault type (e.g., queue_consumer_slowdown, inject_latency, cpu_saturation)'
+    )
+    parser.add_argument(
+        '--fault-role',
+        type=str,
+        default=None,
+        help='Force a specific fault target role (e.g., queue, service, database, external)'
+    )
 
     args = parser.parse_args()
 
@@ -546,7 +591,9 @@ def main():
         num_episodes=args.episodes,
         output_dir=args.output,
         verbose=args.verbose,
-        topology_size=args.topology_size
+        topology_size=args.topology_size,
+        force_fault_type=args.fault_type,
+        force_fault_role=args.fault_role
     )
 
 

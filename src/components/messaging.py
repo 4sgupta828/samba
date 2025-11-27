@@ -28,7 +28,8 @@ class MessageQueue(EnrichedComponent):
         self.message_counter = 0
 
         # Fault injection support
-        self.injected_latency_ms = 0  # Set by failure injection
+        self.injected_latency_ms = 0  # Set by failure injection (deprecated - use consumer_processing_latency_ms)
+        self.consumer_processing_latency_ms = 0  # Latency added to consumer processing (not receive)
 
         # Track samples for time-averaged gauges (like production systems)
         self.visible_samples = []
@@ -151,9 +152,9 @@ class MessageQueue(EnrichedComponent):
         msg = yield self.store.get()
         msg.receive_count += 1
 
-        # Apply fault injection latency if active
-        if self.injected_latency_ms > 0:
-            yield self.env.timeout(self.injected_latency_ms / 1000.0)
+        # Note: OLD behavior was to inject latency here, but that doesn't simulate
+        # consumer slowdown correctly. Consumer slowdown should happen during PROCESSING,
+        # not during message receive. See consumer_processing_latency_ms attribute.
 
         # Move to in-flight and start visibility timeout
         self.in_flight_messages[msg.id] = msg

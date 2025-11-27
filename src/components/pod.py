@@ -266,6 +266,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         Background process that continuously consumes messages from parent service's queue_in.
 
         This is called automatically if the parent service has a queue_in connection.
+        Messages are processed concurrently to simulate realistic queue consumer behavior.
         """
         if not self.parent_service:
             return
@@ -276,6 +277,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
         self._emit_log("INFO", f"Starting queue consumer for {queue.id}")
 
+        # Continuously pull messages and spawn concurrent processing tasks
         while self.state.operational != "TERMINATED":
             try:
                 # Wait for a message from the queue
@@ -283,30 +285,44 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
                 self._emit_log("DEBUG", f"Received message {msg.id} from queue")
 
-                # Process the message by calling handle_request
-                # Use a random request type from parent service's supported types
-                if hasattr(self.parent_service, 'supported_request_types') and self.parent_service.supported_request_types:
-                    request_type = random.choice(self.parent_service.supported_request_types)
-                else:
-                    request_type = "PROCESS"
-
-                try:
-                    # Process the message (executes pipeline)
-                    yield self.env.process(self.handle_request(request_type, should_trace=False))
-
-                    # Successfully processed - delete the message
-                    queue.delete_message(msg)
-                    self._emit_log("DEBUG", f"Successfully processed message {msg.id}")
-
-                except Exception as e:
-                    # Processing failed - message will become visible again after timeout
-                    self._emit_log("ERROR", f"Failed to process message {msg.id}: {e}")
-                    # Don't delete - let visibility timeout return it to queue for retry
+                # Spawn concurrent message processing (don't wait for completion)
+                self.env.process(self._process_queue_message(msg, queue))
 
             except Exception as e:
                 # Queue receive failed - log and retry after delay
                 self._emit_log("WARN", f"Queue receive failed: {e}")
                 yield self.env.timeout(1.0)  # Wait 1s before retrying
+
+    def _process_queue_message(self, msg, queue):
+        """
+        Process a single queue message concurrently.
+        This allows multiple messages to be in-flight simultaneously.
+        """
+        # Process the message by calling handle_request
+        # Use a random request type from parent service's supported types
+        if hasattr(self.parent_service, 'supported_request_types') and self.parent_service.supported_request_types:
+            request_type = random.choice(self.parent_service.supported_request_types)
+        else:
+            request_type = "PROCESS"
+
+        try:
+            # Apply consumer processing slowdown if injected on the queue
+            if hasattr(queue, 'consumer_processing_latency_ms') and queue.consumer_processing_latency_ms > 0:
+                slowdown_ms = queue.consumer_processing_latency_ms
+                self._emit_log("DEBUG", f"Applying consumer slowdown: +{slowdown_ms}ms for message {msg.id}")
+                yield self.env.timeout(slowdown_ms / 1000.0)
+
+            # Process the message (executes pipeline)
+            yield self.env.process(self.handle_request(request_type, should_trace=False))
+
+            # Successfully processed - delete the message
+            queue.delete_message(msg)
+            self._emit_log("DEBUG", f"Successfully processed message {msg.id}")
+
+        except Exception as e:
+            # Processing failed - message will become visible again after timeout
+            self._emit_log("ERROR", f"Failed to process message {msg.id}: {e}")
+            # Don't delete - let visibility timeout return it to queue for retry
 
     def _monitor_oom(self):
         """Background process that monitors for OOMKilled condition using dynamics engine."""

@@ -276,23 +276,27 @@ def revert_cache_failure(component: InMemoryCache, params: Dict[str, Any]):
 
 def queue_consumer_slowdown(component: MessageQueue, params: Dict[str, Any]):
     """
-    Simulates message queue consumer slowdown by injecting latency.
-    This will cause message backlog to build up.
+    Simulates message queue consumer slowdown by adding processing latency to consumers.
+    This causes messages to accumulate in-flight and visible queues.
+
+    Note: The fault is applied to the queue, but it affects the CONSUMERS by adding
+    a marker that consumers will check and apply latency during message processing.
     """
     if not isinstance(component, MessageQueue):
         component._emit_log("WARN", "queue_consumer_slowdown can only be applied to MessageQueue components.")
         return
 
     latency_ms = params.get("latency_ms", 1000)
-    component.injected_latency_ms = latency_ms
-    component._emit_log("WARN", f"Queue consumer slowdown injected: +{latency_ms}ms per message")
+    # Mark the queue so consumers know to slow down their processing
+    component.consumer_processing_latency_ms = latency_ms
+    component._emit_log("WARN", f"Queue consumer slowdown injected: +{latency_ms}ms processing latency per message")
 
 def revert_queue_consumer_slowdown(component: MessageQueue, params: Dict[str, Any]):
     """Revert queue consumer slowdown."""
     if not isinstance(component, MessageQueue):
         return
 
-    component.injected_latency_ms = 0
+    component.consumer_processing_latency_ms = 0
     component._emit_log("INFO", "Queue consumer slowdown reverted")
 
 def slow_queries(component: SqlDatabase, params: Dict[str, Any]):
