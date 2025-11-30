@@ -42,7 +42,9 @@ class WorkloadGenerator:
             self.max_queue_size = wg_config.max_queue_size
         else:
             # Fallback defaults if config not available
-            self.connection_pool_size = 50
+            # FIXED: Increased from 50 to 200 to handle peak RPS (200) with high latency (200ms)
+            # Required: 200 RPS × 0.2s = 40 connections minimum, 5x buffer = 200
+            self.connection_pool_size = 200
             self.request_timeout = 30.0
             self.max_queue_size = 100
 
@@ -64,12 +66,13 @@ class WorkloadGenerator:
                 )
         else:
             # Fallback: circuit breaker enabled with defaults
+            # FIXED: Relaxed thresholds to prevent false positives during healthy baseline
             self.circuit_breaker_enabled = True
             self.circuit_breaker = CircuitBreaker(
-                failure_threshold=0.7,
+                failure_threshold=0.9,          # Opens at 90% failure (was 0.7)
                 success_threshold=0.8,
-                window_size=50,
-                open_duration=15.0,
+                window_size=100,                # Larger window for smoother decisions (was 50)
+                open_duration=10.0,             # Shorter duration to recover faster (was 15.0)
                 half_open_max_requests=10,
             )
 

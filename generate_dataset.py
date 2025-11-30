@@ -33,6 +33,8 @@ from src.components.pod import Pod
 from src.components.compute_node import ComputeNode
 from src.components.deployment_controller import DeploymentController
 from analysis.propagation_analyzer import analyze_episode
+from validate_baseline_health import validate_episode_health
+from src.validation.health_validator import calculate_safe_workload, validate_system_health
 import networkx as nx
 
 
@@ -219,8 +221,33 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"{'='*60}")
         print_topology_summary(nx_graph)
 
-    # 3. Create Dynamic Workload
-    workload_path = create_dynamic_workload(nx_graph)
+    # 2.5. Pre-Flight Health Check: Calculate Safe Workload
+    if verbose:
+        print(f"\n[Pre-Flight Health Check]")
+        print(f"  Calculating safe workload using queueing theory...")
+
+    safe_workload = calculate_safe_workload(nx_graph, target_utilization=0.70)
+
+    if verbose:
+        print(f"  Critical path latency: {safe_workload['critical_path_latency_ms']:.1f}ms")
+        print(f"  Critical path: {safe_workload['critical_path']}")
+        print(f"  Max service rate: {safe_workload['max_service_rate']:.1f} RPS")
+        print(f"  Safe baseline RPS: {safe_workload['safe_baseline_rps']} RPS")
+        print(f"  Safe peak RPS: {safe_workload['safe_peak_rps']} RPS")
+        print(f"  Required connection pool: {safe_workload['required_connection_pool']}")
+
+    # 3. Create Dynamic Workload (using safe calculated values)
+    # Use the smaller of requested or safe workload
+    actual_base_rps = min(80, safe_workload['safe_baseline_rps'])
+    actual_peak_rps = min(200, safe_workload['safe_peak_rps'])
+
+    if actual_base_rps < 80 or actual_peak_rps < 200:
+        if verbose:
+            print(f"  ⚠ WARNING: Adjusting workload to safe levels")
+            print(f"    Requested: {80}-{200} RPS")
+            print(f"    Adjusted:  {actual_base_rps}-{actual_peak_rps} RPS")
+
+    workload_path = create_dynamic_workload(nx_graph, base_rps=actual_base_rps, peak_rps=actual_peak_rps)
 
     # 4. Configure Simulation
     episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
@@ -294,7 +321,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     # - Start at 20% through episode (earlier than before to see healthy baseline)
     # - Apply gradually over 40% of episode duration
     # - Reach full effect at 60%, remains until end
-    start_time = int(cfg.duration * 0.2)
+    # FIXED: Added minimum 30s warmup to ensure system stabilizes before baseline measurement
+    start_time = max(30, int(cfg.duration * 0.2))
     ramp_duration = int(cfg.duration * 0.4)
 
     if verbose:
@@ -419,6 +447,68 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                 import traceback
                 traceback.print_exc()
 
+        # 12. Validate Baseline Health (Mathematical)
+        if verbose:
+            print(f"\n[Baseline Health Validation - Mathematical]")
+            print(f"  Validating baseline health using queueing theory...")
+
+        try:
+            # Use mathematical validation
+            is_valid, reason, validation_details = validate_system_health(
+                metrics_file=Path(os.path.join(episode_dir, 'metrics.jsonl')),
+                topology_file=Path(topology_path),
+                fault_start_time=start_time,
+                thresholds={
+                    'max_utilization': 0.80,
+                    'max_error_rate': 0.01,
+                    'max_p99_ratio': 10.0,
+                    'min_success_rate': 0.95,
+                    'min_health_score': 0.80,
+                }
+            )
+
+            if not is_valid:
+                print(f"  ✗ Mathematical validation FAILED: {reason}")
+                if verbose and validation_details:
+                    print(f"\n  Node-level health details:")
+                    for node_id, details in validation_details.items():
+                        if not details['is_healthy']:
+                            print(f"    {node_id}: {details['reason']}")
+                            print(f"      Health score: {details['health_score']:.2f}")
+                            print(f"      Error rate: {details['error_rate']:.2%}")
+                            print(f"      Success rate: {details['success_rate']:.2%}")
+
+                print(f"  This episode will be marked as INVALID and should be regenerated.")
+
+                # Save validation failure to a marker file
+                validation_marker = os.path.join(episode_dir, '.validation_failed')
+                with open(validation_marker, 'w') as f:
+                    json.dump({
+                        'validation_type': 'mathematical',
+                        'reason': reason,
+                        'details': validation_details
+                    }, f, indent=2)
+
+                # Return None to indicate failure
+                return None
+            else:
+                if verbose:
+                    print(f"  ✓ Mathematical validation PASSED: {reason}")
+                    # Show summary of healthiest and weakest nodes
+                    if validation_details:
+                        health_scores = {k: v['health_score'] for k, v in validation_details.items() if v['is_healthy']}
+                        if health_scores:
+                            weakest = min(health_scores, key=health_scores.get)
+                            healthiest = max(health_scores, key=health_scores.get)
+                            print(f"    Weakest node: {weakest} (score: {health_scores[weakest]:.2f})")
+                            print(f"    Healthiest node: {healthiest} (score: {health_scores[healthiest]:.2f})")
+
+        except Exception as e:
+            print(f"  Warning: Mathematical validation failed with error: {e}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
     except Exception as e:
         print(f"Error in episode {episode_id}: {e}")
         import traceback
@@ -483,32 +573,64 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
     # Generate episodes under the run directory - each in its own process
     results = []
     for i in range(num_episodes):
-        print(f"Starting episode {i}...")
+        max_retries = 3  # Retry up to 3 times if baseline validation fails
+        success = False
 
-        # Run episode in a separate process for complete isolation
-        process = Process(
-            target=_generate_episode_process,
-            args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role)
-        )
-        process.start()
-        process.join()  # Wait for completion
+        for attempt in range(max_retries):
+            if attempt > 0:
+                print(f"Retrying episode {i} (attempt {attempt + 1}/{max_retries})...")
+            else:
+                print(f"Starting episode {i}...")
 
-        # Check if episode was successful by looking for the label file
-        episode_dir = os.path.join(run_dir, f'ep_{i}')
-        label_path = os.path.join(episode_dir, 'label.json')
-        if os.path.exists(label_path):
-            with open(label_path, 'r') as f:
-                label_data = json.load(f)
-                results.append({
-                    'episode_id': i,
-                    'level': label_data.get('level'),
-                    'output_dir': episode_dir,
-                    'root_cause': label_data.get('root_cause_node'),
-                    'fault_type': label_data.get('fault_type')
-                })
-            print(f"Episode {i} completed successfully\n")
-        else:
-            print(f"Episode {i} failed (no label file found)\n")
+            # Run episode in a separate process for complete isolation
+            process = Process(
+                target=_generate_episode_process,
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role)
+            )
+            process.start()
+            process.join()  # Wait for completion
+
+            # Check if episode was successful by looking for the label file
+            episode_dir = os.path.join(run_dir, f'ep_{i}')
+            label_path = os.path.join(episode_dir, 'label.json')
+            validation_failed_marker = os.path.join(episode_dir, '.validation_failed')
+
+            if os.path.exists(validation_failed_marker):
+                # Episode failed validation, clean up and retry
+                print(f"Episode {i} failed baseline validation (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    # Clean up the failed episode directory for retry
+                    import shutil
+                    if os.path.exists(episode_dir):
+                        shutil.rmtree(episode_dir)
+                    continue
+                else:
+                    print(f"Episode {i} failed after {max_retries} attempts\n")
+                    break
+
+            if os.path.exists(label_path):
+                with open(label_path, 'r') as f:
+                    label_data = json.load(f)
+                    results.append({
+                        'episode_id': i,
+                        'level': label_data.get('level'),
+                        'output_dir': episode_dir,
+                        'root_cause': label_data.get('root_cause_node'),
+                        'fault_type': label_data.get('fault_type')
+                    })
+                print(f"Episode {i} completed successfully\n")
+                success = True
+                break
+            else:
+                print(f"Episode {i} failed (no label file found, attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    # Clean up for retry
+                    import shutil
+                    if os.path.exists(episode_dir):
+                        shutil.rmtree(episode_dir)
+
+        if not success:
+            print(f"WARNING: Episode {i} could not be generated after {max_retries} attempts\n")
 
         if not verbose and (i + 1) % 10 == 0:
             print(f"Progress: {i + 1}/{num_episodes} episodes completed")

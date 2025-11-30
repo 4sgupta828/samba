@@ -132,14 +132,26 @@ class TopologyGenerator:
 
         # D. Async Message Queues
         # Pattern: Producer → Queue → Consumer
+        # FIXED: Prevent circular dependencies (producer == consumer)
         if queues and services and len(services) >= 2:
             for queue in queues:
-                producer = self.rng.choice(services)
-                potential_consumers = [s for s in services if s != producer]
+                # Track all producers for this queue
+                producers = []
+
+                # Allow multiple producers (1-2 per queue)
+                num_producers = self.rng.randint(1, min(2, len(services)))
+                for _ in range(num_producers):
+                    available_producers = [s for s in services if s not in producers]
+                    if available_producers:
+                        producer = self.rng.choice(available_producers)
+                        producers.append(producer)
+                        # Producer publishes to queue
+                        self._add_edge(G, producer, queue, 'async_produce')
+
+                # Consumer must be different from ALL producers to avoid circular dependency
+                potential_consumers = [s for s in services if s not in producers]
                 if potential_consumers:
                     consumer = self.rng.choice(potential_consumers)
-                    # Producer publishes to queue
-                    self._add_edge(G, producer, queue, 'async_produce')
                     # Consumer reads from queue
                     self._add_edge(G, queue, consumer, 'async_consume')
 
@@ -293,7 +305,9 @@ class TopologyGenerator:
         latency = 5.0  # Default: 5ms (local network)
 
         if edge_type == 'sync_external':
-            latency = 200.0  # External APIs are slow (200ms)
+            # FIXED: Reduced from 200ms to 50ms to prevent connection pool saturation
+            # 200ms was causing baseline failures due to pool exhaustion
+            latency = 50.0   # External APIs are moderately slow (50ms)
         elif edge_type == 'sync_db':
             latency = 2.0    # Databases are fast (2ms, local)
         elif edge_type == 'sync_cache':

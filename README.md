@@ -247,6 +247,12 @@ Each episode generates a **unique microservice architecture** with:
 - Missing logs (sampling)
 - Hard negatives (similar fault signatures)
 
+### 5. Baseline Health Validation
+- **Automatic Validation**: Every episode is validated to ensure healthy baseline before fault injection
+- **Degradation Guarantee**: Faults must cause actual degradation, not improvement
+- **Automatic Retry**: Invalid episodes are automatically regenerated (up to 3 attempts)
+- **Validation Tool**: Standalone script to validate existing datasets
+
 ## 🔍 Topology Filtering by Root Cause
 
 Samba includes tools to filter topology graphs to show only nodes that can be affected by a root cause, helping you focus analysis on relevant components.
@@ -356,6 +362,50 @@ cat data/train/ep_0/label.json
 ```bash
 python generate_dataset.py -n 100
 ```
+
+## ✅ Baseline Health Validation
+
+All generated episodes are automatically validated to ensure:
+1. **Healthy baseline**: System has ≥50% success rate before fault injection
+2. **Proper degradation**: Fault causes actual degradation (not improvement)
+
+### Automatic Validation During Generation
+
+Validation runs automatically after each episode:
+- Invalid episodes are marked with `.validation_failed`
+- System automatically retries up to 3 times with new random seed
+- Episodes that fail all retries are skipped and logged
+
+### Validate Existing Datasets
+
+Check if an existing dataset has unhealthy baselines:
+
+```bash
+# Validate all episodes in a dataset
+python validate_baseline_health.py data/data_20251127_114143
+
+# Verbose output with detailed metrics
+python validate_baseline_health.py data/data_20251127_114143 -v
+
+# Custom thresholds
+python validate_baseline_health.py data/data_20251127_114143 \
+    --min-success-rate 60.0 \
+    --min-degradation-ratio 1.0
+```
+
+### Understanding Validation Failures
+
+If validation fails, check the marker file:
+```bash
+cat data/data_20251127_114143/ep_0/.validation_failed
+```
+
+Common reasons for failure:
+- **Unhealthy baseline**: Baseline success rate < 50%
+- **System improved after fault**: Post-fault success > baseline (the fault actually helped!)
+- **Topology issues**: Circular dependencies or cascading failures from the start
+
+See [BASELINE_HEALTH_FIX.md](BASELINE_HEALTH_FIX.md) for detailed information about the validation system.
 
 ## 📁 Project Structure
 
