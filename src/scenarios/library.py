@@ -47,7 +47,7 @@ class EpisodeConfig:
                 'wear_factor': 0.5
             },
             'connection_exhaustion': {
-                'exhaustion_rate': 0.5  # Exhaust 50% of connection pool
+                'exhaustion_rate': 0.6  # Exhaust 60% of connection pool
             },
             'enable_background_job': {},
             'cache_failure': {},
@@ -55,7 +55,7 @@ class EpisodeConfig:
                 'error_rate': 0.3
             },
             'queue_consumer_slowdown': {
-                'latency_ms': 2000  # 2 seconds - enough to cause backlog without timeout cascade
+                'latency_ms': 500  # 500ms - enough to cause backlog without breaking system
             }
         }
 

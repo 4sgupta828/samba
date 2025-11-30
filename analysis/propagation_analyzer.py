@@ -323,7 +323,8 @@ class FaultPropagationAnalyzer:
             'HIGH': 0,
             'MEDIUM': 0,
             'LOW': 0,
-            'NEGLIGIBLE': 0
+            'NEGLIGIBLE': 0,
+            'UNKNOWN': 0
         }
 
         for report in node_reports:
@@ -334,7 +335,8 @@ class FaultPropagationAnalyzer:
             'high': 0,
             'medium': 0,
             'low': 0,
-            'negligible': 0
+            'negligible': 0,
+            'unknown': 0
         })
 
         for report in node_reports:
