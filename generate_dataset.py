@@ -229,12 +229,14 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     safe_workload = calculate_safe_workload(nx_graph, target_utilization=0.70)
 
     if verbose:
-        print(f"  Critical path latency: {safe_workload['critical_path_latency_ms']:.1f}ms")
+        print(f"  Critical path latency (p99): {safe_workload['critical_path_latency_p99_ms']:.1f}ms")
         print(f"  Critical path: {safe_workload['critical_path']}")
-        print(f"  Max service rate: {safe_workload['max_service_rate']:.1f} RPS")
+        print(f"  Bottleneck: {safe_workload['bottleneck_node']} ({safe_workload['bottleneck_role']})")
+        print(f"  Bottleneck capacity: {safe_workload['bottleneck_capacity_rps']:.0f} RPS")
         print(f"  Safe baseline RPS: {safe_workload['safe_baseline_rps']} RPS")
         print(f"  Safe peak RPS: {safe_workload['safe_peak_rps']} RPS")
         print(f"  Required connection pool: {safe_workload['required_connection_pool']}")
+        print(f"  Paths analyzed: {safe_workload['num_paths_analyzed']}")
 
     # 3. Create Dynamic Workload (using safe calculated values)
     # Use the smaller of requested or safe workload
