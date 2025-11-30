@@ -47,7 +47,7 @@ class EpisodeConfig:
                 'wear_factor': 0.5
             },
             'connection_exhaustion': {
-                'exhaustion_rate': 0.8  # Exhaust 80% of connection pool
+                'exhaustion_rate': 0.5  # Exhaust 50% of connection pool
             },
             'enable_background_job': {},
             'cache_failure': {},
