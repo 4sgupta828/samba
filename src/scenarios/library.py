@@ -47,7 +47,7 @@ class EpisodeConfig:
                 'wear_factor': 0.5
             },
             'connection_exhaustion': {
-                'latency_ms': 1000
+                'exhaustion_rate': 0.8  # Exhaust 80% of connection pool
             },
             'enable_background_job': {},
             'cache_failure': {},
@@ -55,7 +55,7 @@ class EpisodeConfig:
                 'error_rate': 0.3
             },
             'queue_consumer_slowdown': {
-                'latency_ms': 8000  # 8 seconds - exceeds visibility timeout to cause redelivery
+                'latency_ms': 2000  # 2 seconds - enough to cause backlog without timeout cascade
             }
         }
 

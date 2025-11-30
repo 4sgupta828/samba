@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.topology.generator import TopologyGenerator
 from src.topology.adapter import TopologyAdapter, print_topology_summary
-from src.scenarios.library import ScenarioLibrary
+from src.scenarios.library import ScenarioLibrary, EpisodeConfig
 from src.simulation import Simulation
 from src.failures.training_injector import TrainingFailureInjector
 from src.telemetry.topology_state_exporter import TopologyStateExporter
@@ -152,16 +152,26 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     # If force_fault_type and force_fault_role are specified, find matching scenario
     if force_fault_type and force_fault_role:
-        # Find a scenario that matches the forced parameters
+        # Find a scenario that matches the forced parameters by searching all levels directly
         cfg = None
-        for attempt in range(100):  # Try many times to find a match
-            level = scenario_lib.sample_level(seed=episode_id + attempt)
-            temp_cfg = scenario_lib.get_episode(level, seed=episode_id + attempt)
-
-            if temp_cfg.fault_type == force_fault_type and temp_cfg.fault_target_role == force_fault_role:
-                cfg = temp_cfg
-                if actual_topology_size is not None:
-                    cfg.topology_size = actual_topology_size
+        for level in [1, 2, 3, 4]:
+            scenarios = scenario_lib.levels[level]
+            for scenario in scenarios:
+                if scenario.fault_type == force_fault_type and scenario.fault_target_role == force_fault_role:
+                    # Found a match - create a copy with updated topology size
+                    cfg = EpisodeConfig(
+                        level=scenario.level,
+                        topology_size=actual_topology_size if actual_topology_size is not None else scenario.topology_size,
+                        duration=scenario.duration,
+                        fault_type=scenario.fault_type,
+                        fault_target_role=scenario.fault_target_role,
+                        export_interval=scenario.export_interval,
+                        description=scenario.description,
+                        progression=scenario.progression,
+                        fault_params=scenario.fault_params
+                    )
+                    break
+            if cfg:
                 break
 
         if cfg is None:
@@ -317,7 +327,42 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     if not valid_targets:
         raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
 
-    target_id = random.choice(valid_targets)
+    # Select target with good propagation potential
+    # Prefer targets with multiple upstream callers for better fault propagation
+    def score_target_connectivity(target_node):
+        """Score a target based on propagation potential."""
+        # Count direct upstream callers (who will be impacted)
+        predecessors = list(nx_graph.predecessors(target_node))
+        num_callers = len(predecessors)
+
+        # Count second-order callers (propagation depth)
+        second_order = set()
+        for pred in predecessors:
+            second_order.update(nx_graph.predecessors(pred))
+
+        # Higher score = better propagation potential
+        # Prioritize: multiple direct callers + deep propagation potential
+        return num_callers * 10 + len(second_order)
+
+    # Score all targets and select from top candidates
+    target_scores = [(t, score_target_connectivity(t)) for t in valid_targets]
+    target_scores.sort(key=lambda x: x[1], reverse=True)
+
+    # Select from top 50% to maintain some randomness but avoid worst cases
+    top_half = max(1, len(target_scores) // 2)
+    target_candidates = [t for t, score in target_scores[:top_half] if score > 0]
+
+    # Fallback to all targets if no good candidates (shouldn't happen often)
+    if not target_candidates:
+        target_candidates = valid_targets
+        if verbose:
+            print(f"  Warning: No well-connected targets found, using all {len(valid_targets)} candidates")
+
+    target_id = random.choice(target_candidates)
+    target_score = next((score for t, score in target_scores if t == target_id), 0)
+
+    if verbose and target_score > 0:
+        print(f"  Selected target {target_id} (connectivity score: {target_score})")
 
     # Calculate gradual failure timeline:
     # - Start at 20% through episode (earlier than before to see healthy baseline)

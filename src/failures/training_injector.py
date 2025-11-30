@@ -185,7 +185,18 @@ class TrainingFailureInjector:
             # Fall back to instant application
             failure_func = FAILURE_MODES.get(failure_mode)
             if failure_func:
-                failure_func(target, params)
+                # Check if this is a pod-level fault being applied to a service
+                # Pod-level faults: memory_leak, cpu_saturation
+                pod_level_faults = ['memory_leak', 'cpu_saturation']
+
+                if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
+                    # Apply fault to all pods of the service
+                    print(f"   Applying '{failure_mode}' to {len(target.pods)} pods of {target_id}")
+                    for pod in target.pods:
+                        failure_func(pod, params)
+                else:
+                    # Apply to target directly
+                    failure_func(target, params)
             yield self.env.timeout(duration)
             return
 

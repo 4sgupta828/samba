@@ -9,6 +9,7 @@ from typing import Dict, Any
 
 from src.components.base_component import SimulatedComponent
 from src.components.compute import ComputeAgent
+from src.components.pod import Pod
 from src.components.database import SqlDatabase
 from src.components.storage import InMemoryCache
 from src.components.messaging import MessageQueue
@@ -64,9 +65,9 @@ def revert_latency(component: SimulatedComponent, params: Dict[str, Any]):
         component._emit_log("WARN", "Component does not support latency injection")
     
 def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
-    """Starts or accelerates a memory leak in a ComputeAgent via dynamics engine."""
-    if not isinstance(component, ComputeAgent):
-        component._emit_log("WARN", "start_memory_leak can only be applied to ComputeAgent components.")
+    """Starts or accelerates a memory leak in a ComputeAgent/Pod via dynamics engine."""
+    if not isinstance(component, (ComputeAgent, Pod)):
+        component._emit_log("WARN", "start_memory_leak can only be applied to ComputeAgent/Pod components.")
         return
 
     if not hasattr(component, 'dynamics') or component.dynamics is None:
@@ -80,7 +81,7 @@ def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
 
 def stop_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     """Stops an injected memory leak via dynamics engine."""
-    if not isinstance(component, ComputeAgent):
+    if not isinstance(component, (ComputeAgent, Pod)):
         return
 
     if hasattr(component, 'dynamics') and component.dynamics is not None:
@@ -154,8 +155,8 @@ def cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
     FLOOR FAULT: Sets minimum CPU regardless of load.
     Models CPU exhaustion from external processes, resource contention.
     """
-    if not isinstance(component, ComputeAgent):
-        component._emit_log("WARN", "cpu_saturation can only be applied to ComputeAgent components.")
+    if not isinstance(component, (ComputeAgent, Pod)):
+        component._emit_log("WARN", "cpu_saturation can only be applied to ComputeAgent/Pod components.")
         return
 
     if not hasattr(component, 'dynamics') or component.dynamics is None:
@@ -170,7 +171,7 @@ def cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
 
 def revert_cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
     """Revert CPU saturation by removing CPU floor."""
-    if not isinstance(component, ComputeAgent):
+    if not isinstance(component, (ComputeAgent, Pod)):
         return
 
     if hasattr(component, 'dynamics') and component.dynamics is not None:
@@ -336,32 +337,58 @@ def revert_slow_queries(component: SqlDatabase, params: Dict[str, Any]):
 
 def connection_exhaustion(component: SqlDatabase, params: Dict[str, Any]):
     """
-    Simulates database connection pool exhaustion via dynamics engine latency multiplier.
+    Simulates database connection pool exhaustion by holding connections.
+
+    Creates dummy/leaked connections that occupy slots in the pool, causing:
+    - New requests to queue waiting for available connections
+    - Increased latency due to queueing
+    - Potential connection rejections if pool fills completely
     """
     if not isinstance(component, SqlDatabase):
         component._emit_log("WARN", "connection_exhaustion can only be applied to SqlDatabase components.")
         return
 
-    if not hasattr(component, 'dynamics') or component.dynamics is None:
-        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject connection exhaustion")
+    if not hasattr(component, 'connection_pool'):
+        component._emit_log("ERROR", "Component does not have connection_pool - cannot inject connection exhaustion")
         return
 
-    latency_ms = params.get("latency_ms", 500)
-    base_latency = component.dynamics.config.latency_base
-    latency_multiplier = 1.0 + (latency_ms / base_latency)
-    component.dynamics.latency_multiplier = latency_multiplier
-    component._emit_log("WARN", f"Connection exhaustion simulated (dynamics): {latency_multiplier:.2f}x latency (~{latency_ms}ms)")
+    exhaustion_rate = params.get("exhaustion_rate", 0.7)  # Default: exhaust 70% of pool
+    pool_capacity = component.connection_pool.capacity
+    num_to_hold = int(pool_capacity * exhaustion_rate)
+
+    # Store leaked connection requests on the component for revert
+    if not hasattr(component, '_leaked_connections'):
+        component._leaked_connections = []
+
+    # Acquire connections and hold them (simulating leaked/stuck connections)
+    for i in range(num_to_hold):
+        conn_req = component.connection_pool.request()
+        component._leaked_connections.append(conn_req)
+        # Trigger the request to actually acquire the connection
+        conn_req.__enter__()
+
+    available = pool_capacity - component.connection_pool.count
+    component._emit_log("WARN", f"Connection exhaustion: {num_to_hold}/{pool_capacity} connections held (leaked), {available} available")
 
 def revert_connection_exhaustion(component: SqlDatabase, params: Dict[str, Any]):
-    """Revert connection exhaustion via dynamics engine."""
+    """Revert connection exhaustion by releasing held connections."""
     if not isinstance(component, SqlDatabase):
         return
 
-    if hasattr(component, 'dynamics') and component.dynamics is not None:
-        component.dynamics.latency_multiplier = 1.0
-        component._emit_log("INFO", "Connection exhaustion reverted (dynamics multiplier reset)")
-    else:
-        component._emit_log("WARN", "Component does not have dynamics engine")
+    if not hasattr(component, '_leaked_connections'):
+        component._emit_log("INFO", "No leaked connections to revert")
+        return
+
+    # Release all held connections
+    num_released = len(component._leaked_connections)
+    for conn_req in component._leaked_connections:
+        try:
+            conn_req.__exit__(None, None, None)
+        except Exception as e:
+            component._emit_log("WARN", f"Error releasing connection: {e}")
+
+    component._leaked_connections = []
+    component._emit_log("INFO", f"Connection exhaustion reverted: {num_released} connections released")
 
 def enable_background_job(component: SqlDatabase, params: Dict[str, Any]):
     """

@@ -1,0 +1,225 @@
+================================================================================
+FAULT TYPE/ROLE COMBINATION TESTER
+================================================================================
+
+Output directory: /var/folders/tx/9fmxvdwn3nsbr4jtn4mh_sl40000gn/T/fault_test_zd5wcm13
+
+Testing 11 combinations
+
+================================================================================
+Testing: cpu_saturation on service
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: memory_leak on service
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: inject_latency on service
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: inject_latency on cache
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: inject_latency on external
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: slow_queries on database
+================================================================================
+✗ Generation timed out after 10 minutes
+
+================================================================================
+Testing: connection_exhaustion on database
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: enable_background_job on database
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: cache_failure on cache
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: inject_errors on external
+================================================================================
+✓ Generation successful
+
+================================================================================
+Testing: queue_consumer_slowdown on queue
+================================================================================
+✗ Generation timed out after 10 minutes
+
+================================================================================
+SUMMARY REPORT
+================================================================================
+
+✓ Successful with propagation: 0/11
+
+⚠  Partial propagation: 0/11
+
+✗ No propagation: 6/11
+  - cpu_saturation_service
+  - inject_latency_cache
+  - inject_latency_external
+  - connection_exhaustion_database
+  - cache_failure_cache
+  - inject_errors_external
+
+✗ Failed generation: 5/11
+  - memory_leak_service: no episodes generated
+  - inject_latency_service: no episodes generated
+  - slow_queries_database: timeout
+  - enable_background_job_database: no episodes generated
+  - queue_consumer_slowdown_queue: timeout
+
+================================================================================
+DETAILED ANALYSIS - PROBLEM CASES
+================================================================================
+
+cpu_saturation_service:
+  Fault Type: cpu_saturation
+  Role: service
+  Status: success
+  Remediation suggestions:
+    ⚠️  NO FAULT PROPAGATION DETECTED
+       Possible causes:
+       - Fault may not be severe enough to propagate
+       - Fault target may be isolated in topology
+       - Fault injection may not be working correctly
+       - Check fault implementation for cpu_saturation
+    ⚠️  Only 0 of 3 episodes show propagation
+       This may indicate inconsistent fault injection or topology issues
+       Specific issues found:
+       - Analysis failed: argument of type 'PropagationSummary' is not iterable
+
+inject_latency_cache:
+  Fault Type: inject_latency
+  Role: cache
+  Status: success
+  Remediation suggestions:
+    ⚠️  NO FAULT PROPAGATION DETECTED
+       Possible causes:
+       - Fault may not be severe enough to propagate
+       - Fault target may be isolated in topology
+       - Fault injection may not be working correctly
+       - Check fault implementation for inject_latency
+    ⚠️  Only 0 of 3 episodes show propagation
+       This may indicate inconsistent fault injection or topology issues
+       Specific issues found:
+       - Analysis failed: 'UNKNOWN'
+       - Analysis failed: argument of type 'PropagationSummary' is not iterable
+
+inject_latency_external:
+  Fault Type: inject_latency
+  Role: external
+  Status: success
+  Remediation suggestions:
+    ⚠️  NO FAULT PROPAGATION DETECTED
+       Possible causes:
+       - Fault may not be severe enough to propagate
+       - Fault target may be isolated in topology
+       - Fault injection may not be working correctly
+       - Check fault implementation for inject_latency
+    ⚠️  Only 0 of 3 episodes show propagation
+       This may indicate inconsistent fault injection or topology issues
+       Specific issues found:
+       - Analysis failed: argument of type 'PropagationSummary' is not iterable
+
+connection_exhaustion_database:
+  Fault Type: connection_exhaustion
+  Role: database
+  Status: success
+  Remediation suggestions:
+    ⚠️  NO FAULT PROPAGATION DETECTED
+       Possible causes:
+       - Fault may not be severe enough to propagate
+       - Fault target may be isolated in topology
+       - Fault injection may not be working correctly
+       - Check fault implementation for connection_exhaustion
+    ⚠️  Only 0 of 3 episodes show propagation
+       This may indicate inconsistent fault injection or topology issues
+       Specific issues found:
+       - Analysis failed: argument of type 'PropagationSummary' is not iterable
+
+cache_failure_cache:
+  Fault Type: cache_failure
+  Role: cache
+  Status: success
+  Remediation suggestions:
+    ⚠️  NO FAULT PROPAGATION DETECTED
+       Possible causes:
+       - Fault may not be severe enough to propagate
+       - Fault target may be isolated in topology
+       - Fault injection may not be working correctly
+       - Check fault implementation for cache_failure
+    ⚠️  Only 0 of 3 episodes show propagation
+       This may indicate inconsistent fault injection or topology issues
+       Specific issues found:
+       - Analysis failed: argument of type 'PropagationSummary' is not iterable
+
+inject_errors_external:
+  Fault Type: inject_errors
+  Role: external
+  Status: success
+  Remediation suggestions:
+    ⚠️  NO FAULT PROPAGATION DETECTED
+       Possible causes:
+       - Fault may not be severe enough to propagate
+       - Fault target may be isolated in topology
+       - Fault injection may not be working correctly
+       - Check fault implementation for inject_errors
+    ⚠️  Only 0 of 3 episodes show propagation
+       This may indicate inconsistent fault injection or topology issues
+       Specific issues found:
+       - Analysis failed: argument of type 'PropagationSummary' is not iterable
+
+memory_leak_service:
+  Fault Type: memory_leak
+  Role: service
+  Status: failed
+  Remediation suggestions:
+    Generation failed completely. Check if the fault type/role combination is correctly implemented in scenarios/library.py
+
+inject_latency_service:
+  Fault Type: inject_latency
+  Role: service
+  Status: failed
+  Remediation suggestions:
+    Generation failed completely. Check if the fault type/role combination is correctly implemented in scenarios/library.py
+
+slow_queries_database:
+  Fault Type: slow_queries
+  Role: database
+  Status: failed
+  Remediation suggestions:
+    Generation timed out. May need to reduce simulation duration or topology size
+
+enable_background_job_database:
+  Fault Type: enable_background_job
+  Role: database
+  Status: failed
+  Remediation suggestions:
+    Generation failed completely. Check if the fault type/role combination is correctly implemented in scenarios/library.py
+
+queue_consumer_slowdown_queue:
+  Fault Type: queue_consumer_slowdown
+  Role: queue
+  Status: failed
+  Remediation suggestions:
+    Generation timed out. May need to reduce simulation duration or topology size
+
+
+Detailed results saved to: /var/folders/tx/9fmxvdwn3nsbr4jtn4mh_sl40000gn/T/fault_test_zd5wcm13/test_results.json
+Output directory: /var/folders/tx/9fmxvdwn3nsbr4jtn4mh_sl40000gn/T/fault_test_zd5wcm13
