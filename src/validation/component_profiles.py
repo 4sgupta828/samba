@@ -325,36 +325,107 @@ def calculate_end_to_end_latency(
 
 def estimate_component_capacity(
     component_role: str,
-    num_replicas: int = 1
+    num_replicas: int = 1,
+    thread_pool_size: int = None,
+    db_connection_pool_size: int = None,
+    workload_connection_pool_size: int = None
 ) -> Dict[str, float]:
     """
-    Estimate capacity for a component based on its profile.
+    Estimate capacity for a component based on its profile AND resource constraints.
+
+    This function now properly accounts for:
+    1. Processing time limits (original logic)
+    2. Thread pool limits (concurrency constraint)
+    3. DB connection pool limits (resource constraint)
+    4. Workload generator connection pool limits (client-side constraint)
+
+    The actual capacity is the MINIMUM of all these constraints.
 
     Returns:
         {
-            'max_rps': Maximum requests per second,
+            'max_rps': Maximum requests per second (constrained by all factors),
             'target_rps': Target RPS (70% of max for headroom),
             'max_concurrent': Maximum concurrent requests,
-            'processing_time_p50': Processing time in seconds (p50)
+            'processing_time_p50': Processing time in seconds (p50),
+            'limiting_factor': Which constraint is the bottleneck,
+            'thread_pool_limited_rps': Capacity limited by thread pool (if applicable),
+            'db_pool_limited_rps': Capacity limited by DB connection pool (if applicable),
+            'workload_pool_limited_rps': Capacity limited by workload generator pool (if applicable),
+            'processing_limited_rps': Capacity limited by processing time
         }
     """
     latency_profile, resource_profile = get_component_profile(component_role)
 
-    # Service rate = 1 / processing_time
+    # === Constraint 1: Processing Time Limit ===
+    # Service rate = 1 / processing_time (original logic)
     processing_time_sec = latency_profile.p50 / 1000.0
-    single_instance_rps = 1.0 / processing_time_sec if processing_time_sec > 0 else float('inf')
+    processing_limited_rps = (1.0 / processing_time_sec if processing_time_sec > 0 else float('inf')) * num_replicas
 
-    # Scale by number of replicas
-    total_rps = single_instance_rps * num_replicas
+    # === Constraint 2: Thread Pool Limit ===
+    # Using Little's Law: Capacity = Concurrency / Latency
+    # If we have N threads and latency L, max throughput = N / L
+    thread_pool_limited_rps = None
+    if thread_pool_size is not None:
+        # Total threads across all replicas
+        total_threads = thread_pool_size * num_replicas
+        # Max RPS = threads / latency
+        thread_pool_limited_rps = total_threads / processing_time_sec if processing_time_sec > 0 else float('inf')
 
-    # Apply 70% safety margin
-    safe_rps = total_rps * 0.70
+    # === Constraint 3: DB Connection Pool Limit ===
+    # Similar to thread pool - connection pool limits concurrent DB operations
+    # If a request uses DB, it needs to hold a connection for the DB query duration
+    db_pool_limited_rps = None
+    if db_connection_pool_size is not None and component_role == 'service':
+        # Assume DB query takes ~50% of request time (heuristic based on typical patterns)
+        # If full request is 100ms and DB query is 50ms, we can do more requests than just DB-limited
+        db_query_fraction = 0.5  # DB operations take ~50% of request time
+        db_query_time_sec = processing_time_sec * db_query_fraction
+
+        total_db_connections = db_connection_pool_size * num_replicas
+        # Max RPS = connections / db_query_time
+        db_pool_limited_rps = total_db_connections / db_query_time_sec if db_query_time_sec > 0 else float('inf')
+
+    # === Constraint 4: Workload Generator Connection Pool Limit ===
+    # Client-side constraint - workload generator can only send N concurrent requests
+    workload_pool_limited_rps = None
+    if workload_connection_pool_size is not None:
+        # For end-to-end latency, we need to account for the full request path
+        # Use p99 latency as it's more realistic for concurrent request calculation
+        end_to_end_latency_sec = latency_profile.p99 / 1000.0
+        # Max RPS = connections / latency (Little's Law from client perspective)
+        workload_pool_limited_rps = workload_connection_pool_size / end_to_end_latency_sec if end_to_end_latency_sec > 0 else float('inf')
+
+    # === Find the Bottleneck (Minimum Constraint) ===
+    constraints = {
+        'processing_time': processing_limited_rps,
+    }
+
+    if thread_pool_limited_rps is not None:
+        constraints['thread_pool'] = thread_pool_limited_rps
+
+    if db_pool_limited_rps is not None:
+        constraints['db_connection_pool'] = db_pool_limited_rps
+
+    if workload_pool_limited_rps is not None:
+        constraints['workload_connection_pool'] = workload_pool_limited_rps
+
+    # Find the limiting factor (minimum capacity)
+    limiting_factor = min(constraints, key=constraints.get)
+    max_rps = constraints[limiting_factor]
+
+    # Apply 70% safety margin for target
+    target_rps = max_rps * 0.70
 
     return {
-        'max_rps': total_rps,
-        'target_rps': safe_rps,
+        'max_rps': max_rps,
+        'target_rps': target_rps,
         'max_concurrent': resource_profile.max_concurrent * num_replicas,
         'processing_time_p50': processing_time_sec,
+        'limiting_factor': limiting_factor,
+        'thread_pool_limited_rps': thread_pool_limited_rps,
+        'db_pool_limited_rps': db_pool_limited_rps,
+        'workload_pool_limited_rps': workload_pool_limited_rps,
+        'processing_limited_rps': processing_limited_rps,
     }
 
 

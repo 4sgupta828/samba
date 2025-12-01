@@ -371,10 +371,11 @@ def extract_metric_timeseries(
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """
     Extract time series for a specific metric from metrics DataFrame.
+    NOW MATCHES by component.id OR service.name to include pod-level metrics.
 
     Args:
         metrics_df: DataFrame with metrics (from metrics.jsonl)
-        node_id: Component ID
+        node_id: Component ID or Service Name
         metric_name: Metric name
         value_column: Column name for simple values
         summary_column: Which summary stat to extract (p50, p90, p99, etc.)
@@ -383,8 +384,11 @@ def extract_metric_timeseries(
         Tuple of (times, values) or None if not found
     """
     # Filter for this component and metric
+    # Match by EITHER component.id OR service.name (for aggregated pod metrics)
     mask = (
-        (metrics_df['labels'].apply(lambda x: x.get('component.id') == node_id)) &
+        (metrics_df['labels'].apply(
+            lambda x: x.get('component.id') == node_id or x.get('service.name') == node_id
+        )) &
         (metrics_df['name'] == metric_name)
     )
 
@@ -420,6 +424,7 @@ def analyze_all_node_metrics(
 ) -> Dict[str, MetricImpactResult]:
     """
     Analyze all available metrics for a node.
+    NOW INCLUDES pod-level metrics (CPU, memory, thread pools, connection pools).
 
     Args:
         metrics_df: DataFrame with all metrics
@@ -430,8 +435,11 @@ def analyze_all_node_metrics(
         Dictionary mapping metric_name -> MetricImpactResult
     """
     # Find all metrics for this node
+    # Match by EITHER component.id OR service.name (for service-level aggregated metrics from pods)
     node_metrics = metrics_df[
-        metrics_df['labels'].apply(lambda x: x.get('component.id') == node_id)
+        metrics_df['labels'].apply(
+            lambda x: x.get('component.id') == node_id or x.get('service.name') == node_id
+        )
     ]['name'].unique()
 
     results = {}

@@ -24,9 +24,10 @@ from .component_profiles import (
 
 
 class HealthMetrics:
-    """Container for node-level health metrics."""
+    """Container for node-level health metrics including pod-level resources."""
 
     def __init__(self):
+        # Request-level metrics
         self.incoming_rps: List[float] = []
         self.latency_p50: List[float] = []
         self.latency_p90: List[float] = []
@@ -34,8 +35,19 @@ class HealthMetrics:
         self.success_count: List[float] = []
         self.failure_count: List[float] = []
         self.circuit_breaker_opens: int = 0
+
+        # Pod-level resource metrics (NEW)
         self.cpu_util: List[float] = []
         self.mem_util: List[float] = []
+        self.mem_usage_mb: List[float] = []
+
+        # Pod-level thread pool metrics (NEW)
+        self.thread_pool_active: List[float] = []
+        self.thread_pool_queue_depth: List[float] = []
+
+        # Pod-level connection pool metrics (NEW)
+        self.connection_pool_active: List[float] = []
+        self.connection_pool_queue_depth: List[float] = []
 
     @property
     def avg_rps(self) -> float:
@@ -63,26 +75,100 @@ class HealthMetrics:
         total = self.total_requests
         return sum(self.success_count) / total if total > 0 else 0.0
 
+    # Pod-level metric helpers (NEW)
+    @property
+    def avg_cpu_util(self) -> float:
+        return sum(self.cpu_util) / len(self.cpu_util) if self.cpu_util else 0.0
+
+    @property
+    def max_cpu_util(self) -> float:
+        return max(self.cpu_util) if self.cpu_util else 0.0
+
+    @property
+    def avg_mem_usage_mb(self) -> float:
+        return sum(self.mem_usage_mb) / len(self.mem_usage_mb) if self.mem_usage_mb else 0.0
+
+    @property
+    def max_mem_usage_mb(self) -> float:
+        return max(self.mem_usage_mb) if self.mem_usage_mb else 0.0
+
+    @property
+    def avg_thread_pool_active(self) -> float:
+        return sum(self.thread_pool_active) / len(self.thread_pool_active) if self.thread_pool_active else 0.0
+
+    @property
+    def max_thread_pool_active(self) -> float:
+        return max(self.thread_pool_active) if self.thread_pool_active else 0.0
+
+    @property
+    def avg_thread_pool_queue_depth(self) -> float:
+        return sum(self.thread_pool_queue_depth) / len(self.thread_pool_queue_depth) if self.thread_pool_queue_depth else 0.0
+
+    @property
+    def max_thread_pool_queue_depth(self) -> float:
+        return max(self.thread_pool_queue_depth) if self.thread_pool_queue_depth else 0.0
+
+    @property
+    def avg_connection_pool_active(self) -> float:
+        return sum(self.connection_pool_active) / len(self.connection_pool_active) if self.connection_pool_active else 0.0
+
+    @property
+    def max_connection_pool_active(self) -> float:
+        return max(self.connection_pool_active) if self.connection_pool_active else 0.0
+
+    @property
+    def avg_connection_pool_queue_depth(self) -> float:
+        return sum(self.connection_pool_queue_depth) / len(self.connection_pool_queue_depth) if self.connection_pool_queue_depth else 0.0
+
+    @property
+    def max_connection_pool_queue_depth(self) -> float:
+        return max(self.connection_pool_queue_depth) if self.connection_pool_queue_depth else 0.0
+
 
 def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
     """
     Calculate the maximum safe workload for a given topology using queueing theory
-    and realistic component profiles.
+    and realistic component profiles, INCLUDING resource pool constraints.
 
     Algorithm:
-    1. Find all paths from gateway to leaf nodes
-    2. For each path, calculate end-to-end latency using component profiles
-    3. For each node in path, estimate capacity based on component type
-    4. Find bottleneck node (lowest capacity)
-    5. Calculate safe RPS = min(bottleneck_capacity) × target_utilization
+    1. Read simulation config to get thread pool, connection pool sizes
+    2. Find all paths from gateway to leaf nodes
+    3. For each path, calculate end-to-end latency using component profiles
+    4. For each node in path, estimate capacity based on component type AND pool constraints
+    5. Find bottleneck node (lowest capacity considering ALL constraints)
+    6. Calculate safe RPS = min(bottleneck_capacity) × target_utilization
 
     Args:
         topology: NetworkX directed graph or dict with nodes/edges
         target_utilization: Target utilization threshold (0.0-1.0)
 
     Returns:
-        Dictionary with safe workload parameters
+        Dictionary with safe workload parameters including bottleneck analysis
     """
+    # Import here to avoid circular dependencies
+    from src.core.simulation_config import get_simulation_config
+
+    # Read configuration for resource pool sizes
+    try:
+        sim_config = get_simulation_config()
+
+        # Pod-level thread pool size
+        thread_pool_size = getattr(sim_config.compute, 'thread_pool_size', 50)
+
+        # Pod-level DB connection pool size
+        db_connection_pool_size = getattr(sim_config.compute, 'db_connection_pool_capacity', 20)
+
+        # Workload generator connection pool size
+        if hasattr(sim_config, 'workload_generator'):
+            workload_connection_pool_size = getattr(sim_config.workload_generator, 'connection_pool_size', 200)
+        else:
+            workload_connection_pool_size = 200  # Default
+    except Exception as e:
+        # Fallback to defaults if config not available
+        print(f"Warning: Could not read simulation config, using defaults: {e}")
+        thread_pool_size = 50
+        db_connection_pool_size = 20
+        workload_connection_pool_size = 200
     # Handle both NetworkX graph and dict representation
     if nx and isinstance(topology, nx.DiGraph):
         nodes = dict(topology.nodes(data=True))
@@ -232,9 +318,15 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
                     total_latency_p50 += network.p50
                     total_latency_p99 += network.p99
 
-                # Calculate node capacity
+                # Calculate node capacity WITH resource pool constraints
                 num_replicas = node_attrs.get('desired_replicas', 1)
-                capacity = estimate_component_capacity(role, num_replicas)
+                capacity = estimate_component_capacity(
+                    role,
+                    num_replicas,
+                    thread_pool_size=thread_pool_size if role in ['service', 'gateway'] else None,
+                    db_connection_pool_size=db_connection_pool_size if role == 'service' else None,
+                    workload_connection_pool_size=workload_connection_pool_size if role == 'gateway' else None
+                )
 
                 # Track bottleneck
                 node_key = f"{node_id}_{role}"
@@ -244,7 +336,12 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
                         'role': role,
                         'target_rps': capacity['target_rps'],
                         'max_rps': capacity['max_rps'],
-                        'replicas': num_replicas
+                        'replicas': num_replicas,
+                        'limiting_factor': capacity.get('limiting_factor', 'unknown'),
+                        'thread_pool_limited_rps': capacity.get('thread_pool_limited_rps'),
+                        'db_pool_limited_rps': capacity.get('db_pool_limited_rps'),
+                        'workload_pool_limited_rps': capacity.get('workload_pool_limited_rps'),
+                        'processing_limited_rps': capacity.get('processing_limited_rps'),
                     }
 
                 components_in_path.append((role, edge_attrs.get('type') if i < len(path) - 1 else None))
@@ -283,12 +380,21 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
         'safe_baseline_rps': safe_baseline_rps,
         'safe_peak_rps': safe_peak_rps,
         'required_connection_pool': max(100, required_connections_with_margin),
+        'required_thread_pool': thread_pool_size,
+        'required_db_connection_pool': db_connection_pool_size,
         'critical_path': critical_path_info['path'] if critical_path_info else 'N/A',
         'critical_path_latency_p50_ms': critical_path_info['latency_p50_ms'] if critical_path_info else 0,
         'critical_path_latency_p99_ms': critical_path_info['latency_p99_ms'] if critical_path_info else 0,
         'bottleneck_node': bottleneck['node_id'],
         'bottleneck_role': bottleneck['role'],
         'bottleneck_capacity_rps': bottleneck['target_rps'],
+        'bottleneck_limiting_factor': bottleneck.get('limiting_factor', 'unknown'),
+        'bottleneck_details': {
+            'thread_pool_limited_rps': bottleneck.get('thread_pool_limited_rps'),
+            'db_pool_limited_rps': bottleneck.get('db_pool_limited_rps'),
+            'workload_pool_limited_rps': bottleneck.get('workload_pool_limited_rps'),
+            'processing_limited_rps': bottleneck.get('processing_limited_rps'),
+        },
         'target_utilization': target_utilization,
         'num_paths_analyzed': len(path_analysis),
         'num_leaf_nodes': len(leaf_nodes),
@@ -304,6 +410,7 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
 def extract_node_metrics(metrics_file: Path, node_id: str, start_time: float, end_time: float) -> HealthMetrics:
     """
     Extract health metrics for a specific node during a time window.
+    NOW INCLUDES pod-level metrics (CPU, memory, thread pools, connection pools).
     """
     metrics = HealthMetrics()
 
@@ -316,12 +423,19 @@ def extract_node_metrics(metrics_file: Path, node_id: str, start_time: float, en
 
             sim_time = data.get('labels', {}).get('sim.time')
             component_id = data.get('labels', {}).get('component.id', '')
+            service_name = data.get('labels', {}).get('service.name', '')
 
-            # Skip if not in time window or not this component
+            # Skip if not in time window
             if sim_time is None or sim_time < start_time or sim_time >= end_time:
                 continue
 
-            if component_id != node_id and not data.get('name', '').startswith('workload.'):
+            # Match by component_id OR service_name (for aggregated service metrics)
+            # Also allow workload metrics
+            is_match = (component_id == node_id or
+                       service_name == node_id or
+                       data.get('name', '').startswith('workload.'))
+
+            if not is_match:
                 continue
 
             # Extract metrics based on metric name
@@ -339,50 +453,69 @@ def extract_node_metrics(metrics_file: Path, node_id: str, start_time: float, en
             if metric_name == 'workload.requests.rejected':
                 metrics.failure_count.append(value)
 
-            # Component-level metrics
+            # Component-level request metrics
             if 'latency' in metric_name and 'p50' in metric_name:
                 metrics.latency_p50.append(value)
 
             if 'latency' in metric_name and 'p99' in metric_name:
                 metrics.latency_p99.append(value)
 
-            if 'cpu' in metric_name:
+            # === POD-LEVEL METRICS (NEW) ===
+
+            # CPU utilization (from pods)
+            if metric_name == 'container.cpu.utilization':
                 metrics.cpu_util.append(value)
 
-            if 'memory' in metric_name and 'utilization' in metric_name:
-                metrics.mem_util.append(value)
+            # Memory usage (from pods)
+            if metric_name == 'container.memory.usage_mb':
+                metrics.mem_usage_mb.append(value)
+
+            # Thread pool metrics (from pods)
+            if metric_name == 'thread_pool.threads.active':
+                metrics.thread_pool_active.append(value)
+
+            if metric_name == 'thread_pool.queue.depth':
+                metrics.thread_pool_queue_depth.append(value)
+
+            # Connection pool metrics (from pods)
+            if metric_name == 'connection_pool.connections.active':
+                metrics.connection_pool_active.append(value)
+
+            if metric_name == 'connection_pool.queue_depth':
+                metrics.connection_pool_queue_depth.append(value)
 
     return metrics
 
 
-def validate_node_health(node_id: str, metrics: HealthMetrics, thresholds: Dict) -> Tuple[bool, str, float]:
+def validate_node_health(node_id: str, metrics: HealthMetrics, thresholds: Dict, thread_pool_size: int = 50, db_connection_pool_size: int = 20) -> Tuple[bool, str, float]:
     """
     Validate a single node's health using mathematical criteria.
+    NOW INCLUDES pod-level resource checks (CPU, memory, thread pools, connection pools).
 
     Returns:
         (is_healthy, failure_reason, health_score)
     """
     # Skip if no data collected for this node
-    if metrics.total_requests == 0 and len(metrics.incoming_rps) == 0:
+    if (metrics.total_requests == 0 and len(metrics.incoming_rps) == 0 and
+        len(metrics.cpu_util) == 0 and len(metrics.thread_pool_active) == 0):
         return True, "No metrics collected (node not exercised)", 1.0
 
     health_scores = []
 
-    # 1. Utilization Check (implicit from connection pool)
-    # For now, we use error rate and latency as proxies
-    # TODO: Calculate actual ρ = λ / μ when we have service rate data
+    # === REQUEST-LEVEL CHECKS ===
 
-    # 2. Error Rate Check
-    error_rate = metrics.error_rate
-    max_error_rate = thresholds.get('max_error_rate', 0.01)
+    # 1. Error Rate Check
+    if metrics.total_requests > 0:
+        error_rate = metrics.error_rate
+        max_error_rate = thresholds.get('max_error_rate', 0.01)
 
-    if error_rate > max_error_rate:
-        return False, f"Error rate {error_rate:.2%} exceeds {max_error_rate:.2%}", 0.0
+        if error_rate > max_error_rate:
+            return False, f"Error rate {error_rate:.2%} exceeds {max_error_rate:.2%}", 0.0
 
-    h_errors = 1.0 - (error_rate / max_error_rate) if max_error_rate > 0 else 1.0
-    health_scores.append(h_errors)
+        h_errors = 1.0 - (error_rate / max_error_rate) if max_error_rate > 0 else 1.0
+        health_scores.append(h_errors)
 
-    # 3. Latency Distribution Check (p99/p50 ratio)
+    # 2. Latency Distribution Check (p99/p50 ratio)
     if metrics.avg_latency_p50 > 0 and metrics.avg_latency_p99 > 0:
         latency_ratio = metrics.avg_latency_p99 / metrics.avg_latency_p50
         max_ratio = thresholds.get('max_p99_ratio', 10.0)
@@ -393,21 +526,125 @@ def validate_node_health(node_id: str, metrics: HealthMetrics, thresholds: Dict)
         h_latency = 1.0 - (latency_ratio / max_ratio) if max_ratio > 0 else 1.0
         health_scores.append(h_latency)
 
-    # 4. Circuit Breaker Check
+    # 3. Circuit Breaker Check
     if metrics.circuit_breaker_opens > 0:
         return False, f"Circuit breaker opened {metrics.circuit_breaker_opens} times during baseline", 0.0
 
-    # 5. Success Rate Check
-    success_rate = metrics.success_rate
-    min_success_rate = thresholds.get('min_success_rate', 0.95)
+    # 4. Success Rate Check
+    if metrics.total_requests > 0:
+        success_rate = metrics.success_rate
+        min_success_rate = thresholds.get('min_success_rate', 0.95)
 
-    if success_rate < min_success_rate:
-        return False, f"Success rate {success_rate:.2%} below {min_success_rate:.2%}", 0.0
+        if success_rate < min_success_rate:
+            return False, f"Success rate {success_rate:.2%} below {min_success_rate:.2%}", 0.0
 
-    h_success = success_rate / min_success_rate if min_success_rate > 0 else 1.0
-    health_scores.append(h_success)
+        h_success = success_rate / min_success_rate if min_success_rate > 0 else 1.0
+        health_scores.append(h_success)
 
-    # Calculate overall node health score (minimum of all components)
+    # === POD-LEVEL RESOURCE CHECKS (NEW) ===
+
+    # 5. CPU Utilization Check
+    if len(metrics.cpu_util) > 0:
+        max_cpu = metrics.max_cpu_util
+        avg_cpu = metrics.avg_cpu_util
+        max_cpu_threshold = thresholds.get('max_cpu_utilization', 85.0)
+
+        if max_cpu > max_cpu_threshold:
+            return False, f"CPU utilization peaked at {max_cpu:.1f}% (max: {max_cpu_threshold}%)", 0.0
+
+        # Score based on average CPU relative to threshold (only penalize if approaching limit)
+        # Linear penalty starting at 50% utilization
+        if avg_cpu < 50.0:
+            h_cpu = 1.0  # Healthy if below 50%
+        else:
+            # Linear scale from 1.0 at 50% to 0.0 at 85%
+            h_cpu = 1.0 - ((avg_cpu - 50.0) / (max_cpu_threshold - 50.0))
+        health_scores.append(h_cpu)
+
+    # 6. Memory Usage Check
+    if len(metrics.mem_usage_mb) > 0:
+        max_mem_mb = metrics.max_mem_usage_mb
+        max_mem_threshold_mb = thresholds.get('max_memory_mb', 450)  # Default: 450MB out of 512MB
+
+        if max_mem_mb > max_mem_threshold_mb:
+            return False, f"Memory usage peaked at {max_mem_mb:.0f}MB (max: {max_mem_threshold_mb}MB)", 0.0
+
+        # Score based on average memory (only penalize if approaching limit)
+        # Linear penalty starting at 300MB (60% of 512MB capacity)
+        avg_mem_mb = metrics.avg_mem_usage_mb
+        if avg_mem_mb < 300.0:
+            h_mem = 1.0  # Healthy if below 300MB
+        else:
+            # Linear scale from 1.0 at 300MB to 0.0 at 450MB
+            h_mem = 1.0 - ((avg_mem_mb - 300.0) / (max_mem_threshold_mb - 300.0))
+        health_scores.append(h_mem)
+
+    # 7. Thread Pool Saturation Check
+    if len(metrics.thread_pool_active) > 0:
+        max_threads_active = metrics.max_thread_pool_active
+        avg_threads_active = metrics.avg_thread_pool_active
+        # Consider saturated if using >90% of thread pool
+        saturation_threshold = thread_pool_size * 0.9
+
+        if max_threads_active > saturation_threshold:
+            return False, f"Thread pool saturated: {max_threads_active:.0f}/{thread_pool_size} threads (>90%)", 0.0
+
+        # Score based on utilization (only penalize if approaching saturation)
+        # Linear penalty starting at 70% utilization
+        thread_utilization = avg_threads_active / thread_pool_size if thread_pool_size > 0 else 0.0
+        if thread_utilization < 0.70:
+            h_threads = 1.0  # Healthy if below 70%
+        else:
+            # Linear scale from 1.0 at 70% to 0.0 at 90%
+            h_threads = 1.0 - ((thread_utilization - 0.70) / (0.90 - 0.70))
+        health_scores.append(h_threads)
+
+    # 8. Thread Pool Queue Depth Check
+    if len(metrics.thread_pool_queue_depth) > 0:
+        max_queue_depth = metrics.max_thread_pool_queue_depth
+        avg_queue_depth = metrics.avg_thread_pool_queue_depth
+        # Any significant queueing indicates saturation
+        max_queue_threshold = thresholds.get('max_thread_queue_depth', 10)
+
+        if max_queue_depth > max_queue_threshold:
+            return False, f"Thread pool queue depth peaked at {max_queue_depth:.0f} (max: {max_queue_threshold})", 0.0
+
+        # Score based on average queue depth
+        h_thread_queue = 1.0 - (avg_queue_depth / max_queue_threshold) if max_queue_threshold > 0 else 1.0
+        health_scores.append(h_thread_queue)
+
+    # 9. Connection Pool Saturation Check
+    if len(metrics.connection_pool_active) > 0:
+        max_connections_active = metrics.max_connection_pool_active
+        avg_connections_active = metrics.avg_connection_pool_active
+        saturation_threshold = db_connection_pool_size * 0.9
+
+        if max_connections_active > saturation_threshold:
+            return False, f"Connection pool saturated: {max_connections_active:.0f}/{db_connection_pool_size} (>90%)", 0.0
+
+        # Score based on utilization (only penalize if approaching saturation)
+        # Linear penalty starting at 70% utilization
+        conn_utilization = avg_connections_active / db_connection_pool_size if db_connection_pool_size > 0 else 0.0
+        if conn_utilization < 0.70:
+            h_connections = 1.0  # Healthy if below 70%
+        else:
+            # Linear scale from 1.0 at 70% to 0.0 at 90%
+            h_connections = 1.0 - ((conn_utilization - 0.70) / (0.90 - 0.70))
+        health_scores.append(h_connections)
+
+    # 10. Connection Pool Queue Depth Check
+    if len(metrics.connection_pool_queue_depth) > 0:
+        max_conn_queue_depth = metrics.max_connection_pool_queue_depth
+        avg_conn_queue_depth = metrics.avg_connection_pool_queue_depth
+        max_conn_queue_threshold = thresholds.get('max_connection_queue_depth', 5)
+
+        if max_conn_queue_depth > max_conn_queue_threshold:
+            return False, f"Connection pool queue depth peaked at {max_conn_queue_depth:.0f} (max: {max_conn_queue_threshold})", 0.0
+
+        h_conn_queue = 1.0 - (avg_conn_queue_depth / max_conn_queue_threshold) if max_conn_queue_threshold > 0 else 1.0
+        health_scores.append(h_conn_queue)
+
+    # Calculate overall node health score (minimum of all components - weakest link principle)
     node_health = min(health_scores) if health_scores else 1.0
 
     return True, "Node is healthy", node_health
@@ -438,7 +675,21 @@ def validate_system_health(
             'max_p99_ratio': 10.0,
             'min_success_rate': 0.95,
             'min_health_score': 0.80,
+            'max_cpu_utilization': 85.0,
+            'max_memory_mb': 450,
+            'max_thread_queue_depth': 10,
+            'max_connection_queue_depth': 5,
         }
+
+    # Read simulation config for pool sizes
+    from src.core.simulation_config import get_simulation_config
+    try:
+        sim_config = get_simulation_config()
+        thread_pool_size = getattr(sim_config.compute, 'thread_pool_size', 50)
+        db_connection_pool_size = getattr(sim_config.compute, 'db_connection_pool_capacity', 20)
+    except Exception:
+        thread_pool_size = 50
+        db_connection_pool_size = 20
 
     # Load topology
     with open(topology_file, 'r') as f:
@@ -468,18 +719,38 @@ def validate_system_health(
                 end_time=fault_start_time
             )
 
-            is_healthy, reason, score = validate_node_health(node_id, node_metrics, thresholds)
+            is_healthy, reason, score = validate_node_health(
+                node_id,
+                node_metrics,
+                thresholds,
+                thread_pool_size=thread_pool_size,
+                db_connection_pool_size=db_connection_pool_size
+            )
 
             node_health_scores[node_id] = score
             validation_details[node_id] = {
                 'is_healthy': is_healthy,
                 'reason': reason,
                 'health_score': score,
+                # Request-level metrics
                 'avg_rps': node_metrics.avg_rps,
                 'error_rate': node_metrics.error_rate,
                 'success_rate': node_metrics.success_rate,
                 'avg_latency_p50': node_metrics.avg_latency_p50,
                 'avg_latency_p99': node_metrics.avg_latency_p99,
+                # Pod-level metrics (NEW)
+                'avg_cpu_util': node_metrics.avg_cpu_util,
+                'max_cpu_util': node_metrics.max_cpu_util,
+                'avg_mem_usage_mb': node_metrics.avg_mem_usage_mb,
+                'max_mem_usage_mb': node_metrics.max_mem_usage_mb,
+                'avg_thread_pool_active': node_metrics.avg_thread_pool_active,
+                'max_thread_pool_active': node_metrics.max_thread_pool_active,
+                'avg_thread_pool_queue_depth': node_metrics.avg_thread_pool_queue_depth,
+                'max_thread_pool_queue_depth': node_metrics.max_thread_pool_queue_depth,
+                'avg_connection_pool_active': node_metrics.avg_connection_pool_active,
+                'max_connection_pool_active': node_metrics.max_connection_pool_active,
+                'avg_connection_pool_queue_depth': node_metrics.avg_connection_pool_queue_depth,
+                'max_connection_pool_queue_depth': node_metrics.max_connection_pool_queue_depth,
             }
 
             if not is_healthy:
