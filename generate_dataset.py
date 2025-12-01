@@ -64,15 +64,32 @@ def create_dynamic_workload(nx_graph, base_rps: int = 80, peak_rps: int = 200):
     # Distribute traffic evenly across frontends
     weight = int(100 / len(frontends))
 
+    # Create request mix with realistic HTTP method distribution
+    # Each frontend service handles ALL request types with typical traffic patterns:
+    # - GET (read): 70% (most common - browsing, listing, retrieving data)
+    # - POST (create): 30% (creating new resources, submitting forms)
+    # NOTE: PUT and DELETE disabled temporarily for testing
+    # - PUT (update): 7% (updating existing resources)
+    # - DELETE: 3% (removing resources)
+
+    request_type_distribution = {
+        'GET': 0.70,    # 70% read operations
+        'POST': 0.30,   # 30% create operations
+        # 'PUT': 0.07,    # DISABLED - not working yet
+        # 'DELETE': 0.03  # DISABLED - not working yet
+    }
+
     request_mix = []
     for svc in frontends:
-        # Gateway is configured to route by request type
-        # We use 'GET' as a generic type
-        request_mix.append({
-            'type': 'GET',
-            'service': svc,
-            'weight': weight
-        })
+        # Each service handles all request types with the standard distribution
+        for req_type, type_fraction in request_type_distribution.items():
+            # Weight = (service share) × (type distribution)
+            # E.g., if 2 frontends: each gets 50 weight, then split by type distribution
+            request_mix.append({
+                'type': req_type,
+                'service': svc,
+                'weight': int(weight * type_fraction)
+            })
 
     workload_config = {
         'name': 'Dynamic Random Workload',
@@ -231,12 +248,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"{'='*60}")
         print_topology_summary(nx_graph)
 
-    # 2.5. Pre-Flight Health Check: Calculate Safe Workload
+    # 2.5. Create initial workload config (for request mix analysis)
+    # We'll create it with default RPS first, then adjust after capacity calculation
+    initial_workload_path = create_dynamic_workload(nx_graph, base_rps=80, peak_rps=200)
+
+    # 2.6. Pre-Flight Health Check: Calculate Safe Workload
     if verbose:
         print(f"\n[Pre-Flight Health Check]")
         print(f"  Calculating safe workload using queueing theory...")
 
-    safe_workload = calculate_safe_workload(nx_graph, target_utilization=0.70)
+    safe_workload = calculate_safe_workload(nx_graph, target_utilization=0.70, workload_config_path=initial_workload_path)
 
     if verbose:
         print(f"  Critical path latency (p99): {safe_workload['critical_path_latency_p99_ms']:.1f}ms")
@@ -259,6 +280,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"    Requested: {80}-{200} RPS")
             print(f"    Adjusted:  {actual_base_rps}-{actual_peak_rps} RPS")
 
+    # Recreate workload with adjusted RPS
     workload_path = create_dynamic_workload(nx_graph, base_rps=actual_base_rps, peak_rps=actual_peak_rps)
 
     # 4. Configure Simulation

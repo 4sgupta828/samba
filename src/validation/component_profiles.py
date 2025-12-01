@@ -328,29 +328,37 @@ def estimate_component_capacity(
     num_replicas: int = 1,
     thread_pool_size: int = None,
     db_connection_pool_size: int = None,
-    workload_connection_pool_size: int = None
+    service_pipeline: list = None,
+    cache_hit_rate: float = 0.7
 ) -> Dict[str, float]:
     """
     Estimate capacity for a component based on its profile AND resource constraints.
 
-    This function now properly accounts for:
-    1. Processing time limits (original logic)
+    This function properly accounts for:
+    1. Processing time limits (base throughput)
     2. Thread pool limits (concurrency constraint)
-    3. DB connection pool limits (resource constraint)
-    4. Workload generator connection pool limits (client-side constraint)
+    3. DB connection pool limits (resource constraint with actual DB latency)
 
-    The actual capacity is the MINIMUM of all these constraints.
+    NOTE: Workload generator connection pool is NOT a constraint on topology capacity.
+    It should be sized to support the topology's capacity, not limit it.
+
+    Args:
+        component_role: Component type (service, database, cache, etc.)
+        num_replicas: Number of replicas
+        thread_pool_size: Thread pool size per replica
+        db_connection_pool_size: DB connection pool size per replica
+        service_pipeline: Processing pipeline steps (to determine DB usage)
+        cache_hit_rate: Cache hit rate (default 0.7 = 70%)
 
     Returns:
         {
-            'max_rps': Maximum requests per second (constrained by all factors),
+            'max_rps': Maximum requests per second (constrained by topology resources),
             'target_rps': Target RPS (70% of max for headroom),
             'max_concurrent': Maximum concurrent requests,
             'processing_time_p50': Processing time in seconds (p50),
             'limiting_factor': Which constraint is the bottleneck,
             'thread_pool_limited_rps': Capacity limited by thread pool (if applicable),
             'db_pool_limited_rps': Capacity limited by DB connection pool (if applicable),
-            'workload_pool_limited_rps': Capacity limited by workload generator pool (if applicable),
             'processing_limited_rps': Capacity limited by processing time
         }
     """
@@ -372,30 +380,39 @@ def estimate_component_capacity(
         thread_pool_limited_rps = total_threads / processing_time_sec if processing_time_sec > 0 else float('inf')
 
     # === Constraint 3: DB Connection Pool Limit ===
-    # Similar to thread pool - connection pool limits concurrent DB operations
-    # If a request uses DB, it needs to hold a connection for the DB query duration
+    # Use ACTUAL DB latency from component profiles, not a hardcoded fraction
     db_pool_limited_rps = None
     if db_connection_pool_size is not None and component_role == 'service':
-        # Assume DB query takes ~50% of request time (heuristic based on typical patterns)
-        # If full request is 100ms and DB query is 50ms, we can do more requests than just DB-limited
-        db_query_fraction = 0.5  # DB operations take ~50% of request time
-        db_query_time_sec = processing_time_sec * db_query_fraction
+        # Check if this service's pipeline uses database
+        has_db_query = False
+        if service_pipeline:
+            has_db_query = any(step.get('type') == 'db_query' for step in service_pipeline)
 
-        total_db_connections = db_connection_pool_size * num_replicas
-        # Max RPS = connections / db_query_time
-        db_pool_limited_rps = total_db_connections / db_query_time_sec if db_query_time_sec > 0 else float('inf')
+        if has_db_query:
+            # Get actual DB latency from component profiles
+            db_latency_profile, _ = get_component_profile('database')
+            db_query_time_sec = db_latency_profile.p50 / 1000.0
 
-    # === Constraint 4: Workload Generator Connection Pool Limit ===
-    # Client-side constraint - workload generator can only send N concurrent requests
-    workload_pool_limited_rps = None
-    if workload_connection_pool_size is not None:
-        # For end-to-end latency, we need to account for the full request path
-        # Use p99 latency as it's more realistic for concurrent request calculation
-        end_to_end_latency_sec = latency_profile.p99 / 1000.0
-        # Max RPS = connections / latency (Little's Law from client perspective)
-        workload_pool_limited_rps = workload_connection_pool_size / end_to_end_latency_sec if end_to_end_latency_sec > 0 else float('inf')
+            # Account for cache hit rate (if cache is in pipeline, DB is only called on cache miss)
+            has_cache = False
+            if service_pipeline:
+                has_cache = any(step.get('type') == 'cache_check' for step in service_pipeline)
+
+            # Effective DB call rate = (1 - cache_hit_rate) if cache exists, else 1.0
+            db_call_probability = (1.0 - cache_hit_rate) if has_cache else 1.0
+
+            # Effective time a connection is held per request
+            effective_db_time = db_query_time_sec * db_call_probability
+
+            total_db_connections = db_connection_pool_size * num_replicas
+            # Max RPS = connections / effective_db_time
+            if effective_db_time > 0:
+                db_pool_limited_rps = total_db_connections / effective_db_time
+            else:
+                db_pool_limited_rps = float('inf')
 
     # === Find the Bottleneck (Minimum Constraint) ===
+    # NOTE: Workload generator pool is NOT included here - it's not a topology constraint
     constraints = {
         'processing_time': processing_limited_rps,
     }
@@ -405,9 +422,6 @@ def estimate_component_capacity(
 
     if db_pool_limited_rps is not None:
         constraints['db_connection_pool'] = db_pool_limited_rps
-
-    if workload_pool_limited_rps is not None:
-        constraints['workload_connection_pool'] = workload_pool_limited_rps
 
     # Find the limiting factor (minimum capacity)
     limiting_factor = min(constraints, key=constraints.get)
@@ -424,7 +438,6 @@ def estimate_component_capacity(
         'limiting_factor': limiting_factor,
         'thread_pool_limited_rps': thread_pool_limited_rps,
         'db_pool_limited_rps': db_pool_limited_rps,
-        'workload_pool_limited_rps': workload_pool_limited_rps,
         'processing_limited_rps': processing_limited_rps,
     }
 

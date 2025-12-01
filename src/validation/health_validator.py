@@ -125,7 +125,149 @@ class HealthMetrics:
         return max(self.connection_pool_queue_depth) if self.connection_pool_queue_depth else 0.0
 
 
-def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
+def analyze_request_routing_distribution(topology, workload_config_path: str = None) -> Dict:
+    """
+    Analyze how requests are distributed across the topology based on:
+    1. Workload request mix (weights for each request type)
+    2. Gateway routing (which services handle which request types)
+    3. Service processing pipelines (probabilistic dependencies)
+
+    This provides a more accurate capacity estimate than assuming all requests
+    go through the slowest path.
+
+    Args:
+        topology: Topology graph or dict
+        workload_config_path: Path to workload config YAML (optional)
+
+    Returns:
+        Dictionary with routing distribution analysis
+    """
+    import yaml
+    from pathlib import Path
+
+    # Handle both NetworkX graph and dict representation
+    if nx and isinstance(topology, nx.DiGraph):
+        nodes = dict(topology.nodes(data=True))
+    else:
+        nodes = {n['id']: n for n in topology.get('nodes', [])}
+
+    # Find gateway
+    gateway_id = None
+    for node_id, attrs in nodes.items():
+        if attrs.get('role') == 'gateway':
+            gateway_id = node_id
+            break
+
+    if not gateway_id:
+        return {'error': 'No gateway found in topology'}
+
+    # Load workload config if provided
+    request_mix = {}
+    if workload_config_path and Path(workload_config_path).exists():
+        try:
+            with open(workload_config_path, 'r') as f:
+                workload_config = yaml.safe_load(f)
+                # Extract request mix weights (accumulate by type)
+                for item in workload_config.get('request_mix', []):
+                    request_type = item.get('type', 'GET')
+                    weight = item.get('weight', 1)
+                    request_mix[request_type] = request_mix.get(request_type, 0) + weight
+
+            # Normalize weights to probabilities
+            total_weight = sum(request_mix.values())
+            if total_weight > 0:
+                request_mix = {k: v / total_weight for k, v in request_mix.items()}
+        except Exception as e:
+            print(f"Warning: Could not load workload config: {e}")
+            request_mix = {'GET': 1.0}  # Default
+    else:
+        # Default uniform distribution
+        request_mix = {'GET': 1.0}
+
+    # Analyze service pipelines to estimate dependency call probabilities
+    service_routing = {}
+    for node_id, attrs in nodes.items():
+        if attrs.get('role') == 'service':
+            pipeline = attrs.get('processing_pipeline') or []  # Handle None case
+
+            # Calculate probabilities for each step type
+            has_cache = any(step.get('type') == 'cache_check' for step in pipeline)
+            has_db = any(step.get('type') == 'db_query' for step in pipeline)
+            has_service_calls = any(step.get('type') == 'service_calls' for step in pipeline)
+            has_external_calls = any(step.get('type') == 'external_calls' for step in pipeline)
+
+            # Get probabilities
+            service_calls_prob = next(
+                (step.get('probability', 1.0) for step in pipeline if step.get('type') == 'service_calls'),
+                0.0
+            )
+            external_calls_prob = next(
+                (step.get('probability', 1.0) for step in pipeline if step.get('type') == 'external_calls'),
+                0.0
+            )
+
+            service_routing[node_id] = {
+                'has_cache': has_cache,
+                'has_db': has_db,
+                'calls_services': has_service_calls,
+                'calls_external': has_external_calls,
+                'service_calls_probability': service_calls_prob,
+                'external_calls_probability': external_calls_prob,
+            }
+
+    return {
+        'request_mix': request_mix,
+        'service_routing': service_routing,
+        'gateway_id': gateway_id,
+        'num_services': len(service_routing),
+    }
+
+
+def validate_workload_generator_sizing(
+    target_rps: float,
+    latency_seconds: float,
+    workload_pool_size: int
+) -> Dict[str, any]:
+    """
+    Validate that the workload generator is sized to support the topology's capacity.
+
+    The workload generator is NOT a constraint on the topology - it's a test harness
+    that should be configured to support whatever RPS the topology can handle.
+
+    Args:
+        target_rps: Target RPS the topology can handle
+        latency_seconds: End-to-end latency (p99)
+        workload_pool_size: Actual workload generator connection pool size
+
+    Returns:
+        Dictionary with validation status and sizing recommendations
+    """
+    # Using Little's Law: N = λ × W
+    # Add 1.5x safety factor for bursts and variance
+    required_pool_size = int(target_rps * latency_seconds * 1.5)
+
+    is_adequate = workload_pool_size >= required_pool_size
+    utilization = (required_pool_size / workload_pool_size * 100) if workload_pool_size > 0 else float('inf')
+
+    validation = {
+        'is_adequate': is_adequate,
+        'current_pool_size': workload_pool_size,
+        'required_pool_size': required_pool_size,
+        'utilization_pct': min(utilization, 100.0),
+        'recommendation': 'OK' if is_adequate else f'Increase workload generator connection pool to {required_pool_size}'
+    }
+
+    if not is_adequate:
+        validation['warning'] = (
+            f"Workload generator undersized: has {workload_pool_size} connections, "
+            f"needs {required_pool_size} for {target_rps:.0f} RPS at {latency_seconds*1000:.0f}ms latency. "
+            f"Test results may be invalid."
+        )
+
+    return validation
+
+
+def calculate_safe_workload(topology, target_utilization: float = 0.70, workload_config_path: str = None) -> Dict:
     """
     Calculate the maximum safe workload for a given topology using queueing theory
     and realistic component profiles, INCLUDING resource pool constraints.
@@ -320,12 +462,18 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
 
                 # Calculate node capacity WITH resource pool constraints
                 num_replicas = node_attrs.get('desired_replicas', 1)
+
+                # Get processing pipeline for services
+                service_pipeline = None
+                if role == 'service' and 'processing_pipeline' in node_attrs:
+                    service_pipeline = node_attrs.get('processing_pipeline')
+
                 capacity = estimate_component_capacity(
                     role,
                     num_replicas,
                     thread_pool_size=thread_pool_size if role in ['service', 'gateway'] else None,
                     db_connection_pool_size=db_connection_pool_size if role == 'service' else None,
-                    workload_connection_pool_size=workload_connection_pool_size if role == 'gateway' else None
+                    service_pipeline=service_pipeline
                 )
 
                 # Track bottleneck
@@ -340,7 +488,6 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
                         'limiting_factor': capacity.get('limiting_factor', 'unknown'),
                         'thread_pool_limited_rps': capacity.get('thread_pool_limited_rps'),
                         'db_pool_limited_rps': capacity.get('db_pool_limited_rps'),
-                        'workload_pool_limited_rps': capacity.get('workload_pool_limited_rps'),
                         'processing_limited_rps': capacity.get('processing_limited_rps'),
                     }
 
@@ -376,6 +523,16 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
     required_connections = safe_peak_rps * critical_latency_seconds
     required_connections_with_margin = int(required_connections * 2)  # 2x safety margin
 
+    # Validate workload generator sizing (workload generator should support topology, not constrain it)
+    workload_validation = validate_workload_generator_sizing(
+        safe_peak_rps,
+        critical_latency_seconds,
+        workload_connection_pool_size
+    )
+
+    # Analyze request routing distribution for more accurate capacity estimation
+    routing_analysis = analyze_request_routing_distribution(topology, workload_config_path)
+
     result = {
         'safe_baseline_rps': safe_baseline_rps,
         'safe_peak_rps': safe_peak_rps,
@@ -392,12 +549,19 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
         'bottleneck_details': {
             'thread_pool_limited_rps': bottleneck.get('thread_pool_limited_rps'),
             'db_pool_limited_rps': bottleneck.get('db_pool_limited_rps'),
-            'workload_pool_limited_rps': bottleneck.get('workload_pool_limited_rps'),
             'processing_limited_rps': bottleneck.get('processing_limited_rps'),
         },
+        'workload_generator_validation': workload_validation,
+        'routing_distribution': routing_analysis,
         'target_utilization': target_utilization,
         'num_paths_analyzed': len(path_analysis),
         'num_leaf_nodes': len(leaf_nodes),
+        'capacity_note': (
+            'Capacity is currently based on worst-case path (slowest). '
+            'See routing_distribution for actual request flow patterns. '
+            'This is a conservative estimate; actual capacity may be higher '
+            'if most requests follow faster paths.'
+        )
     }
 
     # Add validation info if there were issues

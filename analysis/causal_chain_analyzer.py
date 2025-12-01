@@ -408,10 +408,10 @@ class CausalChainAnalyzer:
 
         lines = ["=" * 80, "CAUSAL CHAIN ANALYSIS", "=" * 80, ""]
 
-        # Sort by distance from root
+        # Sort by distance from root (handle None values)
         sorted_analyses = sorted(
             analyses.items(),
-            key=lambda x: (x[1].distance_from_root, x[0])
+            key=lambda x: (x[1].distance_from_root if x[1].distance_from_root is not None else float('inf'), x[0])
         )
 
         for node_id, analysis in sorted_analyses:

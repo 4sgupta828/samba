@@ -84,12 +84,13 @@ class TopologyGenerator:
         # Add nodes with metadata
         for n in services:
             # New architecture: Service with desired_replicas
+            # Services support GET and POST (PUT/DELETE disabled for now)
             G.add_node(n,
                       type='Service',
                       role='service',
                       service_name=n,
                       desired_replicas=3,  # 3 pods per service
-                      supported_request_types=['GET', 'POST'],
+                      supported_request_types=['GET', 'POST'],  # PUT/DELETE disabled temporarily
                       processing_pipeline=None)  # Will be set during wiring
         for n in dbs:
             G.add_node(n, type='SqlDatabase', role='database')
@@ -341,6 +342,9 @@ class TopologyGenerator:
                   type='DeploymentController',
                   role='controller')
 
+        # Set processing pipelines for services based on their connections
+        self._set_processing_pipelines(G)
+
         return G
 
     def _add_edge(self, G: nx.DiGraph, u: str, v: str, edge_type: str):
@@ -366,6 +370,70 @@ class TopologyGenerator:
             latency = 1.0    # Caches are very fast (1ms)
 
         G.add_edge(u, v, type=edge_type, base_latency=latency)
+
+    def _set_processing_pipelines(self, G: nx.DiGraph):
+        """
+        Infer and set processing_pipeline for each service based on its connections.
+
+        This analyzes the outgoing edges from each service to determine what
+        resources it uses (cache, DB, other services, external APIs, queues).
+        """
+        for node_id, attrs in G.nodes(data=True):
+            if attrs.get('role') != 'service':
+                continue
+
+            # Get outgoing edges to determine what this service connects to
+            successors = list(G.successors(node_id))
+
+            # Analyze successor types
+            has_cache = False
+            has_db = False
+            has_service_deps = False
+            has_external_deps = False
+            has_queue_out = False
+
+            for succ in successors:
+                succ_role = G.nodes[succ].get('role')
+
+                if succ_role == 'cache':
+                    has_cache = True
+                elif succ_role == 'database':
+                    has_db = True
+                elif succ_role == 'service':
+                    has_service_deps = True
+                elif succ_role == 'external':
+                    has_external_deps = True
+                elif succ_role == 'queue':
+                    has_queue_out = True
+
+            # Build pipeline based on what the service connects to
+            pipeline = []
+
+            # Always check cache first if available (cache-aside pattern)
+            if has_cache:
+                pipeline.append({"type": "cache_check"})
+
+            # Query database if available (and if cache misses)
+            if has_db:
+                pipeline.append({"type": "db_query"})
+
+            # Call downstream services (with probability based on architecture)
+            if has_service_deps:
+                # 70% of requests make service calls (some may be conditional)
+                pipeline.append({"type": "service_calls", "probability": 0.7})
+
+            # Call external APIs if available
+            if has_external_deps:
+                # 30% of requests need external data (often optional/enrichment)
+                pipeline.append({"type": "external_calls", "probability": 0.3})
+
+            # Publish to queue if available
+            if has_queue_out:
+                # 50% of requests publish events (async operations)
+                pipeline.append({"type": "queue_publish", "probability": 0.5})
+
+            # Set the pipeline (or None if no connections)
+            G.nodes[node_id]['processing_pipeline'] = pipeline if pipeline else None
 
 
 def visualize_topology(G: nx.DiGraph, output_path: str = None):
