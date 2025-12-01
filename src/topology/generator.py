@@ -116,19 +116,54 @@ class TopologyGenerator:
         # B. Service → Database (Persistence)
         # Each database is owned by one or more services (microservices can share DBs)
         # Note: Not all services need databases - some may only call external APIs or other services
+        db_to_services = {}  # Track which services use each database
         for db in dbs:
             # Assign 1-3 services to each database
             num_owners = self.rng.randint(1, min(3, len(services)))
             owners = self.rng.sample(services, num_owners)
+            db_to_services[db] = owners
             for owner in owners:
                 self._add_edge(G, owner, db, 'sync_db')
 
         # C. Service → Cache (Sidecar Pattern)
-        # Caches attached to read-heavy services
-        if caches and services:
+        # IMPORTANT: Caches are only created for services that have databases
+        # A cache without a database doesn't make architectural sense
+        # Cache is a performance optimization layer on top of persistent storage
+        if caches and dbs and services:
+            # Get all services that have at least one database connection
+            services_with_db = set()
+            for db, owners in db_to_services.items():
+                services_with_db.update(owners)
+
+            # If no services have databases yet, we can't assign caches
+            if not services_with_db:
+                # This shouldn't happen in normal topologies, but handle edge case
+                # by assigning a database to a service first
+                db = dbs[0]
+                service = services[0]
+                self._add_edge(G, service, db, 'sync_db')
+                db_to_services[db] = db_to_services.get(db, []) + [service]
+                services_with_db.add(service)
+
+            # Assign each cache to services that have databases
+            # Multiple services can share a cache (common in microservices)
+            services_with_db_list = list(services_with_db)
             for cache in caches:
-                user = self.rng.choice(services)
-                self._add_edge(G, user, cache, 'sync_cache')
+                # Randomly select 1-2 services with databases to share this cache
+                num_cache_users = self.rng.randint(1, min(2, len(services_with_db_list)))
+                cache_users = self.rng.sample(services_with_db_list, num_cache_users)
+
+                for cache_user in cache_users:
+                    # Double-check the service has a database connection (defensive programming)
+                    has_db = any(data.get('type') == 'sync_db'
+                                for _, _, data in G.edges(cache_user, data=True))
+                    if not has_db:
+                        # This should never happen, but if it does, add a database connection
+                        # Use the first available database
+                        db = dbs[0]
+                        self._add_edge(G, cache_user, db, 'sync_db')
+
+                    self._add_edge(G, cache_user, cache, 'sync_cache')
 
         # D. Async Message Queues
         # Pattern: Producer → Queue → Consumer
@@ -231,18 +266,35 @@ class TopologyGenerator:
                         reachable_services = [n for n in reachable
                                             if G.nodes[n].get('role') == 'service']
                         if reachable_services:
-                            source = self.rng.choice(reachable_services)
-                            # Choose appropriate edge type based on node role
-                            if node_role == 'database':
-                                edge_type = 'sync_db'
-                            elif node_role == 'cache':
+                            # Special handling for cache nodes: only connect to services with databases
+                            if node_role == 'cache':
+                                # Filter to only services that have database connections
+                                reachable_services_with_db = [
+                                    s for s in reachable_services
+                                    if any(data.get('type') == 'sync_db'
+                                          for _, _, data in G.edges(s, data=True))
+                                ]
+                                if reachable_services_with_db:
+                                    source = self.rng.choice(reachable_services_with_db)
+                                else:
+                                    # No service with DB available, add DB connection to a service first
+                                    source = self.rng.choice(reachable_services)
+                                    # Add database connection if not already present
+                                    if dbs:
+                                        self._add_edge(G, source, dbs[0], 'sync_db')
                                 edge_type = 'sync_cache'
-                            elif node_role == 'queue':
-                                edge_type = 'async_produce'
-                            elif node_role == 'external':
-                                edge_type = 'sync_external'
                             else:
-                                edge_type = 'sync_rpc'
+                                source = self.rng.choice(reachable_services)
+                                # Choose appropriate edge type based on node role
+                                if node_role == 'database':
+                                    edge_type = 'sync_db'
+                                elif node_role == 'queue':
+                                    edge_type = 'async_produce'
+                                elif node_role == 'external':
+                                    edge_type = 'sync_external'
+                                else:
+                                    edge_type = 'sync_rpc'
+
                             self._add_edge(G, source, node, edge_type)
 
                     # Update reachable set

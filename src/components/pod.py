@@ -551,8 +551,16 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         Execute the parent service's processing pipeline.
 
         Pipeline steps are executed in order, but only if the required connections exist.
+
+        Cache-aside pattern: cache_check sets a flag, db_query conditionally executes,
+        and if cache missed, we populate cache after db_query.
         """
         pipeline = self.parent_service.processing_pipeline
+
+        # Track cache state across pipeline steps
+        cache_hit = False
+        cache_key = None
+        cache_connection = None
 
         for step in pipeline:
             step_type = step.get("type")
@@ -565,11 +573,23 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             # Execute step based on type
             if step_type == "cache_check":
                 if 'cache' in self.parent_service.connections:
-                    yield from self._execute_cache_logic(step, span)
+                    # Returns (hit, key, cache_obj)
+                    cache_hit, cache_key, cache_connection = yield from self._execute_cache_logic(step, span)
 
             elif step_type == "db_query":
+                # Only query DB if cache missed or no cache available
                 if 'database' in self.parent_service.connections:
+                    # If we had a cache check and it was a hit, skip DB query
+                    if cache_hit:
+                        self._emit_log("DEBUG", "Skipping DB query due to cache hit")
+                        continue
+
+                    # Execute DB query
                     yield from self._execute_db_logic(step, span)
+
+                    # If we had a cache miss, populate cache after successful DB query
+                    if cache_key and cache_connection:
+                        yield from self._populate_cache_after_db(cache_key, cache_connection, span)
 
             elif step_type == "service_calls":
                 # Call dep_* connections
@@ -584,16 +604,23 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     yield from self._execute_queue_publish(step, span)
 
     def _execute_cache_logic(self, step, span):
-        """Execute cache check logic."""
+        """
+        Check cache and return status.
+
+        Returns:
+            tuple: (cache_hit: bool, cache_key: str|None, cache_obj: Cache|None)
+        """
         cache = self.parent_service.connections.get('cache')
         if not cache:
-            return
+            return (False, None, None)
 
         # Generate cache key from a larger key space to simulate realistic cache behavior
         # Using 10,000 possible keys ensures cache (max 1000 items) experiences evictions
         cache_key = f"{self.parent_service.service_name}:data:{random.randint(1, 10000)}"
 
-        dep_start = self.env.now
+        cache_start = self.env.now
+
+        # Try cache lookup
         try:
             should_trace_cache = span is not None
             cache_span_ctx = None
@@ -603,46 +630,66 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
             # Try cache get
             cache_process = self.env.process(cache.get(cache_key, should_trace=should_trace_cache, parent_span_context=cache_span_ctx))
-            cached_data = yield cache_process  # Process objects need yield, not yield from
+            cached_data = yield cache_process
 
             if cached_data:
+                # Cache HIT - record success
                 if span:
                     span.set_attribute("cache.hit", True)
                 self._emit_log("DEBUG", f"Cache hit for key {cache_key}")
+
+                # Record cache success metrics
+                cache_latency_ms = (self.env.now - cache_start) * 1000
+                if self.dependency_requests and self.dependency_duration and self.parent_service:
+                    self.dependency_requests.add(1, {
+                        "dependency_id": cache.id,
+                        "dependency_name": "cache",
+                        "status": "success",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                    self.dependency_duration.record(cache_latency_ms, {
+                        "dependency_id": cache.id,
+                        "dependency_name": "cache",
+                        "status": "success",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+
+                return (True, None, None)  # Cache hit - no need to track key
+
             else:
+                # Cache MISS
                 if span:
                     span.set_attribute("cache.hit", False)
                 self._emit_log("DEBUG", f"Cache miss for key {cache_key}")
 
-                # Populate cache after miss (simulating fetch from source + cache write)
-                cache_value = f"data_for_{cache_key}"
-                set_process = self.env.process(cache.set(cache_key, cache_value, should_trace=should_trace_cache, parent_span_context=cache_span_ctx))
-                yield set_process
-                self._emit_log("DEBUG", f"Stored key {cache_key} in cache after miss")
+                # Record cache miss as success (operation succeeded, just no data)
+                cache_latency_ms = (self.env.now - cache_start) * 1000
+                if self.dependency_requests and self.dependency_duration and self.parent_service:
+                    self.dependency_requests.add(1, {
+                        "dependency_id": cache.id,
+                        "dependency_name": "cache",
+                        "status": "success",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                    self.dependency_duration.record(cache_latency_ms, {
+                        "dependency_id": cache.id,
+                        "dependency_name": "cache",
+                        "status": "success",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
 
-            # Record success metrics
-            dep_latency_ms = (self.env.now - dep_start) * 1000
-            if self.dependency_requests and self.dependency_duration and self.parent_service:
-                self.dependency_requests.add(1, {
-                    "dependency_id": cache.id,
-                    "dependency_name": "cache",
-                    "status": "success",
-                    "component.id": self.id,
-                    "service.name": self.parent_service.service_name
-                })
-                self.dependency_duration.record(dep_latency_ms, {
-                    "dependency_id": cache.id,
-                    "dependency_name": "cache",
-                    "status": "success",
-                    "component.id": self.id,
-                    "service.name": self.parent_service.service_name
-                })
+                return (False, cache_key, cache)  # Cache miss - return key for later population
 
         except Exception as e:
-            self._emit_log("WARN", f"Cache operation failed: {e}")
+            # Cache operation failed - treat as miss but log error
+            self._emit_log("WARN", f"Cache operation failed: {e}, will use database")
 
-            # Record error metrics
-            dep_latency_ms = (self.env.now - dep_start) * 1000
+            # Record cache error metrics
+            cache_latency_ms = (self.env.now - cache_start) * 1000
             if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
                 self.dependency_requests.add(1, {
                     "dependency_id": cache.id,
@@ -651,7 +698,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "component.id": self.id,
                     "service.name": self.parent_service.service_name
                 })
-                self.dependency_duration.record(dep_latency_ms, {
+                self.dependency_duration.record(cache_latency_ms, {
                     "dependency_id": cache.id,
                     "dependency_name": "cache",
                     "status": "error",
@@ -664,6 +711,40 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "component.id": self.id,
                     "service.name": self.parent_service.service_name
                 })
+
+            # Treat cache error as miss, but don't propagate error - DB will be tried
+            if span:
+                span.set_attribute("cache.hit", False)
+                span.set_attribute("cache.error", True)
+
+            # Return None for cache object so we don't try to populate it later
+            return (False, None, None)
+
+    def _populate_cache_after_db(self, cache_key, cache, span):
+        """
+        Populate cache after successful database query (best effort).
+
+        Args:
+            cache_key: The key to store in cache
+            cache: The cache connection object
+            span: OpenTelemetry span for tracing
+        """
+        try:
+            should_trace_cache_set = span is not None
+            cache_set_span_ctx = None
+            if should_trace_cache_set:
+                from opentelemetry import trace
+                cache_set_span_ctx = trace.set_span_in_context(span)
+
+            # Mock data - in real system this would be the DB result
+            cache_value = f"data_for_{cache_key}"
+
+            set_process = self.env.process(cache.set(cache_key, cache_value, should_trace=should_trace_cache_set, parent_span_context=cache_set_span_ctx))
+            yield set_process
+            self._emit_log("DEBUG", f"Populated cache key {cache_key} after DB query")
+        except Exception as e:
+            # Cache write failure is non-fatal - we already have data from DB
+            self._emit_log("WARN", f"Cache population failed after DB query: {e} (non-fatal)")
 
     def _execute_db_logic(self, step, span):
         """Execute database query logic."""
