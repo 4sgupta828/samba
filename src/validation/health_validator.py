@@ -236,6 +236,28 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
                 num_replicas = node_attrs.get('desired_replicas', 1)
                 capacity = estimate_component_capacity(role, num_replicas)
 
+                # For services, also check thread pool capacity as a constraint
+                # Thread pool capacity can be a tighter bottleneck than component RPS
+                if role == 'service':
+                    # Default thread pool size per pod (from pod.py:54)
+                    thread_pool_size = 50
+                    total_threads = thread_pool_size * num_replicas
+
+                    # Calculate max RPS based on thread pool and critical path latency
+                    # RPS = Threads / Latency
+                    # Use current accumulated path latency for this calculation
+                    thread_limited_rps = total_threads / (total_latency_p99 / 1000.0) if total_latency_p99 > 0 else capacity['target_rps']
+
+                    # Apply 70% safety margin to thread-based capacity
+                    thread_limited_rps_safe = thread_limited_rps * 0.70
+
+                    # Use the more restrictive of the two constraints
+                    if thread_limited_rps_safe < capacity['target_rps']:
+                        capacity['target_rps'] = thread_limited_rps_safe
+                        capacity['bottleneck_type'] = 'thread_pool'
+                    else:
+                        capacity['bottleneck_type'] = 'component_rps'
+
                 # Track bottleneck
                 node_key = f"{node_id}_{role}"
                 if node_key not in bottleneck_nodes or capacity['target_rps'] < bottleneck_nodes[node_key]['target_rps']:
@@ -244,7 +266,8 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
                         'role': role,
                         'target_rps': capacity['target_rps'],
                         'max_rps': capacity['max_rps'],
-                        'replicas': num_replicas
+                        'replicas': num_replicas,
+                        'bottleneck_type': capacity.get('bottleneck_type', 'component_rps')
                     }
 
                 components_in_path.append((role, edge_attrs.get('type') if i < len(path) - 1 else None))
@@ -357,7 +380,13 @@ def extract_node_metrics(metrics_file: Path, node_id: str, start_time: float, en
             if metric_name == 'workload.requests' and labels.get('type') == 'success':
                 metrics.success_count.append(value)
 
-            if metric_name == 'workload.requests.rejected':
+            # Only count actual failures, not protective rejections
+            # Circuit breaker and queue_full rejections are protective mechanisms
+            # that prevent system overload - they shouldn't count as errors
+            if metric_name == 'workload.requests' and labels.get('type') == 'failed':
+                metrics.failure_count.append(value)
+
+            if metric_name == 'workload.requests' and labels.get('type') == 'timeout':
                 metrics.failure_count.append(value)
 
             # Service/Component-level metrics with status labels

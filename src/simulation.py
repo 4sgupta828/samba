@@ -151,7 +151,21 @@ class Simulation:
         # 4. Initialize Workload Generator (after components are starting)
         self.logger.info("[Phase 4/5] Initializing workload generator...")
         workload_path = self.config.get('workload', {}).get('path')
-        workload_generator = WorkloadGenerator(self.env, workload_path, component_registry)
+
+        # Extract workload generator overrides (e.g., from safe workload calculation)
+        wg_overrides = self.config.get('workload_generator', {})
+        connection_pool_size = wg_overrides.get('connection_pool_size')
+        request_timeout = wg_overrides.get('request_timeout_seconds')
+        max_queue_size = wg_overrides.get('max_queue_size')
+
+        workload_generator = WorkloadGenerator(
+            self.env,
+            workload_path,
+            component_registry,
+            connection_pool_size=connection_pool_size,
+            request_timeout=request_timeout,
+            max_queue_size=max_queue_size
+        )
         self.env.process(workload_generator.run())
 
         # 5. Note: Failure injection is now handled externally via TrainingFailureInjector

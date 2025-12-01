@@ -21,7 +21,15 @@ from src.core.simulation_config import get_simulation_config
 
 
 class WorkloadGenerator:
-    def __init__(self, env: simpy.Environment, config_path: str, component_registry: Dict):
+    def __init__(
+        self,
+        env: simpy.Environment,
+        config_path: str,
+        component_registry: Dict,
+        connection_pool_size: Optional[int] = None,
+        request_timeout: Optional[float] = None,
+        max_queue_size: Optional[int] = None
+    ):
         self.env = env
         self.component_registry = component_registry
         with open(config_path, 'r') as f:
@@ -31,12 +39,19 @@ class WorkloadGenerator:
         self.request_types: List[str] = [item['type'] for item in self.config['request_mix']]
         self.request_weights: List[int] = [item['weight'] for item in self.config['request_mix']]
 
-        # Load workload generator configuration
+        # Load workload generator configuration (with override support)
         sim_config = get_simulation_config()
         wg_config = sim_config.workload_generator if hasattr(sim_config, 'workload_generator') else None
 
         # Connection pool configuration (mimics real HTTP client behavior)
-        if wg_config:
+        # Priority: explicit parameters > config file > fallback defaults
+        if connection_pool_size is not None:
+            # Explicit override (e.g., from safe workload calculation)
+            self.connection_pool_size = connection_pool_size
+            self.request_timeout = request_timeout if request_timeout is not None else 30.0
+            self.max_queue_size = max_queue_size if max_queue_size is not None else connection_pool_size * 2
+        elif wg_config:
+            # Load from config file
             self.connection_pool_size = wg_config.connection_pool_size
             self.request_timeout = wg_config.request_timeout_seconds
             self.max_queue_size = wg_config.max_queue_size

@@ -261,7 +261,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     workload_path = create_dynamic_workload(nx_graph, base_rps=actual_base_rps, peak_rps=actual_peak_rps)
 
-    # 4. Configure Simulation
+    # 4. Configure Simulation with calculated safe workload parameters
     episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
     os.makedirs(episode_dir, exist_ok=True)
 
@@ -276,6 +276,11 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         },
         'workload': {
             'path': workload_path
+        },
+        'workload_generator': {
+            'connection_pool_size': safe_workload['required_connection_pool'],
+            'request_timeout_seconds': 30.0,
+            'max_queue_size': safe_workload['required_connection_pool'] * 2
         },
         'infrastructure': {
             'path': 'generated_internal'  # Placeholder (bypassing IaC parsing)
