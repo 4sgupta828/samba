@@ -33,6 +33,7 @@ from src.components.pod import Pod
 from src.components.compute_node import ComputeNode
 from src.components.deployment_controller import DeploymentController
 from analysis.propagation_analyzer import analyze_episode
+from analysis.forensic_analyzer import analyze_episode as forensic_analyze_episode
 from validate_baseline_health import validate_episode_health
 from src.validation.health_validator import calculate_safe_workload, validate_system_health
 import networkx as nx
@@ -531,6 +532,32 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         except Exception as e:
             # Don't fail the entire episode if analysis fails
             print(f"  Warning: Fault propagation analysis failed: {e}")
+            if verbose:
+                import traceback
+                traceback.print_exc()
+
+        # 11.5. Run Forensic Analysis
+        if verbose:
+            print(f"\n[Forensic Analysis]")
+            print(f"  Running comprehensive post-simulation forensic analysis...")
+
+        try:
+            forensic_report = forensic_analyze_episode(episode_dir)
+
+            if verbose:
+                print(f"  Forensic analysis complete:")
+                print(f"    - Bottlenecks detected: {forensic_report.summary['total_bottlenecks']}")
+                print(f"    - Components crashed: {forensic_report.summary['total_crashes']}")
+                print(f"    - Crashes recovered: {forensic_report.summary['crashes_recovered']}")
+                print(f"    - Cascades detected: {forensic_report.summary['total_cascades']}")
+                print(f"    - Circuit breaker events: {forensic_report.summary['total_circuit_breaker_events']}")
+                print(f"    - System recovered: {forensic_report.summary['system_recovered']}")
+                print(f"    - Recovery recommendations: {len(forensic_report.recovery_recommendations)}")
+                print(f"  Report saved to: {os.path.join(episode_dir, 'forensic_analysis.json')}")
+
+        except Exception as e:
+            # Don't fail the entire episode if forensic analysis fails
+            print(f"  Warning: Forensic analysis failed: {e}")
             if verbose:
                 import traceback
                 traceback.print_exc()
