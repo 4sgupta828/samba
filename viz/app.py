@@ -20,10 +20,12 @@ from charts.topology import create_topology_chart, extract_zoom_subgraph
 from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
 from charts.fault_propagation import create_fault_propagation_analysis
+from charts.forensic_analysis import create_forensic_analysis
 
 # Add parent directory to path for analysis imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from analysis.propagation_analyzer import analyze_episode
+from analysis.forensic_analyzer import analyze_episode as forensic_analyze_episode
 
 # Configuration
 # Default to ../data relative to this file's location
@@ -340,6 +342,17 @@ app.layout = dbc.Container([
             ),
         ], width=2),
         dbc.Col([
+            dbc.Button(
+                "🔬 Run Forensics",
+                id="analyze-forensic-button",
+                color="info",
+                outline=True,
+                className="mt-4",
+                disabled=True,  # Enabled when episode loaded
+                style={'width': '100%'}
+            ),
+        ], width=2),
+        dbc.Col([
             dbc.Spinner(html.Div(id="loading-status"), size="sm", spinner_class_name="mt-4"),
         ], width=1),
     ], className="mb-4"),
@@ -464,6 +477,13 @@ app.layout = dbc.Container([
         ])
     ], className="mb-3"),
 
+    # Forensic Analysis Container
+    dbc.Row([
+        dbc.Col([
+            html.Div(id='forensic-analysis-container', style={'display': 'none'})
+        ])
+    ], className="mb-3"),
+
     # Hidden div to store episode data
     dcc.Store(id='episode-data-store'),
 
@@ -562,11 +582,13 @@ def load_episode_data(n_clicks, data_run_path, episode_id):
 
 @app.callback(
     Output('analyze-fault-button', 'disabled'),
+    Output('analyze-forensic-button', 'disabled'),
     [Input('episode-data-store', 'data')]
 )
-def enable_analysis_button(episode_data):
-    """Enable analysis button when episode is loaded"""
-    return episode_data is None or len(episode_data) == 0
+def enable_analysis_buttons(episode_data):
+    """Enable analysis buttons when episode is loaded"""
+    disabled = episode_data is None or len(episode_data) == 0
+    return disabled, disabled
 
 
 @app.callback(
@@ -671,6 +693,91 @@ def auto_load_fault_analysis(episode_id, datarun, episode):
 
     except Exception as e:
         print(f"Error loading existing fault analysis: {str(e)}")
+        # Don't show error, just hide container
+        return [], {'display': 'none'}
+
+
+@app.callback(
+    [Output('forensic-analysis-container', 'children'),
+     Output('forensic-analysis-container', 'style')],
+    [Input('analyze-forensic-button', 'n_clicks')],
+    [State('datarun-dropdown', 'value'),
+     State('episode-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def run_forensic_analysis(n_clicks, datarun, episode):
+    """Run forensic analysis and display results"""
+    if not n_clicks or not datarun or not episode:
+        return [], {'display': 'none'}
+
+    try:
+        # Construct episode directory path
+        episode_dir = os.path.join(datarun, episode)
+
+        # Debug: Print path for troubleshooting
+        print(f"Running forensic analysis on: {episode_dir}")
+
+        # Run forensic analysis
+        print("  Running comprehensive forensic analysis...")
+        forensic_report = forensic_analyze_episode(episode_dir)
+
+        # The analyze_episode function saves to forensic_analysis.json automatically
+        output_path = os.path.join(episode_dir, 'forensic_analysis.json')
+        print(f"  ✅ Forensic analysis saved to: {output_path}")
+
+        # Create visualization
+        analysis_view = create_forensic_analysis(episode_dir)
+
+        return analysis_view, {'display': 'block'}
+
+    except Exception as e:
+        import traceback
+        print(f"Error in forensic analysis: {str(e)}")
+        traceback.print_exc()
+
+        error_alert = dbc.Alert([
+            html.H5("Error running forensic analysis", className="alert-heading"),
+            html.P(f"Error: {str(e)}"),
+            html.Hr(),
+            html.Pre(traceback.format_exc(), style={'fontSize': '0.8em'})
+        ],
+            color="danger",
+            className="mt-3"
+        )
+        return error_alert, {'display': 'block'}
+
+
+@app.callback(
+    [Output('forensic-analysis-container', 'children', allow_duplicate=True),
+     Output('forensic-analysis-container', 'style', allow_duplicate=True)],
+    [Input('episode-data-store', 'data')],
+    [State('datarun-dropdown', 'value'),
+     State('episode-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def auto_load_forensic_analysis(episode_id, datarun, episode):
+    """Automatically load existing forensic analysis when episode is loaded."""
+    if not episode_id or not datarun or not episode:
+        return [], {'display': 'none'}
+
+    try:
+        # Construct episode directory path
+        episode_dir = os.path.join(datarun, episode)
+        forensic_analysis_path = os.path.join(episode_dir, 'forensic_analysis.json')
+
+        # Check if pre-existing forensic analysis exists
+        if os.path.exists(forensic_analysis_path):
+            print(f"Loading existing forensic analysis from: {forensic_analysis_path}")
+
+            # Load and display the existing analysis
+            analysis_view = create_forensic_analysis(episode_dir)
+            return analysis_view, {'display': 'block'}
+        else:
+            # No existing analysis, hide container
+            return [], {'display': 'none'}
+
+    except Exception as e:
+        print(f"Error loading existing forensic analysis: {str(e)}")
         # Don't show error, just hide container
         return [], {'display': 'none'}
 
