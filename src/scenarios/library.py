@@ -26,40 +26,17 @@ class EpisodeConfig:
         """
         Get failure parameters based on fault type.
         Returns appropriate default parameters if not explicitly set.
+
+        Note: All fault types return empty dict {} by default.
+        Each fault function loads its defaults from simulation_config.yaml.
+        This avoids circular dependencies and keeps configuration centralized.
         """
         if self.fault_params:
             return self.fault_params
 
-        # Default parameters for each failure type
-        param_defaults = {
-            'cpu_saturation': {
-                'cpu_multiplier': 3.0,
-                'latency_multiplier': 2.0,
-                'cpu_latency_ms': 500
-            },
-            'memory_leak': {
-                'leak_mb_per_request': 0.5
-            },
-            'inject_latency': {
-                'latency_ms': 2000
-            },
-            'slow_queries': {
-                'wear_factor': 0.5
-            },
-            'connection_exhaustion': {
-                'exhaustion_rate': 0.6  # Exhaust 60% of connection pool
-            },
-            'enable_background_job': {},
-            'cache_failure': {},
-            'inject_errors': {
-                'error_rate': 0.3
-            },
-            'queue_consumer_slowdown': {
-                'latency_ms': 500  # 500ms - enough to cause backlog without breaking system
-            }
-        }
-
-        return param_defaults.get(self.fault_type, {})
+        # All faults load defaults from simulation_config.yaml
+        # Return empty dict for all fault types
+        return {}
 
 
 class ScenarioLibrary:

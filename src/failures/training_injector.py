@@ -180,7 +180,44 @@ class TrainingFailureInjector:
         elif failure_mode == 'memory_pressure':
             parameter = 'latency_ms'
             delta = params.get('memory_latency_ms', 300)
-        else:
+        elif failure_mode == 'cache_failure':
+            # cache_failure has custom gradual logic with multiple parameters
+            print(f"   Applying gradual cache degradation over {duration}s...")
+            failure_func = FAILURE_MODES.get(failure_mode)
+            if failure_func:
+                if progression == 'step':
+                    # Apply in 10% steps
+                    steps = 10
+                    step_duration = duration / steps
+                    for i in range(steps + 1):
+                        progress = i / steps
+                        params_with_progress = params.copy()
+                        params_with_progress['progress'] = progress
+                        failure_func(target, params_with_progress)
+                        if i < steps:
+                            yield self.env.timeout(step_duration)
+                    return
+                elif progression == 'linear':
+                    # Apply continuously - sample at regular intervals
+                    num_updates = 20  # Update 20 times during the duration
+                    update_interval = duration / num_updates
+                    for i in range(num_updates + 1):
+                        progress = i / num_updates
+                        params_with_progress = params.copy()
+                        params_with_progress['progress'] = progress
+                        failure_func(target, params_with_progress)
+                        if i < num_updates:
+                            yield self.env.timeout(update_interval)
+                    return
+                else:
+                    # Unknown progression type - apply instantly
+                    params_with_progress = params.copy()
+                    params_with_progress['progress'] = 1.0
+                    failure_func(target, params_with_progress)
+                    yield self.env.timeout(duration)
+                    return
+
+        if failure_mode not in ['inject_latency', 'inject_errors', 'cpu_saturation', 'memory_pressure', 'cache_failure']:
             print(f"WARNING: Gradual mode not implemented for '{failure_mode}', using instant")
             # Fall back to instant application
             failure_func = FAILURE_MODES.get(failure_mode)

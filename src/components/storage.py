@@ -264,3 +264,180 @@ class InMemoryCache(EnrichedComponent):
             self._emit_log("DEBUG", f"Cache full. Evicted key: {evicted_key}")
 
         self.cache[key] = value
+
+
+class ExternalCache(EnrichedComponent):
+    """
+    Represents an external caching service like Redis or Memcached.
+
+    Characteristics:
+    - Network-based (not in-process)
+    - Lower latency than database (5-15ms typical)
+    - Can experience failures, connection issues, latency spikes
+    - Supports cache hit/miss metrics
+    - Suitable for thundering herd scenarios when fails
+    """
+    def __init__(self, env, component_id):
+        super().__init__(env, component_id, "ExternalCache")
+
+        # Load centralized configuration
+        config = get_simulation_config().storage.external_cache
+
+        # Redis-like characteristics (loaded from config)
+        self.base_latency_mean = config.base_latency_mean_ms / 1000.0  # Convert ms to seconds
+        self.base_latency_std = config.base_latency_std_ms / 1000.0    # Convert ms to seconds
+        self.base_error_rate = config.base_error_rate
+
+        # Track hit/miss for metrics
+        self.hit_miss_samples = []  # [(time, was_hit)]
+        self.hit_rate_window = config.hit_rate_window_seconds
+
+        # OTel Metrics
+        self.cache_hits_counter = self.meter.create_counter("cache.hits.total")
+        self.cache_misses_counter = self.meter.create_counter("cache.misses.total")
+
+        # Hit rate gauge
+        self.cache_hit_rate_gauge = self.meter.create_observable_gauge(
+            "cache.hit_rate",
+            callbacks=[self._report_hit_rate],
+            unit="1",
+            description="Cache hit rate ratio (time-averaged)"
+        )
+
+        # Error counter for fault propagation
+        self.errors_counter = self.meter.create_counter(
+            "component.errors.total",
+            description=f"Total errors in {component_id}",
+            unit="1"
+        )
+
+        # Simulated cache state (we track whether cache is "warm" or not)
+        # Start at baseline hit rate to simulate a warmed-up cache (loaded from config)
+        self.simulated_hit_rate = config.baseline_hit_rate
+
+    def _report_hit_rate(self, options):
+        """Callback for hit rate gauge - reports percentage of hits over recent window."""
+        from opentelemetry.metrics import Observation
+
+        # Calculate hit rate over configured window
+        current_time = self.env.now
+        cutoff_time = current_time - self.hit_rate_window
+
+        # Filter to recent samples
+        recent_samples = [(t, h) for t, h in self.hit_miss_samples if t > cutoff_time]
+
+        if recent_samples:
+            hits = sum(1 for _, was_hit in recent_samples if was_hit)
+            total = len(recent_samples)
+            hit_rate = hits / total if total > 0 else 0
+        else:
+            hit_rate = 0  # No recent activity
+
+        # Clean up old samples
+        self.hit_miss_samples = recent_samples
+
+        yield Observation(hit_rate, {
+            "component.id": self.id
+        })
+
+    def run(self):
+        yield self.env.process(super().run())
+
+    def get(self, key: str, should_trace: bool = False, parent_span_context = None):
+        """Simulates getting a key from external cache (Redis-like).
+
+        Args:
+            key: Cache key to retrieve
+            should_trace: Whether to create tracing spans
+            parent_span_context: Parent span context for distributed tracing
+        """
+        # Create child span if tracing is enabled and parent context exists
+        if should_trace and parent_span_context:
+            with self._start_span("REDIS Get", parent_span_context=parent_span_context) as span:
+                span.set_attribute("cache.key", key)
+                result = yield from self._get_internal(key)
+                return result
+        else:
+            result = yield from self._get_internal(key)
+            return result
+
+    def _get_internal(self, key: str):
+        """Internal get logic for external cache."""
+        # Network call to cache
+        yield from self._network_call(
+            target_component_id=self.id,
+            data_size_bytes=256,
+            target_component_type=self.type
+        )
+
+        # Check for forced errors (from fault injection)
+        total_error_rate = self.base_error_rate + self.forced_error_rate
+        if random.random() < total_error_rate:
+            self._emit_log("ERROR", "Cache get failed - connection timeout")
+            self.errors_counter.add(1, {
+                "component.id": self.id,
+                "component.type": self.type,
+                "error_type": "connection_timeout"
+            })
+            raise Exception(f"Cache error: Connection timeout to {self.id}")
+
+        # Latency with fault injection
+        base_latency = random.gauss(self.base_latency_mean, self.base_latency_std)
+        injected_latency = self.injected_latency_ms / 1000.0 if self.injected_latency_ms > 0 else 0
+        yield self.env.timeout(base_latency + injected_latency)
+
+        # Simulate hit/miss based on simulated hit rate
+        is_hit = random.random() < self.simulated_hit_rate
+
+        if is_hit:
+            # Cache hit
+            self.cache_hits_counter.add(1, {"component.id": self.id})
+            self.hit_miss_samples.append((self.env.now, True))
+            return f"cached_value_for_{key}"
+        else:
+            # Cache miss
+            self.cache_misses_counter.add(1, {"component.id": self.id})
+            self.hit_miss_samples.append((self.env.now, False))
+            return None
+
+    def set(self, key: str, value: Any, should_trace: bool = False, parent_span_context = None):
+        """Simulates setting a key in external cache.
+
+        Args:
+            key: Cache key to set
+            value: Value to store
+            should_trace: Whether to create tracing spans
+            parent_span_context: Parent span context for distributed tracing
+        """
+        # Create child span if tracing is enabled and parent context exists
+        if should_trace and parent_span_context:
+            with self._start_span("REDIS Set", parent_span_context=parent_span_context) as span:
+                span.set_attribute("cache.key", key)
+                yield from self._set_internal(key, value)
+        else:
+            yield from self._set_internal(key, value)
+
+    def _set_internal(self, key: str, value: Any):
+        """Internal set logic for external cache."""
+        # Network call to cache
+        yield from self._network_call(
+            target_component_id=self.id,
+            data_size_bytes=256,
+            target_component_type=self.type
+        )
+
+        # Check for forced errors (from fault injection)
+        total_error_rate = self.base_error_rate + self.forced_error_rate
+        if random.random() < total_error_rate:
+            self._emit_log("ERROR", "Cache set failed - connection timeout")
+            self.errors_counter.add(1, {
+                "component.id": self.id,
+                "component.type": self.type,
+                "error_type": "connection_timeout"
+            })
+            raise Exception(f"Cache error: Connection timeout to {self.id}")
+
+        # Latency with fault injection
+        base_latency = random.gauss(self.base_latency_mean, self.base_latency_std)
+        injected_latency = self.injected_latency_ms / 1000.0 if self.injected_latency_ms > 0 else 0
+        yield self.env.timeout(base_latency + injected_latency)

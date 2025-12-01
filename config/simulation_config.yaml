@@ -429,6 +429,14 @@ storage:
     latency_stdev_ms: 0.5  # Standard deviation of latency
     hit_rate_window_seconds: 10.0  # Window for calculating hit rate gauge
 
+  # External Cache (Redis/Memcached)
+  external_cache:
+    base_latency_mean_ms: 10.0  # Average network latency for cache operations (Redis-like)
+    base_latency_std_ms: 3.0  # Standard deviation of latency
+    base_error_rate: 0.001  # Baseline error rate (0.1%)
+    baseline_hit_rate: 0.70  # Normal hit rate when cache is healthy (70%)
+    hit_rate_window_seconds: 10.0  # Window for calculating hit rate gauge
+
 # =============================================================================
 # MESSAGING COMPONENT (MessageQueue)
 # =============================================================================
@@ -444,6 +452,38 @@ fault_injection:
   # These can be set at runtime for individual components
   default_injected_latency_ms: 0.0  # Additional latency to inject
   default_forced_error_rate: 0.0  # Force errors (0.0-1.0)
+
+  # Fault-specific parameters (used by training_injector and modes.py)
+  cpu_saturation:
+    cpu_multiplier: 3.0  # CPU usage multiplier
+    latency_multiplier: 2.0  # Request latency multiplier
+    cpu_latency_ms: 500  # Additional latency due to CPU contention
+
+  memory_leak:
+    leak_mb_per_request: 0.5  # MB leaked per request
+
+  inject_latency:
+    latency_ms: 2000  # Latency to inject (milliseconds)
+
+  slow_queries:
+    wear_factor: 0.5  # Database wear/degradation factor
+
+  connection_exhaustion:
+    exhaustion_rate: 0.6  # Exhaust 60% of connection pool
+
+  cache_failure:
+    max_error_rate: 0.30  # Maximum error rate to degrade to (30%)
+    max_latency_ms: 100.0  # Maximum latency to degrade to (100ms)
+    min_hit_rate: 0.10  # Minimum hit rate to degrade to (10%)
+    # Note: Baseline values come from storage.external_cache config
+
+  inject_errors:
+    error_rate: 0.3  # Error rate to inject (30%)
+
+  queue_consumer_slowdown:
+    latency_ms: 500  # Consumer processing delay (milliseconds)
+
+  enable_background_job: {}  # No parameters needed
 
 # =============================================================================
 # NOTES FOR LLM AGENTS

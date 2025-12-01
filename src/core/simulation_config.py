@@ -197,10 +197,21 @@ class InMemoryCacheConfig:
 
 
 @dataclass
+class ExternalCacheConfig:
+    """External cache (Redis/Memcached) configuration."""
+    base_latency_mean_ms: float = 10.0
+    base_latency_std_ms: float = 3.0
+    base_error_rate: float = 0.001
+    baseline_hit_rate: float = 0.70
+    hit_rate_window_seconds: float = 10.0
+
+
+@dataclass
 class StorageConfig:
     """Storage components configuration."""
     object_storage: ObjectStorageConfig = field(default_factory=ObjectStorageConfig)
     inmemory_cache: InMemoryCacheConfig = field(default_factory=InMemoryCacheConfig)
+    external_cache: ExternalCacheConfig = field(default_factory=ExternalCacheConfig)
 
 
 @dataclass
@@ -217,10 +228,74 @@ class MessagingConfig:
 
 
 @dataclass
+class CpuSaturationConfig:
+    """CPU saturation fault configuration."""
+    cpu_multiplier: float = 3.0
+    latency_multiplier: float = 2.0
+    cpu_latency_ms: float = 500
+
+
+@dataclass
+class MemoryLeakConfig:
+    """Memory leak fault configuration."""
+    leak_mb_per_request: float = 0.5
+
+
+@dataclass
+class InjectLatencyConfig:
+    """Latency injection fault configuration."""
+    latency_ms: float = 2000
+
+
+@dataclass
+class SlowQueriesConfig:
+    """Slow queries fault configuration."""
+    wear_factor: float = 0.5
+
+
+@dataclass
+class ConnectionExhaustionConfig:
+    """Connection exhaustion fault configuration."""
+    exhaustion_rate: float = 0.6
+
+
+@dataclass
+class CacheFailureConfig:
+    """Cache failure fault configuration.
+
+    Note: Baseline values come from storage.external_cache config.
+    This config only contains the fault-specific degraded/max values.
+    """
+    max_error_rate: float = 0.30
+    max_latency_ms: float = 100.0
+    min_hit_rate: float = 0.10
+
+
+@dataclass
+class InjectErrorsConfig:
+    """Error injection fault configuration."""
+    error_rate: float = 0.3
+
+
+@dataclass
+class QueueConsumerSlowdownConfig:
+    """Queue consumer slowdown fault configuration."""
+    latency_ms: float = 500
+
+
+@dataclass
 class FaultInjectionConfig:
     """Fault injection configuration."""
     default_injected_latency_ms: float = 0.0
     default_forced_error_rate: float = 0.0
+    cpu_saturation: CpuSaturationConfig = field(default_factory=CpuSaturationConfig)
+    memory_leak: MemoryLeakConfig = field(default_factory=MemoryLeakConfig)
+    inject_latency: InjectLatencyConfig = field(default_factory=InjectLatencyConfig)
+    slow_queries: SlowQueriesConfig = field(default_factory=SlowQueriesConfig)
+    connection_exhaustion: ConnectionExhaustionConfig = field(default_factory=ConnectionExhaustionConfig)
+    cache_failure: CacheFailureConfig = field(default_factory=CacheFailureConfig)
+    inject_errors: InjectErrorsConfig = field(default_factory=InjectErrorsConfig)
+    queue_consumer_slowdown: QueueConsumerSlowdownConfig = field(default_factory=QueueConsumerSlowdownConfig)
 
 
 @dataclass
@@ -450,6 +525,13 @@ class SimulationConfig:
                 latency_mean_ms=storage_data.get('inmemory_cache', {}).get('latency_mean_ms', 2.0),
                 latency_stdev_ms=storage_data.get('inmemory_cache', {}).get('latency_stdev_ms', 0.5),
                 hit_rate_window_seconds=storage_data.get('inmemory_cache', {}).get('hit_rate_window_seconds', 10.0)
+            ),
+            external_cache=ExternalCacheConfig(
+                base_latency_mean_ms=storage_data.get('external_cache', {}).get('base_latency_mean_ms', 10.0),
+                base_latency_std_ms=storage_data.get('external_cache', {}).get('base_latency_std_ms', 3.0),
+                base_error_rate=storage_data.get('external_cache', {}).get('base_error_rate', 0.001),
+                baseline_hit_rate=storage_data.get('external_cache', {}).get('baseline_hit_rate', 0.70),
+                hit_rate_window_seconds=storage_data.get('external_cache', {}).get('hit_rate_window_seconds', 10.0)
             )
         )
 
@@ -464,9 +546,47 @@ class SimulationConfig:
 
         # Fault injection
         fault_data = data.get('fault_injection', {})
+
+        cpu_sat_data = fault_data.get('cpu_saturation', {})
+        mem_leak_data = fault_data.get('memory_leak', {})
+        inject_lat_data = fault_data.get('inject_latency', {})
+        slow_q_data = fault_data.get('slow_queries', {})
+        conn_exh_data = fault_data.get('connection_exhaustion', {})
+        cache_fail_data = fault_data.get('cache_failure', {})
+        inject_err_data = fault_data.get('inject_errors', {})
+        queue_slow_data = fault_data.get('queue_consumer_slowdown', {})
+
         fault_injection = FaultInjectionConfig(
             default_injected_latency_ms=fault_data.get('default_injected_latency_ms', 0.0),
-            default_forced_error_rate=fault_data.get('default_forced_error_rate', 0.0)
+            default_forced_error_rate=fault_data.get('default_forced_error_rate', 0.0),
+            cpu_saturation=CpuSaturationConfig(
+                cpu_multiplier=cpu_sat_data.get('cpu_multiplier', 3.0),
+                latency_multiplier=cpu_sat_data.get('latency_multiplier', 2.0),
+                cpu_latency_ms=cpu_sat_data.get('cpu_latency_ms', 500)
+            ),
+            memory_leak=MemoryLeakConfig(
+                leak_mb_per_request=mem_leak_data.get('leak_mb_per_request', 0.5)
+            ),
+            inject_latency=InjectLatencyConfig(
+                latency_ms=inject_lat_data.get('latency_ms', 2000)
+            ),
+            slow_queries=SlowQueriesConfig(
+                wear_factor=slow_q_data.get('wear_factor', 0.5)
+            ),
+            connection_exhaustion=ConnectionExhaustionConfig(
+                exhaustion_rate=conn_exh_data.get('exhaustion_rate', 0.6)
+            ),
+            cache_failure=CacheFailureConfig(
+                max_error_rate=cache_fail_data.get('max_error_rate', 0.30),
+                max_latency_ms=cache_fail_data.get('max_latency_ms', 100.0),
+                min_hit_rate=cache_fail_data.get('min_hit_rate', 0.10)
+            ),
+            inject_errors=InjectErrorsConfig(
+                error_rate=inject_err_data.get('error_rate', 0.3)
+            ),
+            queue_consumer_slowdown=QueueConsumerSlowdownConfig(
+                latency_ms=queue_slow_data.get('latency_ms', 500)
+            )
         )
 
         # Workload generator

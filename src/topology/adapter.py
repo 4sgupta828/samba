@@ -14,7 +14,7 @@ from typing import Dict, Any
 # Import all component types
 from src.components.networking import RequestGateway
 from src.components.database import SqlDatabase
-from src.components.storage import InMemoryCache
+from src.components.storage import InMemoryCache, ExternalCache
 from src.components.messaging import MessageQueue
 from src.components.external import ExternalService
 
@@ -108,6 +108,9 @@ class TopologyAdapter:
 
         elif component_type == 'InMemoryCache' or component_type == 'Cache':
             return InMemoryCache(self.env, node_id)
+
+        elif component_type == 'ExternalCache':
+            return ExternalCache(self.env, node_id)
 
         elif component_type == 'MessageQueue':
             return MessageQueue(self.env, node_id)
@@ -208,8 +211,8 @@ class TopologyAdapter:
                 # Service → Database
                 src.connections['database'] = tgt
 
-            elif isinstance(tgt, InMemoryCache):
-                # Service → Cache
+            elif isinstance(tgt, InMemoryCache) or isinstance(tgt, ExternalCache):
+                # Service → Cache (in-memory or external/Redis-like)
                 src.connections['cache'] = tgt
 
             elif isinstance(tgt, MessageQueue):
@@ -235,8 +238,8 @@ class TopologyAdapter:
                 # Service → Database
                 src.connections['database'] = tgt
 
-            elif isinstance(tgt, InMemoryCache):
-                # Service → Cache
+            elif isinstance(tgt, InMemoryCache) or isinstance(tgt, ExternalCache):
+                # Service → Cache (in-memory or external/Redis-like)
                 src.connections['cache'] = tgt
 
             elif isinstance(tgt, MessageQueue):

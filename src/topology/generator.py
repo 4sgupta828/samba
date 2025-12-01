@@ -94,7 +94,7 @@ class TopologyGenerator:
         for n in dbs:
             G.add_node(n, type='SqlDatabase', role='database')
         for n in caches:
-            G.add_node(n, type='InMemoryCache', role='cache')
+            G.add_node(n, type='ExternalCache', role='cache')
         for n in queues:
             G.add_node(n, type='MessageQueue', role='queue')
         for n in externals:

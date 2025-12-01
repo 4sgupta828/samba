@@ -253,27 +253,92 @@ def revert_errors(component: SimulatedComponent, params: Dict[str, Any]):
     if not reverted:
         component._emit_log("WARN", "Component does not support error injection")
 
-def cache_failure(component: InMemoryCache, params: Dict[str, Any]):
+def cache_failure(component, params: Dict[str, Any]):
     """
-    Simulates cache failure by clearing the cache and setting state to degraded.
-    This causes cache misses which will increase database load.
+    Simulates cache failure by gradually increasing error rate and latency.
+    This causes cache misses which will increase database load (thundering herd).
+
+    NOTE: This fault is designed for ExternalCache (Redis, Memcached).
+    For InMemoryCache within pods, this just clears the cache.
+
+    Configuration is loaded from config/simulation_config.yaml under fault_injection.cache_failure.
+    Gradual mode: Ramps from baseline to max error rate and latency
+    Hit rate degrades from baseline to minimum (simulates gradual cache poisoning/eviction)
     """
-    if not isinstance(component, InMemoryCache):
-        component._emit_log("WARN", "cache_failure can only be applied to InMemoryCache components.")
-        return
+    from src.components.storage import InMemoryCache, ExternalCache
+    from src.core.simulation_config import get_simulation_config
 
-    # Clear all cached items
-    component.cache.clear()
-    component.state.operational = "DEGRADED"
-    component._emit_log("WARN", "Cache failure injected - all items evicted, cache degraded")
+    if isinstance(component, ExternalCache):
+        # Get progress for gradual ramp-up (0.0 to 1.0)
+        progress = params.get("progress", 1.0)  # Default to full fault if not gradual
 
-def revert_cache_failure(component: InMemoryCache, params: Dict[str, Any]):
+        # Load configuration from simulation_config.yaml
+        config = get_simulation_config()
+        fault_config = config.fault_injection.cache_failure
+        base_config = config.storage.external_cache
+
+        # Get fault-specific parameters from fault config
+        max_error_rate = params.get("max_error_rate", fault_config.max_error_rate)
+        max_latency_ms = params.get("max_latency_ms", fault_config.max_latency_ms)
+        min_hit_rate = params.get("min_hit_rate", fault_config.min_hit_rate)
+
+        # Get baseline parameters from base component config (avoid duplication)
+        baseline_latency_ms = params.get("baseline_latency_ms", base_config.base_latency_mean_ms)
+        baseline_hit_rate = params.get("baseline_hit_rate", base_config.baseline_hit_rate)
+
+        # Linear ramp with progress
+        current_error_rate = max_error_rate * progress
+        current_latency_ms = baseline_latency_ms + (max_latency_ms - baseline_latency_ms) * progress
+        current_hit_rate = baseline_hit_rate - (baseline_hit_rate - min_hit_rate) * progress
+
+        component.injected_latency_ms = current_latency_ms
+        component.forced_error_rate = current_error_rate
+        component.simulated_hit_rate = current_hit_rate
+
+        # State transitions based on progress
+        if progress < 0.3:
+            component.state.operational = "RUNNING"
+        elif progress < 0.7:
+            component.state.operational = "DEGRADED"
+        else:
+            component.state.operational = "CRITICAL"
+
+        component._emit_log("WARN",
+            f"Cache degradation: {current_error_rate*100:.1f}% errors, "
+            f"{current_latency_ms:.1f}ms latency, {current_hit_rate*100:.1f}% hit rate "
+            f"(progress: {progress*100:.0f}%)")
+
+    elif isinstance(component, InMemoryCache):
+        # In-memory cache - just clear it
+        component.cache.clear()
+        component.state.operational = "DEGRADED"
+        component._emit_log("WARN", "InMemoryCache cleared - all items evicted")
+
+    else:
+        component._emit_log("WARN", "cache_failure can only be applied to cache components")
+
+def revert_cache_failure(component, params: Dict[str, Any]):
     """Revert cache failure."""
-    if not isinstance(component, InMemoryCache):
-        return
+    from src.components.storage import InMemoryCache, ExternalCache
+    from src.core.simulation_config import get_simulation_config
 
-    component.state.operational = "RUNNING"
-    component._emit_log("INFO", "Cache failure reverted - cache operational")
+    if isinstance(component, ExternalCache):
+        component.injected_latency_ms = 0
+        component.forced_error_rate = 0.0
+        component.state.operational = "RUNNING"
+
+        # Restore baseline hit rate from config
+        config = get_simulation_config().storage.external_cache
+        component.simulated_hit_rate = config.baseline_hit_rate
+
+        component._emit_log("INFO", "External cache failure reverted")
+
+    elif isinstance(component, InMemoryCache):
+        component.state.operational = "RUNNING"
+        component._emit_log("INFO", "InMemoryCache reverted to operational")
+
+    else:
+        pass  # Not a cache component
 
 def queue_consumer_slowdown(component: MessageQueue, params: Dict[str, Any]):
     """
