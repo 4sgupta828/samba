@@ -265,6 +265,25 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
     os.makedirs(episode_dir, exist_ok=True)
 
+    # Export safe workload analysis with rationale
+    safe_workload_export = {
+        **safe_workload,
+        'workload_decision': {
+            'requested_baseline_rps': 80,
+            'requested_peak_rps': 200,
+            'actual_baseline_rps': actual_base_rps,
+            'actual_peak_rps': actual_peak_rps,
+            'was_adjusted': actual_base_rps < 80 or actual_peak_rps < 200,
+            'adjustment_reason': f"Limited by {safe_workload.get('bottleneck_limiting_factor', 'processing_time')} constraint on {safe_workload.get('bottleneck_node', 'unknown')}" if actual_base_rps < 80 or actual_peak_rps < 200 else None
+        }
+    }
+
+    with open(os.path.join(episode_dir, 'safe_workload_analysis.json'), 'w') as f:
+        json.dump(safe_workload_export, f, indent=2)
+
+    if verbose:
+        print(f"  ✓ Safe workload analysis saved to: {episode_dir}/safe_workload_analysis.json")
+
     sim_config = {
         'simulation': {
             'duration': cfg.duration,
