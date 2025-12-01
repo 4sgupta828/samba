@@ -119,6 +119,7 @@ class FaultPropagationAnalyzer:
         Compute graph distance from root cause to all other nodes.
 
         Uses BFS to find shortest path distances (following dependency edges).
+        Automatically expands Service nodes to include their Pods for detailed analysis.
 
         Returns:
             Dictionary mapping node_id -> distance
@@ -142,7 +143,25 @@ class FaultPropagationAnalyzer:
                     distances[neighbor] = dist + 1
                     queue.append((neighbor, dist + 1))
 
-        return distances
+        # EXPANSION: For each Service node discovered, automatically expand to its Pods
+        # This allows pod-level metrics analysis without cluttering the topology
+        expanded_distances = distances.copy()
+
+        for node_id, dist in distances.items():
+            node_data = self.graph.nodes.get(node_id, {})
+            node_type = node_data.get('type', '')
+
+            # If this is a Service node, find its pods
+            if node_type == 'Service':
+                for pod_node_id in self.graph.nodes():
+                    pod_data = self.graph.nodes.get(pod_node_id, {})
+                    # Check if this pod belongs to this service
+                    if pod_data.get('type') == 'Pod' and pod_data.get('parent_service') == node_id:
+                        # Pods inherit the same distance as their parent service
+                        # (they're logically part of the same component)
+                        expanded_distances[pod_node_id] = dist
+
+        return expanded_distances
 
     def analyze_node(self, node_id: str, distance_from_root: int) -> NodeImpactReport:
         """

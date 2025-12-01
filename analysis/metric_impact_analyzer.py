@@ -401,16 +401,20 @@ def extract_metric_timeseries(
     times = metric_data['sim_time'].values
 
     # Extract values
+    # Prefer summary column if available (histograms), otherwise use value column (gauges/counters)
+    if 'summary' in metric_data.columns:
+        # Summary metrics (histograms) - check if summary has data
+        values = metric_data['summary'].apply(lambda x: x.get(summary_column, np.nan) if isinstance(x, dict) else np.nan).values
+        # If summary extraction produced valid data, use it
+        if not np.all(np.isnan(values)):
+            return times, values
+
+    # Fallback to value column for simple metrics (gauges/counters)
     if value_column in metric_data.columns:
-        # Simple value metrics
         values = metric_data[value_column].values
         return times, values
-    elif 'summary' in metric_data.columns:
-        # Summary metrics (histograms)
-        values = metric_data['summary'].apply(lambda x: x.get(summary_column, np.nan) if isinstance(x, dict) else np.nan).values
-        return times, values
-    else:
-        return None
+
+    return None
 
 
 def analyze_all_node_metrics(

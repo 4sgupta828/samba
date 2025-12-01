@@ -304,6 +304,10 @@ def calculate_safe_workload(topology, target_utilization: float = 0.70) -> Dict:
 def extract_node_metrics(metrics_file: Path, node_id: str, start_time: float, end_time: float) -> HealthMetrics:
     """
     Extract health metrics for a specific node during a time window.
+
+    For service nodes (e.g., 'svc_0'), this function automatically aggregates
+    metrics from all associated pods (e.g., 'pod_svc_0_0', 'pod_svc_0_1', etc.)
+    since pod-level metrics have the detailed status labels needed for validation.
     """
     metrics = HealthMetrics()
 
@@ -317,35 +321,62 @@ def extract_node_metrics(metrics_file: Path, node_id: str, start_time: float, en
             sim_time = data.get('labels', {}).get('sim.time')
             component_id = data.get('labels', {}).get('component.id', '')
 
-            # Skip if not in time window or not this component
+            # Skip if not in time window
             if sim_time is None or sim_time < start_time or sim_time >= end_time:
                 continue
 
-            if component_id != node_id and not data.get('name', '').startswith('workload.'):
+            # Check if this metric belongs to our node or its pods
+            include_metric = False
+
+            if node_id.startswith('svc_'):
+                # For service nodes, include metrics from pods
+                if component_id.startswith(f'pod_{node_id}_'):
+                    include_metric = True
+            elif component_id == node_id:
+                # Direct match
+                include_metric = True
+            elif node_id == 'workload':
+                # Special case: workload metrics have no component_id
+                metric_name = data.get('name', '')
+                if metric_name.startswith('workload.'):
+                    include_metric = True
+
+            if not include_metric:
                 continue
 
             # Extract metrics based on metric name
             metric_name = data.get('name', '')
             value = data.get('value', 0)
+            labels = data.get('labels', {})
 
             # Workload-level metrics (for gateway/workload generator)
-            if metric_name == 'workload.requests' and data.get('labels', {}).get('type') == 'attempted':
+            if metric_name == 'workload.requests' and labels.get('type') == 'attempted':
                 # Calculate RPS from count in interval
                 metrics.incoming_rps.append(value / 10.0)  # Assuming 10s intervals
 
-            if metric_name == 'workload.requests' and data.get('labels', {}).get('type') == 'success':
+            if metric_name == 'workload.requests' and labels.get('type') == 'success':
                 metrics.success_count.append(value)
 
             if metric_name == 'workload.requests.rejected':
                 metrics.failure_count.append(value)
 
-            # Component-level metrics
+            # Service/Component-level metrics with status labels
+            # These are primarily from pod-level metrics for services
+            if 'requests' in metric_name or 'request' in metric_name:
+                status = labels.get('status', '')
+                if status == 'success':
+                    metrics.success_count.append(value)
+                elif status == 'error' or status == 'failure':
+                    metrics.failure_count.append(value)
+
+            # Latency metrics
             if 'latency' in metric_name and 'p50' in metric_name:
                 metrics.latency_p50.append(value)
 
             if 'latency' in metric_name and 'p99' in metric_name:
                 metrics.latency_p99.append(value)
 
+            # Resource utilization
             if 'cpu' in metric_name:
                 metrics.cpu_util.append(value)
 
@@ -355,9 +386,14 @@ def extract_node_metrics(metrics_file: Path, node_id: str, start_time: float, en
     return metrics
 
 
-def validate_node_health(node_id: str, metrics: HealthMetrics, thresholds: Dict) -> Tuple[bool, str, float]:
+def validate_node_health(node_id: str, metrics: HealthMetrics, thresholds: Dict) -> Tuple[bool, str, float]:  # noqa: ARG001
     """
     Validate a single node's health using mathematical criteria.
+
+    Args:
+        node_id: Node identifier (unused but kept for API compatibility)
+        metrics: Health metrics for the node
+        thresholds: Validation thresholds
 
     Returns:
         (is_healthy, failure_reason, health_score)
@@ -485,7 +521,7 @@ def validate_system_health(
             if not is_healthy:
                 return False, f"Node '{node_id}': {reason}", validation_details
 
-        except Exception as e:
+        except Exception:
             # If we can't extract metrics, skip this node
             continue
 

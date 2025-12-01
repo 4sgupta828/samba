@@ -340,15 +340,18 @@ def estimate_component_capacity(
     """
     latency_profile, resource_profile = get_component_profile(component_role)
 
-    # Service rate = 1 / processing_time
-    processing_time_sec = latency_profile.p50 / 1000.0
-    single_instance_rps = 1.0 / processing_time_sec if processing_time_sec > 0 else float('inf')
+    # Use the max_rps from the profile (based on empirical data)
+    # This accounts for concurrent request handling, connection pooling, etc.
+    # NOT just 1/latency which assumes serial processing
+    single_instance_rps = latency_profile.max_rps
 
     # Scale by number of replicas
     total_rps = single_instance_rps * num_replicas
 
     # Apply 70% safety margin
     safe_rps = total_rps * 0.70
+
+    processing_time_sec = latency_profile.p50 / 1000.0
 
     return {
         'max_rps': total_rps,
