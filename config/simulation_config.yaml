@@ -394,6 +394,26 @@ network:
   bandwidth_mbps: 1000.0  # Network bandwidth (1 Gbps)
   latency_minimum_ms: 0.1  # Absolute minimum latency (0.0001 seconds)
 
+  # Bandwidth contention modeling
+  # When enabled, network links use simpy.Resource to model serialization delay
+  # This creates realistic queueing when multiple packets compete for the same wire
+  enable_bandwidth_contention: true
+
+# =============================================================================
+# SEMANTIC OVERLAY (Domain-Adaptive Intelligence)
+# =============================================================================
+semantic:
+  # Enable semantic overlay using Claude AI to analyze topology and assign:
+  # - Domain-specific service names (e.g., "PaymentService", "InventoryDB")
+  # - Resource profiles (cpu_intensive, io_intensive, latency_sensitive, standard)
+  # - Deterministic request flows (removes probabilistic routing)
+  enabled: true  # Set to false to disable semantic overlay and use probabilistic routing
+
+  # When disabled, falls back to:
+  # - Generic service names (e.g., "Service_0", "Database_0")
+  # - Standard resource profile for all components
+  # - Probabilistic routing (original behavior)
+
   # Component-specific network latencies (overrides base_latency_ms)
   # Simulates different network topologies: intra-AZ, cross-AZ, cross-region
   component_latencies:

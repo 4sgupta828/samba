@@ -79,11 +79,28 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             compute_dynamics_config = global_config.dynamics.get('components', {}).get('compute_agent', {})
             dynamics_params = compute_dynamics_config.get('config', {})
 
-        # Create dynamics configuration with defaults
+        # NEW: Adjust dynamics parameters based on resource profile
+        # This configures the dynamics engine to model different resource characteristics
+        cpu_min = dynamics_params.get('cpu_min', 10.0)
+        memory_base = dynamics_params.get('memory_base', config.memory_base_mb)
+        cpu_from_throughput_coef = dynamics_params.get('cpu_from_throughput_coef', 0.25)
+
+        if self.resource_profile == "cpu_intensive":
+            # CPU-intensive services have higher baseline CPU and more CPU per request
+            cpu_min = max(cpu_min, 30.0)  # Higher baseline
+            cpu_from_throughput_coef *= 1.5  # More CPU growth per request
+        elif self.resource_profile == "io_intensive":
+            # I/O-intensive services have higher memory baseline
+            memory_base *= 1.3  # 30% higher memory baseline
+        elif self.resource_profile == "latency_sensitive":
+            # Latency-sensitive services keep CPU low for fast response
+            cpu_min = min(cpu_min, 15.0)  # Lower baseline for fast response
+
+        # Create dynamics configuration with profile-adjusted defaults
         dynamics_cfg = DynamicsConfig(
             latency_base=dynamics_params.get('latency_base', 50.0),
-            cpu_min=dynamics_params.get('cpu_min', 10.0),
-            cpu_from_throughput_coef=dynamics_params.get('cpu_from_throughput_coef', 0.25),
+            cpu_min=cpu_min,
+            cpu_from_throughput_coef=cpu_from_throughput_coef,
             cpu_from_connections_coef=dynamics_params.get('cpu_from_connections_coef', 2.0),
             latency_cpu_threshold=dynamics_params.get('latency_cpu_threshold', 70.0),
             latency_cpu_scale=dynamics_params.get('latency_cpu_scale', 20.0),
@@ -91,7 +108,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             error_latency_threshold=dynamics_params.get('error_latency_threshold', 500.0),
             error_cpu_threshold=dynamics_params.get('error_cpu_threshold', 85.0),
             noise_enabled=dynamics_params.get('noise_enabled', True),
-            memory_base=dynamics_params.get('memory_base', config.memory_base_mb),
+            memory_base=memory_base,
             memory_per_request_mb=dynamics_params.get('memory_per_request_mb', 5.0),
         )
         self.dynamics = MetricsDynamicsEngine(config=dynamics_cfg)
@@ -588,27 +605,32 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 base_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
 
                 # NEW: Apply resource profile multipliers
+                # Note: We apply multipliers to latency and add temporary resource spikes
+                # but we do NOT permanently modify dynamics state (that would accumulate)
                 if self.resource_profile == "cpu_intensive":
                     # CPU-intensive services take 2.5x longer to process
                     service_latency = base_latency * 2.5
-                    # Also spike CPU utilization
-                    self.dynamics.cpu_percent = min(self.dynamics.cpu_percent * 1.5, 95.0)
                     if span:
                         span.set_attribute("resource.profile", "cpu_intensive")
+                        span.set_attribute("profile.latency_multiplier", 2.5)
                 elif self.resource_profile == "io_intensive":
-                    # I/O-intensive services have normal latency but higher memory
-                    service_latency = base_latency
-                    self.dynamics.memory_percent = min(self.dynamics.memory_percent * 1.5, 90.0)
+                    # I/O-intensive services have similar latency but model I/O wait time
+                    # Add a small I/O wait penalty (10% increase)
+                    service_latency = base_latency * 1.1
                     if span:
                         span.set_attribute("resource.profile", "io_intensive")
+                        span.set_attribute("profile.latency_multiplier", 1.1)
                 elif self.resource_profile == "latency_sensitive":
-                    # Latency-sensitive services process faster but are more error-prone under load
+                    # Latency-sensitive services process faster
                     service_latency = base_latency * 0.8
                     if span:
                         span.set_attribute("resource.profile", "latency_sensitive")
+                        span.set_attribute("profile.latency_multiplier", 0.8)
                 else:
                     # Standard profile
                     service_latency = base_latency
+                    if span:
+                        span.set_attribute("resource.profile", "standard")
 
                 yield self.env.timeout(service_latency)
 

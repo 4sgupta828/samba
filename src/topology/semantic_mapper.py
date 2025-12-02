@@ -8,7 +8,7 @@ with deterministic request flows and resource profiles.
 import os
 import json
 import networkx as nx
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from anthropic import Anthropic
 
 
@@ -71,18 +71,23 @@ class SemanticMapper:
             response_text = response.content[0].text
 
             # Extract JSON from response (handle markdown code blocks)
-            if "```json" in response_text:
-                json_start = response_text.index("```json") + 7
-                json_end = response_text.index("```", json_start)
-                json_text = response_text[json_start:json_end].strip()
-            elif "```" in response_text:
-                json_start = response_text.index("```") + 3
-                json_end = response_text.index("```", json_start)
-                json_text = response_text[json_start:json_end].strip()
-            else:
-                json_text = response_text.strip()
+            try:
+                if "```json" in response_text:
+                    json_start = response_text.index("```json") + 7
+                    json_end = response_text.index("```", json_start)
+                    json_text = response_text[json_start:json_end].strip()
+                elif "```" in response_text:
+                    json_start = response_text.index("```") + 3
+                    json_end = response_text.index("```", json_start)
+                    json_text = response_text[json_start:json_end].strip()
+                else:
+                    json_text = response_text.strip()
 
-            semantic_overlay = json.loads(json_text)
+                semantic_overlay = json.loads(json_text)
+            except (ValueError, json.JSONDecodeError) as parse_error:
+                print(f"Warning: Failed to parse Claude response as JSON: {parse_error}")
+                print(f"Response text: {response_text[:200]}...")
+                raise
 
             # Validate the overlay structure
             self._validate_overlay(semantic_overlay, topology_graph)
@@ -154,6 +159,12 @@ Guidelines:
 - Frontend services that fan out to many services suggest e-commerce/SaaS patterns
 - Message queues indicate async processing patterns
 
+IMPORTANT CONSTRAINTS:
+- request_types MUST be HTTP methods: ["GET", "POST", "PUT", "DELETE"] - DO NOT use domain-specific names
+- request_flows MUST use these HTTP methods as keys
+- request_flows MUST be CONNECTED - every service must be reachable from a frontend/gateway
+- DO NOT include services in flows that have no path from the entry point
+
 Output ONLY valid JSON in this EXACT format:
 {
   "domain": "video_streaming",
@@ -164,11 +175,15 @@ Output ONLY valid JSON in this EXACT format:
       "profile": "cpu_intensive"
     }
   },
-  "request_types": ["upload_video", "watch_stream"],
+  "request_types": ["GET", "POST"],
   "request_flows": {
-    "upload_video": {
-      "node_0": ["node_1", "node_2"],
-      "node_1": ["node_3"]
+    "GET": {
+      "gateway": ["node_1"],
+      "node_1": ["node_2", "node_3"]
+    },
+    "POST": {
+      "gateway": ["node_1"],
+      "node_1": ["node_4"]
     }
   }
 }
@@ -196,15 +211,16 @@ Key rules:
         avg_degree = sum(dict(graph.degree()).values()) / num_nodes if num_nodes > 0 else 0
 
         # Heuristic domain selection
+        # IMPORTANT: Use HTTP methods for request types, not domain-specific names
         if avg_degree > 3:
             domain = "e-commerce"  # Highly connected = e-commerce
-            request_types = ["browse_catalog", "add_to_cart", "checkout"]
+            request_types = ["GET", "POST", "PUT", "DELETE"]
         elif avg_degree < 2:
             domain = "video_streaming"  # Linear = streaming pipeline
-            request_types = ["upload_video", "transcode", "stream"]
+            request_types = ["GET", "POST"]
         else:
             domain = "generic_saas"
-            request_types = ["standard_request"]
+            request_types = ["GET", "POST"]
 
         # Assign service names and profiles
         services = {}
@@ -319,11 +335,41 @@ Key rules:
             if service_data["profile"] not in valid_profiles:
                 raise ValueError(f"Invalid profile for {node_id}: {service_data['profile']}")
 
+        # Validate request types are HTTP methods
+        valid_http_methods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+        for request_type in overlay.get("request_types", []):
+            if request_type not in valid_http_methods:
+                print(f"Warning: Non-HTTP request type '{request_type}' - should use HTTP methods")
+
         # Validate request flows reference valid nodes
         for request_type, flow in overlay["request_flows"].items():
+            # Check for connected flows (all nodes should be reachable from frontends)
+            flow_nodes = set(flow.keys())
             for source, targets in flow.items():
                 if source not in node_ids:
                     raise ValueError(f"Request flow references unknown source node: {source}")
                 for target in targets:
                     if target not in node_ids:
                         raise ValueError(f"Request flow references unknown target node: {target}")
+                    flow_nodes.add(target)
+
+            # Find frontend/gateway nodes
+            frontends = [n for n, d in graph.nodes(data=True) if d.get('is_frontend') or d.get('role') == 'gateway']
+
+            # Check if all nodes in flow are reachable from a frontend
+            if frontends:
+                reachable = set(frontends)
+                changed = True
+                while changed:
+                    changed = False
+                    for source in list(reachable):
+                        if source in flow:
+                            for target in flow[source]:
+                                if target not in reachable:
+                                    reachable.add(target)
+                                    changed = True
+
+                # Warn about unreachable nodes
+                unreachable = flow_nodes - reachable
+                if unreachable:
+                    print(f"Warning: Request flow '{request_type}' has unreachable nodes: {unreachable}")

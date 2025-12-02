@@ -127,11 +127,10 @@ class TopologyAdapter:
             semantic_services = self.semantic_overlay.get('services', {})
             semantic_config = semantic_services.get(node_id, {})
 
-            # Use semantic request types if available, otherwise fallback to node data
-            if 'request_types' in self.semantic_overlay:
-                supported_request_types = self.semantic_overlay['request_types']
-            else:
-                supported_request_types = node_data.get('supported_request_types', ['GET', 'POST'])
+            # IMPORTANT: Keep using HTTP methods for actual simulation
+            # Semantic request types are for analysis/documentation only
+            # Using domain-specific types would break compatibility with workload generator
+            supported_request_types = node_data.get('supported_request_types', ['GET', 'POST'])
 
             processing_pipeline = node_data.get('processing_pipeline')
             desired_replicas = node_data.get('desired_replicas', 3)
@@ -158,11 +157,20 @@ class TopologyAdapter:
             # NEW: Get semantic profile from overlay
             semantic_services = self.semantic_overlay.get('services', {})
 
-            # Pods inherit semantic profile from their parent service
-            # We'll need to look up the parent service ID (will be set during wiring)
-            # For now, pass None and let it be set when parent_service is connected
-            semantic_profile = node_data.get('semantic_profile', {})
+            # First try to get pod's own profile from overlay
+            semantic_profile = semantic_services.get(node_id, {})
 
+            # If pod doesn't have its own profile, try to infer from parent service
+            # Pod names follow pattern: pod_svc_X_Y where svc_X is the parent service
+            if not semantic_profile and 'pod_svc_' in node_id:
+                # Extract parent service ID from pod name (e.g., "pod_svc_0_1" -> "svc_0")
+                import re
+                match = re.search(r'pod_(svc_\d+)_\d+', node_id)
+                if match:
+                    parent_svc_id = match.group(1)
+                    semantic_profile = semantic_services.get(parent_svc_id, {})
+
+            # If still no profile, it will default to "standard" in Pod.__init__
             return Pod(self.env, node_id, parent_service=None, compute_node=None, semantic_profile=semantic_profile)
 
         elif component_type == 'ComputeNode':

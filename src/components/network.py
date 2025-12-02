@@ -35,8 +35,10 @@ class NetworkLink(EnrichedComponent):
         self.latency_jitter_ms = config.latency_jitter_ms
         self.bandwidth_mbps = config.bandwidth_mbps
 
-        # NEW: Bandwidth contention - wire can only transmit one packet at a time
-        self.transmission_resource = simpy.Resource(env, capacity=1)
+        # NEW: Bandwidth contention (optional) - wire can only transmit one packet at a time
+        # When disabled, packets can overlap (infinite bandwidth)
+        self.enable_bandwidth_contention = getattr(config, 'enable_bandwidth_contention', True)
+        self.transmission_resource = simpy.Resource(env, capacity=1) if self.enable_bandwidth_contention else None
 
         # Metrics
         self.bytes_transmitted_counter = self.meter.create_counter(
@@ -152,10 +154,14 @@ class NetworkLink(EnrichedComponent):
             # Retransmission adds latency
             packet_loss_multiplier = config.packet_loss_latency_multiplier
 
-        # NEW: Bandwidth contention - wait for exclusive access to the wire
-        with self.transmission_resource.request() as req:
-            yield req  # Wait in queue if wire is busy
-            # Now we have exclusive access - transmit the packet
+        # NEW: Bandwidth contention (if enabled) - wait for exclusive access to the wire
+        if self.enable_bandwidth_contention and self.transmission_resource:
+            with self.transmission_resource.request() as req:
+                yield req  # Wait in queue if wire is busy
+                # Now we have exclusive access - transmit the packet
+                yield self.env.timeout(serialization_delay * packet_loss_multiplier)
+        else:
+            # No contention - packets can overlap (infinite bandwidth model)
             yield self.env.timeout(serialization_delay * packet_loss_multiplier)
 
         # Propagation delay (light speed + routing delay) - happens after transmission

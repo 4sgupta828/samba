@@ -250,29 +250,40 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"{'='*60}")
         print_topology_summary(nx_graph)
 
-    # 2.3. Generate Semantic Overlay using Claude
-    if verbose:
-        print(f"\n[Semantic Mapping]")
-        print(f"  Analyzing topology with Claude AI...")
+    # 2.3. Generate Semantic Overlay using Claude (if enabled)
+    from src.core.simulation_config import get_simulation_config
+    sim_config_obj = get_simulation_config()
+    semantic_config = getattr(sim_config_obj, 'semantic', None)
+    semantic_enabled = semantic_config.get('enabled', True) if semantic_config and isinstance(semantic_config, dict) else True
 
-    # Initialize SemanticMapper with Anthropic API key
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    mapper = SemanticMapper(api_key=api_key)
+    semantic_overlay = None
+    if semantic_enabled:
+        if verbose:
+            print(f"\n[Semantic Mapping]")
+            print(f"  Analyzing topology with Claude AI...")
 
-    # Generate semantic overlay
-    semantic_overlay = mapper.generate_semantic_overlay(nx_graph)
+        # Initialize SemanticMapper with Anthropic API key
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        mapper = SemanticMapper(api_key=api_key)
 
-    if verbose:
-        print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
-        print(f"  Request types: {', '.join(semantic_overlay.get('request_types', []))}")
-        print(f"  Services profiled: {len(semantic_overlay.get('services', {}))}")
+        # Generate semantic overlay
+        semantic_overlay = mapper.generate_semantic_overlay(nx_graph)
 
-        # Show a few example service profiles
-        services = semantic_overlay.get('services', {})
-        if services:
-            print(f"\n  Example service profiles:")
-            for i, (node_id, service_data) in enumerate(list(services.items())[:3]):
-                print(f"    {node_id}: {service_data.get('name', 'Unknown')} ({service_data.get('profile', 'standard')})")
+        if verbose:
+            print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
+            print(f"  Request types: {', '.join(semantic_overlay.get('request_types', []))}")
+            print(f"  Services profiled: {len(semantic_overlay.get('services', {}))}")
+
+            # Show a few example service profiles
+            services = semantic_overlay.get('services', {})
+            if services:
+                print(f"\n  Example service profiles:")
+                for i, (node_id, service_data) in enumerate(list(services.items())[:3]):
+                    print(f"    {node_id}: {service_data.get('name', 'Unknown')} ({service_data.get('profile', 'standard')})")
+    else:
+        if verbose:
+            print(f"\n[Semantic Mapping]")
+            print(f"  Semantic overlay DISABLED (using standard profiles and probabilistic routing)")
 
     # 2.5. Create initial workload config (for request mix analysis)
     # We'll create it with default RPS first, then adjust after capacity calculation
@@ -511,18 +522,22 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     with open(topology_path, 'w') as f:
         json.dump(topology_data, f, indent=2)
 
-    # NEW: Save semantic overlay
-    semantic_path = os.path.join(episode_dir, 'semantic_map.json')
-    with open(semantic_path, 'w') as f:
-        json.dump(semantic_overlay, f, indent=2)
+    # NEW: Save semantic overlay (if enabled)
+    if semantic_overlay:
+        semantic_path = os.path.join(episode_dir, 'semantic_map.json')
+        with open(semantic_path, 'w') as f:
+            json.dump(semantic_overlay, f, indent=2)
 
     if verbose:
         print(f"\n[Ground Truth]")
         print(f"  Label saved to: {label_path}")
         print(f"  Topology saved to: {topology_path}")
-        print(f"  Semantic map saved to: {semantic_path}")
+        if semantic_overlay:
+            semantic_path = os.path.join(episode_dir, 'semantic_map.json')
+            print(f"  Semantic map saved to: {semantic_path}")
         print(f"  Topology: {topology_data['num_nodes']} nodes, {topology_data['num_edges']} edges")
-        print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
+        if semantic_overlay:
+            print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
 
     # 9. Export Initial Topology State
     topology_exporter.export_initial_state()
