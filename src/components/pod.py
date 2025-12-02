@@ -183,11 +183,80 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # Initialize propagation metrics (circuit breakers, retries, timeouts)
         self._initialize_propagation_metrics(service_name)
 
+    def _reset_state_on_restart(self):
+        """
+        Reset ALL mutable state to simulate a fresh process start.
+
+        This method is called at the start of each restart iteration to ensure
+        no state leaks from the previous pod lifetime. Implements recommendations
+        from STATE_PERSISTENCE_AUDIT.md
+
+        Categories of state being reset:
+        1. Resource pool state (HIGH PRIORITY)
+        2. Dynamics engine state (MEDIUM PRIORITY)
+        3. Counter state (MEDIUM PRIORITY)
+        4. Circuit breaker state (HIGH PRIORITY)
+        5. Metrics samples (MEDIUM PRIORITY)
+        """
+        # === Category 1: Resource Pool State (CRITICAL) ===
+        # SimPy Resource has TWO lists that must both be cleared:
+        # - queue: requests waiting for resource
+        # - users: requests currently using resource
+        # When a process crashes, ALL held resources are released by the OS
+
+        # Clear thread pool
+        self.thread_pool.queue.clear()
+        self.thread_pool.users.clear()
+
+        # Clear DB connection pool
+        self.db_connection_pool.queue.clear()
+        self.db_connection_pool.users.clear()
+
+        # === Category 2: Dynamics Engine State ===
+        # Reset dynamics to baseline (simulates fresh process)
+        self.dynamics.memory_percent = self.dynamics.config.memory_base
+        self.dynamics.cpu_percent = self.dynamics.config.cpu_min
+        self.dynamics.concurrent_requests = 0
+        # Reset other dynamics state if needed
+        if hasattr(self.dynamics, 'latency_ms'):
+            self.dynamics.latency_ms = self.dynamics.config.latency_base
+        if hasattr(self.dynamics, 'error_rate'):
+            self.dynamics.error_rate = self.dynamics.config.error_base
+
+        # === Category 3: Counter State ===
+        # Process counters reset to 0 on restart (real-world behavior)
+        self.request_count = 0
+        self.last_request_count = 0
+
+        # === Category 4: Circuit Breaker & Retry State (CRITICAL) ===
+        # Circuit breakers are in-memory state, cleared on process restart
+        # This matches Kubernetes behavior (Hystrix, Resilience4j reset on restart)
+        if hasattr(self, '_circuit_breakers'):
+            self._circuit_breakers.clear()
+        if hasattr(self, '_retry_policies'):
+            self._retry_policies.clear()
+
+        # === Category 5: Metrics Samples ===
+        # Monitoring agents lose samples when process dies
+        # (Debatable, but included for correctness)
+        self.cpu_samples.clear()
+        self.memory_samples.clear()
+        self.connection_pool_samples.clear()
+        self.connection_queue_samples.clear()
+
+        # === State that correctly persists ===
+        # - self.restarts (cumulative across lifetimes)
+        # - self.version (deployment property)
+        # - self.parent_service, self.compute_node (references)
+        # - self.critical_error_boost (deployment-level property)
+
+        self._emit_log("DEBUG", "State reset complete for fresh pod lifetime")
+
     def run(self):
         """Pod lifecycle with crash/restart loop and permanent termination support."""
         self.start_time = self.env.now  # Track when pod started
 
-        # Start background processes
+        # Start background processes ONCE (they run for entire pod lifecycle)
         self.env.process(self._sample_cpu_periodically())
         self.env.process(self._monitor_oom())
         self.env.process(self._update_dynamics_loop())
@@ -199,8 +268,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         while True:
             self.state.operational = "STARTING"
             self.restarts += 1
-            # Reset dynamics memory on restart (simulates process restart)
-            self.dynamics.memory_percent = self.dynamics.config.memory_base
+
+            # Comprehensive state reset (simulates process restart)
+            self._reset_state_on_restart()
+
             self._emit_log("INFO", f"Starting (Restart #{self.restarts})...")
 
             config = get_simulation_config().compute
@@ -220,10 +291,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 if interrupt.cause == "OOMKilled":
                     self._emit_log("FATAL", "OOMKilled: Memory limit exceeded. Restarting...")
                     self.state.operational = "CRASHED"
-
-                    # Reset dynamics memory immediately (simulates process termination)
-                    self.dynamics.memory_percent = self.dynamics.config.memory_base
-                    self.state.cpu_utilization = 0  # Process is dead, no CPU usage
+                    # State will be reset by _reset_state_on_restart() at top of next loop iteration
 
                     # Longer CrashLoopBackOff delay for OOM (includes cleanup, restart policy backoff)
                     # Kubernetes-style exponential backoff
