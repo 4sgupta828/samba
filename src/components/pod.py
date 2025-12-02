@@ -54,6 +54,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.thread_pool_size = getattr(config, 'thread_pool_size', 50)
         self.thread_pool = simpy.Resource(env, capacity=self.thread_pool_size)
 
+        # Track active request processes for interruption on crash
+        self.active_request_processes = set()  # Set of active SimPy processes
+
         # Track samples for time-averaged gauges (like production systems)
         self.cpu_samples = []
         self.memory_samples = []
@@ -202,6 +205,33 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             # Reset dynamics memory on restart (simulates process restart)
             self.dynamics.memory_percent = self.dynamics.config.memory_base
             self._emit_log("INFO", f"Starting (Restart #{self.restarts})...")
+
+            # CRITICAL FIX: Clear resource queues on restart (simulates process restart clearing all in-memory state)
+            # In real Kubernetes, when a pod crashes/restarts, all in-flight requests are lost
+            # Thread pool queue: requests waiting for threads
+            thread_queue_size = len(self.thread_pool.queue)
+            if thread_queue_size > 0:
+                self._emit_log("WARN", f"Discarding {thread_queue_size} queued requests from thread pool (pod restart)")
+                self.thread_pool.queue.clear()
+
+            # DB connection pool queue: requests waiting for DB connections
+            db_queue_size = len(self.db_connection_pool.queue)
+            if db_queue_size > 0:
+                self._emit_log("WARN", f"Discarding {db_queue_size} queued requests from DB connection pool (pod restart)")
+                self.db_connection_pool.queue.clear()
+
+            # Interrupt all active request processes (simulates SIGKILL on process crash)
+            active_count = len(self.active_request_processes)
+            if active_count > 0:
+                self._emit_log("WARN", f"Interrupting {active_count} active request processes (pod crash/restart)")
+                # Create a copy to iterate over since we'll be modifying the set
+                for process in list(self.active_request_processes):
+                    try:
+                        process.interrupt("PodCrashed")
+                    except RuntimeError:
+                        # Process might have already finished
+                        pass
+                self.active_request_processes.clear()
 
             config = get_simulation_config().compute
             startup_range = config.startup_time_range_seconds
@@ -443,18 +473,35 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             should_trace: Whether to create tracing spans for this request
             parent_span_context: Parent span context for distributed tracing
         """
-        # Check if tracing is enabled for this request
-        if should_trace and parent_span_context:
-            # Create child span with parent context for distributed tracing
-            with self._start_span(f"pod:process:{request_type}", parent_span_context=parent_span_context) as span:
-                span.set_attribute("pod.id", self.id)
-                if self.parent_service:
-                    span.set_attribute("service.name", self.parent_service.service_name)
-                if self.compute_node:
-                    span.set_attribute("node.id", self.compute_node.id)
-                yield from self._handle_request_internal(request_type, span)
-        else:
-            yield from self._handle_request_internal(request_type, None)
+        # Track this process as active (for interruption on crash)
+        current_process = self.env.active_process
+        self.active_request_processes.add(current_process)
+
+        try:
+            # Check if tracing is enabled for this request
+            if should_trace and parent_span_context:
+                # Create child span with parent context for distributed tracing
+                with self._start_span(f"pod:process:{request_type}", parent_span_context=parent_span_context) as span:
+                    span.set_attribute("pod.id", self.id)
+                    if self.parent_service:
+                        span.set_attribute("service.name", self.parent_service.service_name)
+                    if self.compute_node:
+                        span.set_attribute("node.id", self.compute_node.id)
+                    yield from self._handle_request_internal(request_type, span)
+            else:
+                yield from self._handle_request_internal(request_type, None)
+        except simpy.Interrupt as interrupt:
+            # Pod crashed while processing this request
+            if interrupt.cause == "PodCrashed":
+                self._emit_log("WARN", f"Request interrupted due to pod crash: {request_type}")
+                # Raise as regular exception so caller sees it as request failure
+                raise Exception("Request failed: Pod crashed during processing")
+            else:
+                # Other interrupt - re-raise
+                raise
+        finally:
+            # Remove from active set when done (normal completion or error)
+            self.active_request_processes.discard(current_process)
 
     def _handle_request_internal(self, request_type: str, span):
         """
@@ -473,12 +520,50 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             self._emit_log("WARN", "Node overloaded, request throttled")
             yield self.env.timeout(0.1)  # Throttling delay
 
+        # Get server-side request timeout from config
+        config = get_simulation_config().compute
+        server_timeout = config.timeouts.server_request_seconds
+
+        # Create a timeout event for server-side timeout (independent of client timeout)
+        timeout_event = self.env.timeout(server_timeout)
+
         # Request thread from pool
         queue_start = self.env.now
         with self.thread_pool.request() as req:
             yield req  # Wait for available thread
 
             queue_wait_time = (self.env.now - queue_start) * 1000  # Convert to ms
+
+            # Check if we already timed out while waiting for thread
+            elapsed = self.env.now - start_time
+            if elapsed >= server_timeout:
+                self._emit_log("ERROR", f"Request timed out waiting for thread pool ({elapsed:.2f}s >= {server_timeout}s)")
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "server_timeout")
+                    span.set_attribute("timeout.phase", "thread_pool_wait")
+                # Record timeout as error
+                latency_ms = (self.env.now - start_time) * 1000
+                if self.request_counter and self.request_duration and self.request_errors and self.parent_service:
+                    self.request_counter.add(1, {
+                        "status": "error",
+                        "request_type": request_type,
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                    self.request_duration.record(latency_ms, {
+                        "status": "error",
+                        "request_type": request_type,
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                    self.request_errors.add(1, {
+                        "request_type": request_type,
+                        "error_type": "server_timeout",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name
+                    })
+                raise Exception(f"Request timed out on server after {elapsed:.2f}s")
 
             # Add queue wait time to span if we waited
             if span and queue_wait_time > 0:
@@ -488,40 +573,44 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
             # Wrap processing in try/except to record metrics
             try:
-                # Check dynamics-based error before processing
-                if random.random() < self.dynamics.get_error_rate():
-                    self._emit_log("ERROR", "Request failed due to dynamics-driven error")
+                # Create request processing as a separate process so we can timeout it
+                request_process = self.env.process(self._execute_request_with_timeout(request_type, span, start_time, server_timeout))
+
+                # Race between request completion and timeout
+                result = yield request_process | timeout_event
+
+                # Check if we timed out
+                if timeout_event in result:
+                    # Server-side timeout occurred
+                    elapsed = self.env.now - start_time
+                    self._emit_log("ERROR", f"Request processing timed out ({elapsed:.2f}s >= {server_timeout}s)")
                     if span:
                         span.set_attribute("error", True)
-                        span.set_attribute("error.type", "dynamics_error")
-                    raise Exception("Request processing failed: Service temporarily unavailable")
+                        span.set_attribute("error.type", "server_timeout")
+                        span.set_attribute("timeout.phase", "request_processing")
 
-                # Apply dynamics-based latency
-                service_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
-                yield self.env.timeout(service_latency)
-
-                # Execute parent service's processing pipeline
-                if self.parent_service and hasattr(self.parent_service, 'processing_pipeline'):
-                    yield from self._execute_processing_pipeline(request_type, span)
-                else:
-                    # Fallback to legacy behavior if no pipeline defined
-                    yield from self._execute_legacy_request_logic(request_type, span)
-
-                # Record success metrics (only if metrics are initialized)
-                latency_ms = (self.env.now - start_time) * 1000
-                if self.request_counter and self.request_duration and self.parent_service:
-                    self.request_counter.add(1, {
-                        "status": "success",
-                        "request_type": request_type,
-                        "component.id": self.id,
-                        "service.name": self.parent_service.service_name
-                    })
-                    self.request_duration.record(latency_ms, {
-                        "status": "success",
-                        "request_type": request_type,
-                        "component.id": self.id,
-                        "service.name": self.parent_service.service_name
-                    })
+                    # Record timeout as error
+                    latency_ms = (self.env.now - start_time) * 1000
+                    if self.request_counter and self.request_duration and self.request_errors and self.parent_service:
+                        self.request_counter.add(1, {
+                            "status": "error",
+                            "request_type": request_type,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.request_duration.record(latency_ms, {
+                            "status": "error",
+                            "request_type": request_type,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                        self.request_errors.add(1, {
+                            "request_type": request_type,
+                            "error_type": "server_timeout",
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name
+                        })
+                    raise Exception(f"Request timed out on server after {elapsed:.2f}s")
 
             except Exception as e:
                 # Record error metrics (only if metrics are initialized)
@@ -545,6 +634,50 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "service.name": self.parent_service.service_name
                     })
                 raise  # Re-raise the exception
+
+    def _execute_request_with_timeout(self, request_type: str, span, start_time, server_timeout):
+        """
+        Execute request processing logic. Separated so we can timeout it.
+        """
+        try:
+            # Check dynamics-based error before processing
+            if random.random() < self.dynamics.get_error_rate():
+                self._emit_log("ERROR", "Request failed due to dynamics-driven error")
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "dynamics_error")
+                raise Exception("Request processing failed: Service temporarily unavailable")
+
+            # Apply dynamics-based latency
+            service_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
+            yield self.env.timeout(service_latency)
+
+            # Execute parent service's processing pipeline
+            if self.parent_service and hasattr(self.parent_service, 'processing_pipeline'):
+                yield from self._execute_processing_pipeline(request_type, span)
+            else:
+                # Fallback to legacy behavior if no pipeline defined
+                yield from self._execute_legacy_request_logic(request_type, span)
+
+            # Record success metrics (only if metrics are initialized)
+            latency_ms = (self.env.now - start_time) * 1000
+            if self.request_counter and self.request_duration and self.parent_service:
+                self.request_counter.add(1, {
+                    "status": "success",
+                    "request_type": request_type,
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name
+                })
+                self.request_duration.record(latency_ms, {
+                    "status": "success",
+                    "request_type": request_type,
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name
+                })
+
+        except Exception:
+            # Re-raise - let caller handle error recording
+            raise
 
     def _execute_processing_pipeline(self, request_type: str, span):
         """

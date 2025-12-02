@@ -277,6 +277,7 @@ compute:
     database_call_seconds: 1.5  # Timeout for database calls (allows 1s normal + margin, catches 2-3s slowdowns)
     cache_call_seconds: 0.5  # Timeout for cache calls (allows normal ops, catches slowdowns)
     external_api_seconds: 3.0  # Timeout for external API calls (allows normal ops)
+    server_request_seconds: 30.0  # Server-side timeout for processing a request (independent of client timeout)
 
   # Startup and restart behavior
   startup:

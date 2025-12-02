@@ -65,6 +65,7 @@ class TimeoutsConfig:
     database_call_seconds: float = 5.0
     cache_call_seconds: float = 1.0
     external_api_seconds: float = 10.0
+    server_request_seconds: float = 30.0  # Server-side timeout for processing a request
 
 
 @dataclass
