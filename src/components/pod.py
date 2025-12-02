@@ -23,7 +23,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
     """
 
     def __init__(self, env: simpy.Environment, component_id: str,
-                 parent_service=None, compute_node=None):
+                 parent_service=None, compute_node=None, semantic_profile=None):
         super().__init__(env, component_id, "Pod")
 
         # Initialize ServicePropagationMixin for fault propagation
@@ -32,6 +32,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # NEW: References to parent service and compute node
         self.parent_service = parent_service
         self.compute_node = compute_node
+
+        # NEW: Semantic profile for resource behavior
+        self.semantic_profile = semantic_profile or {}
+        self.resource_profile = self.semantic_profile.get("profile", "standard")
 
         # Register this pod with the node if provided
         if self.compute_node:
@@ -581,7 +585,31 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     raise Exception("Request processing failed: Service temporarily unavailable")
 
                 # Apply dynamics-based latency
-                service_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
+                base_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
+
+                # NEW: Apply resource profile multipliers
+                if self.resource_profile == "cpu_intensive":
+                    # CPU-intensive services take 2.5x longer to process
+                    service_latency = base_latency * 2.5
+                    # Also spike CPU utilization
+                    self.dynamics.cpu_percent = min(self.dynamics.cpu_percent * 1.5, 95.0)
+                    if span:
+                        span.set_attribute("resource.profile", "cpu_intensive")
+                elif self.resource_profile == "io_intensive":
+                    # I/O-intensive services have normal latency but higher memory
+                    service_latency = base_latency
+                    self.dynamics.memory_percent = min(self.dynamics.memory_percent * 1.5, 90.0)
+                    if span:
+                        span.set_attribute("resource.profile", "io_intensive")
+                elif self.resource_profile == "latency_sensitive":
+                    # Latency-sensitive services process faster but are more error-prone under load
+                    service_latency = base_latency * 0.8
+                    if span:
+                        span.set_attribute("resource.profile", "latency_sensitive")
+                else:
+                    # Standard profile
+                    service_latency = base_latency
+
                 yield self.env.timeout(service_latency)
 
                 # Execute parent service's processing pipeline
@@ -679,8 +707,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         yield from self._populate_cache_after_db(cache_key, cache_connection, span)
 
             elif step_type == "service_calls":
-                # Call dep_* connections
-                yield from self._execute_service_calls(step, span)
+                # Call dep_* connections (NEW: pass request_type for deterministic routing)
+                yield from self._execute_service_calls(step, span, request_type=request_type)
 
             elif step_type == "external_calls":
                 # Call ext_* connections
@@ -917,86 +945,173 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             })
                         raise
 
-    def _execute_service_calls(self, step, span):
-        """Execute service-to-service calls with fault propagation."""
-        # Find all dep_* connections
-        for conn_name, conn_target in self.parent_service.connections.items():
-            if conn_name.startswith('dep_'):
-                dep_start = self.env.now
+    def _execute_service_calls(self, step, span, request_type=None):
+        """Execute service-to-service calls with fault propagation (deterministic routing)."""
+        # NEW: Get deterministic flow from semantic config if available
+        semantic_config = getattr(self.parent_service, 'semantic_config', {})
+        request_flows = semantic_config.get('request_flows', {})
 
-                # Prepare call function for propagation
-                def make_service_call():
-                    should_trace_dep = span is not None
-                    dep_span_ctx = None
-                    if should_trace_dep:
-                        from opentelemetry import trace
-                        dep_span_ctx = trace.set_span_in_context(span)
+        # If we have deterministic flows for this request type, use them
+        if request_type and request_flows and request_type in request_flows:
+            flow_map = request_flows[request_type]
+            required_calls = flow_map.get(self.parent_service.id, [])
 
-                    # Call downstream service
-                    if hasattr(conn_target, 'supported_request_types') and conn_target.supported_request_types:
-                        dep_request_type = random.choice(conn_target.supported_request_types)
-                    else:
-                        dep_request_type = "GET"
+            # Deterministic: only call services that are in the flow
+            for conn_name, conn_target in self.parent_service.connections.items():
+                if conn_name.startswith('dep_') and conn_target.id in required_calls:
+                    dep_start = self.env.now
 
-                    yield self.env.process(conn_target.handle_request(
-                        dep_request_type,
-                        should_trace=should_trace_dep,
-                        parent_span_context=dep_span_ctx
-                    ))
+                    # Prepare call function for propagation
+                    def make_service_call():
+                        should_trace_dep = span is not None
+                        dep_span_ctx = None
+                        if should_trace_dep:
+                            from opentelemetry import trace
+                            dep_span_ctx = trace.set_span_in_context(span)
 
-                try:
-                    # Use propagation logic (circuit breaker, retry, timeout, probabilistic propagation)
-                    yield from self.call_dependency_with_propagation(
-                        dep_name=conn_name,
-                        dep_type='service',
-                        call_func=make_service_call,
-                        span=span
-                    )
+                        # Use the same request type to maintain flow consistency
+                        dep_request_type = request_type if request_type in getattr(conn_target, 'supported_request_types', []) else random.choice(getattr(conn_target, 'supported_request_types', ['GET']))
 
-                    # Record success metrics
-                    dep_latency_ms = (self.env.now - dep_start) * 1000
-                    if self.dependency_requests and self.dependency_duration and self.parent_service:
-                        self.dependency_requests.add(1, {
-                            "dependency_id": conn_target.id,
-                            "dependency_name": conn_name,
-                            "status": "success",
-                            "component.id": self.id,
-                            "service.name": self.parent_service.service_name
-                        })
-                        self.dependency_duration.record(dep_latency_ms, {
-                            "dependency_id": conn_target.id,
-                            "dependency_name": conn_name,
-                            "status": "success",
-                            "component.id": self.id,
-                            "service.name": self.parent_service.service_name
-                        })
+                        yield self.env.process(conn_target.handle_request(
+                            dep_request_type,
+                            should_trace=should_trace_dep,
+                            parent_span_context=dep_span_ctx
+                        ))
 
-                except DependencyFailureException as e:
-                    # Error propagated from dependency - fail this request too
-                    dep_latency_ms = (self.env.now - dep_start) * 1000
-                    if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
-                        self.dependency_requests.add(1, {
-                            "dependency_id": conn_target.id,
-                            "dependency_name": conn_name,
-                            "status": "error",
-                            "component.id": self.id,
-                            "service.name": self.parent_service.service_name
-                        })
-                        self.dependency_duration.record(dep_latency_ms, {
-                            "dependency_id": conn_target.id,
-                            "dependency_name": conn_name,
-                            "status": "error",
-                            "component.id": self.id,
-                            "service.name": self.parent_service.service_name
-                        })
-                        self.dependency_errors.add(1, {
-                            "dependency_id": conn_target.id,
-                            "dependency_name": conn_name,
-                            "component.id": self.id,
-                            "service.name": self.parent_service.service_name
-                        })
-                    # Re-raise to propagate to caller
-                    raise
+                    try:
+                        # Use propagation logic (circuit breaker, retry, timeout, probabilistic propagation)
+                        yield from self.call_dependency_with_propagation(
+                            dep_name=conn_name,
+                            dep_type='service',
+                            call_func=make_service_call,
+                            span=span
+                        )
+
+                        # Record success metrics
+                        dep_latency_ms = (self.env.now - dep_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_duration.record(dep_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+
+                    except DependencyFailureException as e:
+                        # Error propagated from dependency - fail this request too
+                        dep_latency_ms = (self.env.now - dep_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_duration.record(dep_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_errors.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                        # Re-raise to propagate to caller
+                        raise
+
+        else:
+            # Fallback to old probabilistic behavior if no semantic flows
+            # Find all dep_* connections
+            for conn_name, conn_target in self.parent_service.connections.items():
+                if conn_name.startswith('dep_'):
+                    dep_start = self.env.now
+
+                    # Prepare call function for propagation
+                    def make_service_call():
+                        should_trace_dep = span is not None
+                        dep_span_ctx = None
+                        if should_trace_dep:
+                            from opentelemetry import trace
+                            dep_span_ctx = trace.set_span_in_context(span)
+
+                        # Call downstream service
+                        if hasattr(conn_target, 'supported_request_types') and conn_target.supported_request_types:
+                            dep_request_type = random.choice(conn_target.supported_request_types)
+                        else:
+                            dep_request_type = "GET"
+
+                        yield self.env.process(conn_target.handle_request(
+                            dep_request_type,
+                            should_trace=should_trace_dep,
+                            parent_span_context=dep_span_ctx
+                        ))
+
+                    try:
+                        # Use propagation logic (circuit breaker, retry, timeout, probabilistic propagation)
+                        yield from self.call_dependency_with_propagation(
+                            dep_name=conn_name,
+                            dep_type='service',
+                            call_func=make_service_call,
+                            span=span
+                        )
+
+                        # Record success metrics
+                        dep_latency_ms = (self.env.now - dep_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_duration.record(dep_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+
+                    except DependencyFailureException as e:
+                        # Error propagated from dependency - fail this request too
+                        dep_latency_ms = (self.env.now - dep_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_duration.record(dep_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                            self.dependency_errors.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": conn_name,
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name
+                            })
+                        # Re-raise to propagate to caller
+                        raise
 
     def _execute_external_calls(self, step, span):
         """Execute external service calls with fault propagation."""

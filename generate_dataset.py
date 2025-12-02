@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.topology.generator import TopologyGenerator
 from src.topology.adapter import TopologyAdapter, print_topology_summary
+from src.topology.semantic_mapper import SemanticMapper
 from src.scenarios.library import ScenarioLibrary, EpisodeConfig
 from src.simulation import Simulation
 from src.failures.training_injector import TrainingFailureInjector
@@ -249,8 +250,35 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"{'='*60}")
         print_topology_summary(nx_graph)
 
+    # 2.3. Generate Semantic Overlay using Claude
+    if verbose:
+        print(f"\n[Semantic Mapping]")
+        print(f"  Analyzing topology with Claude AI...")
+
+    # Initialize SemanticMapper with Anthropic API key
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    mapper = SemanticMapper(api_key=api_key)
+
+    # Generate semantic overlay
+    semantic_overlay = mapper.generate_semantic_overlay(nx_graph)
+
+    if verbose:
+        print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
+        print(f"  Request types: {', '.join(semantic_overlay.get('request_types', []))}")
+        print(f"  Services profiled: {len(semantic_overlay.get('services', {}))}")
+
+        # Show a few example service profiles
+        services = semantic_overlay.get('services', {})
+        if services:
+            print(f"\n  Example service profiles:")
+            for i, (node_id, service_data) in enumerate(list(services.items())[:3]):
+                print(f"    {node_id}: {service_data.get('name', 'Unknown')} ({service_data.get('profile', 'standard')})")
+
     # 2.5. Create initial workload config (for request mix analysis)
     # We'll create it with default RPS first, then adjust after capacity calculation
+    # NEW: Use semantic request types if available
+    # Note: create_dynamic_workload currently uses HTTP methods, but semantic_overlay has domain-specific types
+    # For now, we'll keep HTTP methods for compatibility with existing workload system
     initial_workload_path = create_dynamic_workload(nx_graph, base_rps=80, peak_rps=200)
 
     # 2.6. Pre-Flight Health Check: Calculate Safe Workload
@@ -328,7 +356,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     sim = Simulation(sim_config)
 
     # 6. Setup Simulation Environment using Simulation's env (CRITICAL FIX!)
-    adapter = TopologyAdapter(sim.env)
+    # NEW: Pass semantic overlay to adapter
+    adapter = TopologyAdapter(sim.env, semantic_overlay=semantic_overlay)
     registry = adapter.graph_to_registry(nx_graph)
     sim.component_registry = registry  # Directly set registry
 
@@ -482,11 +511,18 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     with open(topology_path, 'w') as f:
         json.dump(topology_data, f, indent=2)
 
+    # NEW: Save semantic overlay
+    semantic_path = os.path.join(episode_dir, 'semantic_map.json')
+    with open(semantic_path, 'w') as f:
+        json.dump(semantic_overlay, f, indent=2)
+
     if verbose:
         print(f"\n[Ground Truth]")
         print(f"  Label saved to: {label_path}")
         print(f"  Topology saved to: {topology_path}")
+        print(f"  Semantic map saved to: {semantic_path}")
         print(f"  Topology: {topology_data['num_nodes']} nodes, {topology_data['num_edges']} edges")
+        print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
 
     # 9. Export Initial Topology State
     topology_exporter.export_initial_state()

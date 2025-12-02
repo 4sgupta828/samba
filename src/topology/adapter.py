@@ -40,14 +40,16 @@ class TopologyAdapter:
     4. Returns a component registry for simulation
     """
 
-    def __init__(self, env):
+    def __init__(self, env, semantic_overlay=None):
         """
         Initialize the adapter.
 
         Args:
             env: SimPy environment
+            semantic_overlay: Optional semantic configuration from SemanticMapper
         """
         self.env = env
+        self.semantic_overlay = semantic_overlay or {}
 
     def graph_to_registry(self, G: nx.DiGraph) -> Dict[str, Any]:
         """
@@ -121,24 +123,47 @@ class TopologyAdapter:
         # New architecture components
         elif component_type == 'Service':
             # New lightweight service coordinator
-            supported_request_types = node_data.get('supported_request_types', ['GET', 'POST'])
+            # NEW: Get semantic configuration from overlay
+            semantic_services = self.semantic_overlay.get('services', {})
+            semantic_config = semantic_services.get(node_id, {})
+
+            # Use semantic request types if available, otherwise fallback to node data
+            if 'request_types' in self.semantic_overlay:
+                supported_request_types = self.semantic_overlay['request_types']
+            else:
+                supported_request_types = node_data.get('supported_request_types', ['GET', 'POST'])
+
             processing_pipeline = node_data.get('processing_pipeline')
             desired_replicas = node_data.get('desired_replicas', 3)
+
+            # Include full semantic config (with request_flows)
+            full_semantic_config = {
+                **semantic_config,
+                'request_flows': self.semantic_overlay.get('request_flows', {})
+            }
 
             component = Service(
                 self.env,
                 node_id,
-                service_name=node_data.get('service_name', node_id),
+                service_name=semantic_config.get('name', node_data.get('service_name', node_id)),
                 supported_request_types=supported_request_types,
                 processing_pipeline=processing_pipeline,
-                desired_replicas=desired_replicas
+                desired_replicas=desired_replicas,
+                semantic_config=full_semantic_config
             )
             return component
 
         elif component_type == 'Pod':
             # Pod instances (will be linked to parent service and compute node later)
-            # Note: parent_service and compute_node will be set during wiring phase
-            return Pod(self.env, node_id, parent_service=None, compute_node=None)
+            # NEW: Get semantic profile from overlay
+            semantic_services = self.semantic_overlay.get('services', {})
+
+            # Pods inherit semantic profile from their parent service
+            # We'll need to look up the parent service ID (will be set during wiring)
+            # For now, pass None and let it be set when parent_service is connected
+            semantic_profile = node_data.get('semantic_profile', {})
+
+            return Pod(self.env, node_id, parent_service=None, compute_node=None, semantic_profile=semantic_profile)
 
         elif component_type == 'ComputeNode':
             # Physical/VM resources
@@ -186,6 +211,10 @@ class TopologyAdapter:
             src.pods.append(tgt)
             # Set pod's parent service
             tgt.parent_service = src
+            # NEW: Inherit semantic profile from parent service
+            if hasattr(src, 'semantic_config'):
+                tgt.semantic_profile = src.semantic_config
+                tgt.resource_profile = src.semantic_config.get('profile', 'standard')
             # Initialize request-level metrics now that parent_service is set
             tgt._initialize_request_metrics()
 

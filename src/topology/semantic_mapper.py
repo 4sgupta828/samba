@@ -1,0 +1,329 @@
+"""
+Semantic Mapper - Domain-Adaptive Topology Intelligence
+
+This module analyzes raw NetworkX graphs and assigns domain-specific semantics using Claude AI.
+It transforms generic topologies into realistic business architectures (E-commerce, Video Streaming, etc.)
+with deterministic request flows and resource profiles.
+"""
+import os
+import json
+import networkx as nx
+from typing import Dict, List, Optional
+from anthropic import Anthropic
+
+
+class SemanticMapper:
+    """
+    Analyzes graph structure and applies domain-specific semantics using Claude AI.
+
+    The mapper:
+    1. Converts topology to LLM-friendly format
+    2. Calls Claude to analyze and assign domain
+    3. Returns semantic overlay with:
+       - Domain identification
+       - Service names and roles
+       - Resource profiles (cpu_intensive, io_intensive, etc.)
+       - Deterministic request flows
+    """
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-5-20250929"):
+        """
+        Initialize semantic mapper.
+
+        Args:
+            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
+            model: Claude model to use
+        """
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self.model = model
+        self.client = Anthropic(api_key=self.api_key) if self.api_key else None
+
+    def generate_semantic_overlay(self, topology_graph: nx.DiGraph) -> Dict:
+        """
+        Generate semantic overlay for a topology graph.
+
+        Args:
+            topology_graph: NetworkX directed graph with node/edge attributes
+
+        Returns:
+            Dictionary with domain, services, request_types, and request_flows
+        """
+        if not self.client:
+            # Fallback to deterministic heuristic if no API key
+            return self._generate_heuristic_overlay(topology_graph)
+
+        try:
+            # Convert graph to LLM-friendly format
+            graph_repr = self._serialize_graph_for_llm(topology_graph)
+
+            # Call Claude API
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                system=self._get_system_prompt(),
+                messages=[{
+                    "role": "user",
+                    "content": f"Analyze this topology and assign domain-specific semantics:\n\n{json.dumps(graph_repr, indent=2)}"
+                }]
+            )
+
+            # Parse response
+            response_text = response.content[0].text
+
+            # Extract JSON from response (handle markdown code blocks)
+            if "```json" in response_text:
+                json_start = response_text.index("```json") + 7
+                json_end = response_text.index("```", json_start)
+                json_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.index("```") + 3
+                json_end = response_text.index("```", json_start)
+                json_text = response_text[json_start:json_end].strip()
+            else:
+                json_text = response_text.strip()
+
+            semantic_overlay = json.loads(json_text)
+
+            # Validate the overlay structure
+            self._validate_overlay(semantic_overlay, topology_graph)
+
+            return semantic_overlay
+
+        except Exception as e:
+            print(f"Warning: Claude API call failed ({e}), falling back to heuristic overlay")
+            return self._generate_heuristic_overlay(topology_graph)
+
+    def _serialize_graph_for_llm(self, graph: nx.DiGraph) -> Dict:
+        """
+        Convert NetworkX graph to token-efficient JSON for LLM.
+
+        Args:
+            graph: NetworkX directed graph
+
+        Returns:
+            Compact graph representation
+        """
+        nodes = []
+        for node_id, attrs in graph.nodes(data=True):
+            nodes.append({
+                "id": node_id,
+                "role": attrs.get("role", "unknown"),
+                "is_frontend": attrs.get("is_frontend", False)
+            })
+
+        edges = []
+        for source, target, attrs in graph.edges(data=True):
+            edges.append({
+                "source": source,
+                "target": target,
+                "type": attrs.get("type", "sync")
+            })
+
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "num_nodes": len(nodes),
+            "num_edges": len(edges)
+        }
+
+    def _get_system_prompt(self) -> str:
+        """
+        Get the system prompt for Claude API.
+
+        Returns:
+            System prompt instructing Claude how to analyze topology
+        """
+        return """You are a microservices architecture expert. Analyze the provided topology graph and assign domain-specific semantics.
+
+Your task:
+1. Analyze the graph structure (topology, connectivity patterns, node roles)
+2. Select the MOST FITTING domain from: [e-commerce, video_streaming, supply_chain, iot_fleet, fintech]
+3. Assign domain-specific service names (e.g., "TranscodeService", "InventoryManager", "PaymentProcessor")
+4. Assign resource profiles to each service:
+   - "standard": Normal compute/memory requirements
+   - "cpu_intensive": High CPU usage (video encoding, ML inference, crypto)
+   - "io_intensive": High I/O usage (databases, caches, log aggregation)
+   - "latency_sensitive": Time-critical services (payment processing, trading)
+5. Define deterministic request flows showing which services call which for each request type
+
+Guidelines:
+- Linear chains suggest media pipelines (video_streaming)
+- Hub-and-spoke suggests SaaS/e-commerce
+- Mesh patterns suggest microservices architectures
+- Services with many incoming connections are likely databases/caches (io_intensive)
+- Frontend services that fan out to many services suggest e-commerce/SaaS patterns
+- Message queues indicate async processing patterns
+
+Output ONLY valid JSON in this EXACT format:
+{
+  "domain": "video_streaming",
+  "services": {
+    "node_id": {
+      "name": "ServiceName",
+      "role": "service",
+      "profile": "cpu_intensive"
+    }
+  },
+  "request_types": ["upload_video", "watch_stream"],
+  "request_flows": {
+    "upload_video": {
+      "node_0": ["node_1", "node_2"],
+      "node_1": ["node_3"]
+    }
+  }
+}
+
+Key rules:
+- EVERY node in the topology MUST appear in the "services" dict
+- Request flows MUST be deterministic (no randomness)
+- Request types should be domain-specific (e.g., "checkout", "upload_video", not generic "GET")
+- Frontend nodes (is_frontend=true) should be entry points in request_flows
+- Each request flow should form a valid path through the topology
+"""
+
+    def _generate_heuristic_overlay(self, graph: nx.DiGraph) -> Dict:
+        """
+        Generate deterministic heuristic overlay when API is unavailable.
+
+        Args:
+            graph: NetworkX directed graph
+
+        Returns:
+            Heuristic semantic overlay
+        """
+        # Analyze graph structure to pick domain
+        num_nodes = len(graph.nodes())
+        avg_degree = sum(dict(graph.degree()).values()) / num_nodes if num_nodes > 0 else 0
+
+        # Heuristic domain selection
+        if avg_degree > 3:
+            domain = "e-commerce"  # Highly connected = e-commerce
+            request_types = ["browse_catalog", "add_to_cart", "checkout"]
+        elif avg_degree < 2:
+            domain = "video_streaming"  # Linear = streaming pipeline
+            request_types = ["upload_video", "transcode", "stream"]
+        else:
+            domain = "generic_saas"
+            request_types = ["standard_request"]
+
+        # Assign service names and profiles
+        services = {}
+        for node_id, attrs in graph.nodes(data=True):
+            role = attrs.get("role", "service")
+
+            if role == "gateway":
+                name = "ApiGateway"
+                profile = "standard"
+            elif role == "service":
+                # Check connectivity to infer profile
+                in_degree = graph.in_degree(node_id)
+                out_degree = graph.out_degree(node_id)
+
+                if in_degree > 2:
+                    name = f"HubService_{node_id}"
+                    profile = "cpu_intensive"
+                elif out_degree == 0:
+                    name = f"LeafService_{node_id}"
+                    profile = "io_intensive"
+                else:
+                    name = f"Service_{node_id}"
+                    profile = "standard"
+            elif role == "database":
+                name = f"Database_{node_id}"
+                profile = "io_intensive"
+            elif role == "cache":
+                name = f"Cache_{node_id}"
+                profile = "io_intensive"
+            elif role == "queue":
+                name = f"MessageQueue_{node_id}"
+                profile = "io_intensive"
+            elif role == "external":
+                name = f"ExternalService_{node_id}"
+                profile = "latency_sensitive"
+            else:
+                name = f"Component_{node_id}"
+                profile = "standard"
+
+            services[node_id] = {
+                "name": name,
+                "role": role,
+                "profile": profile
+            }
+
+        # Generate simple BFS-based request flows
+        request_flows = {}
+        for request_type in request_types:
+            flow = {}
+
+            # Find frontend nodes as starting points
+            frontends = [n for n, d in graph.nodes(data=True) if d.get("is_frontend")]
+            if not frontends:
+                # Fallback: nodes with no predecessors
+                frontends = [n for n in graph.nodes() if graph.in_degree(n) == 0]
+
+            # Build flows using BFS from each frontend
+            visited = set()
+            for frontend in frontends:
+                queue = [frontend]
+                while queue:
+                    current = queue.pop(0)
+                    if current in visited:
+                        continue
+                    visited.add(current)
+
+                    # Get downstream nodes
+                    successors = list(graph.successors(current))
+                    if successors:
+                        flow[current] = successors
+                        queue.extend(successors)
+
+            request_flows[request_type] = flow
+
+        return {
+            "domain": domain,
+            "services": services,
+            "request_types": request_types,
+            "request_flows": request_flows
+        }
+
+    def _validate_overlay(self, overlay: Dict, graph: nx.DiGraph):
+        """
+        Validate that the semantic overlay is well-formed.
+
+        Args:
+            overlay: Semantic overlay dictionary
+            graph: Original topology graph
+
+        Raises:
+            ValueError: If overlay is invalid
+        """
+        required_keys = ["domain", "services", "request_types", "request_flows"]
+        for key in required_keys:
+            if key not in overlay:
+                raise ValueError(f"Missing required key in semantic overlay: {key}")
+
+        # Validate all nodes are covered
+        node_ids = set(graph.nodes())
+        service_ids = set(overlay["services"].keys())
+
+        if node_ids != service_ids:
+            missing = node_ids - service_ids
+            extra = service_ids - node_ids
+            raise ValueError(f"Node mismatch in semantic overlay. Missing: {missing}, Extra: {extra}")
+
+        # Validate service profiles
+        valid_profiles = {"standard", "cpu_intensive", "io_intensive", "latency_sensitive"}
+        for node_id, service_data in overlay["services"].items():
+            if "profile" not in service_data:
+                raise ValueError(f"Service {node_id} missing 'profile'")
+            if service_data["profile"] not in valid_profiles:
+                raise ValueError(f"Invalid profile for {node_id}: {service_data['profile']}")
+
+        # Validate request flows reference valid nodes
+        for request_type, flow in overlay["request_flows"].items():
+            for source, targets in flow.items():
+                if source not in node_ids:
+                    raise ValueError(f"Request flow references unknown source node: {source}")
+                for target in targets:
+                    if target not in node_ids:
+                        raise ValueError(f"Request flow references unknown target node: {target}")

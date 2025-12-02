@@ -33,12 +33,17 @@ class Service(EnrichedComponent):
     """
 
     def __init__(self, env: simpy.Environment, component_id: str, service_name: str,
-                 supported_request_types=None, processing_pipeline=None, desired_replicas=3):
+                 supported_request_types=None, processing_pipeline=None, desired_replicas=3,
+                 semantic_config=None):
         super().__init__(env, component_id, f"Service:{service_name}")
         self.service_name = service_name
         self.supported_request_types = supported_request_types or ["GET", "POST"]
         self.processing_pipeline = processing_pipeline or self._default_pipeline()
         self.desired_replicas = desired_replicas  # Target replica count for controller
+
+        # NEW: Semantic configuration from SemanticMapper
+        self.semantic_config = semantic_config or {}
+        self.resource_profile = self.semantic_config.get("profile", "standard")
 
         # Pods managed by DeploymentController
         self.pods = []  # List of Pod instances

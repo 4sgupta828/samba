@@ -35,6 +35,9 @@ class NetworkLink(EnrichedComponent):
         self.latency_jitter_ms = config.latency_jitter_ms
         self.bandwidth_mbps = config.bandwidth_mbps
 
+        # NEW: Bandwidth contention - wire can only transmit one packet at a time
+        self.transmission_resource = simpy.Resource(env, capacity=1)
+
         # Metrics
         self.bytes_transmitted_counter = self.meter.create_counter(
             "network.bytes.transmitted",
@@ -136,22 +139,27 @@ class NetworkLink(EnrichedComponent):
         # Add fault injection latency if active
         injected_latency = self.injected_latency_ms / 1000.0 if self.injected_latency_ms > 0 else 0
 
-        # Calculate transmission time based on bandwidth
-        transmission_time = (data_size_bytes * 8) / (self.bandwidth_mbps * 1_000_000)  # Convert to seconds
-
-        total_latency = base_latency + injected_latency + transmission_time
+        # Calculate transmission time based on bandwidth (serialization delay)
+        serialization_delay = (data_size_bytes * 8) / (self.bandwidth_mbps * 1_000_000)  # Convert to seconds
 
         # Check for packet loss (requires retransmission)
+        packet_loss_multiplier = 1.0
         if self._should_transient_error_occur('packet_loss'):
             self._emit_log("WARN", "Packet loss detected, retransmitting")
             self.retransmit_counter.add(1, {"component.id": self.id})
             if span:
                 span.add_event("packet_loss_retransmit")
             # Retransmission adds latency
-            total_latency *= config.packet_loss_latency_multiplier
+            packet_loss_multiplier = config.packet_loss_latency_multiplier
 
-        # Simulate the network transmission
-        yield self.env.timeout(total_latency)
+        # NEW: Bandwidth contention - wait for exclusive access to the wire
+        with self.transmission_resource.request() as req:
+            yield req  # Wait in queue if wire is busy
+            # Now we have exclusive access - transmit the packet
+            yield self.env.timeout(serialization_delay * packet_loss_multiplier)
+
+        # Propagation delay (light speed + routing delay) - happens after transmission
+        yield self.env.timeout(base_latency + injected_latency)
 
         # Check for connection reset during transmission
         if self._should_transient_error_occur('connection_reset'):
