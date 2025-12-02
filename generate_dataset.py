@@ -341,7 +341,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     # 6.5. Setup Topology State Exporter
     topology_exporter = TopologyStateExporter(sim.env, episode_dir)
 
-    # Register all components with the exporter
+    # Register all components with the exporter and start deployment controller
+    deployment_controller = None
     for component_id, component in registry.items():
         if isinstance(component, Service):
             topology_exporter.register_service(component)
@@ -351,6 +352,20 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             topology_exporter.register_node(component)
         elif isinstance(component, DeploymentController):
             topology_exporter.register_controller(component)
+            deployment_controller = component
+
+    # Start deployment controller process (creates and manages pods)
+    if deployment_controller:
+        # Register all services and nodes with the deployment controller
+        for component_id, component in registry.items():
+            if isinstance(component, Service):
+                deployment_controller.register_service(component)
+            elif isinstance(component, ComputeNode):
+                deployment_controller.register_node(component)
+
+        # Set topology exporter so controller can track pod lifecycle events
+        deployment_controller.topology_exporter = topology_exporter
+        sim.env.process(deployment_controller.run())
 
     if verbose:
         print(f"\n[Topology State Exporter]")
@@ -626,6 +641,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     except Exception as e:
         print(f"Error in episode {episode_id}: {e}")
+        print(f"Exception type: {type(e).__name__}")
+        print(f"Exception occurred at simulation time: {sim.env.now if hasattr(sim, 'env') else 'N/A'}s")
         import traceback
         traceback.print_exc()
         return None

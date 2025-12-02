@@ -490,6 +490,11 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     yield from self._handle_request_internal(request_type, span)
             else:
                 yield from self._handle_request_internal(request_type, None)
+        except DependencyFailureException as e:
+            # Dependency call failed - this is a normal failure condition, not a crash
+            # Convert to regular exception so it doesn't escape the event loop
+            self._emit_log("ERROR", f"Request failed due to dependency failure: {e}")
+            raise Exception(f"Request failed: {e}")
         except simpy.Interrupt as interrupt:
             # Pod crashed while processing this request
             if interrupt.cause == "PodCrashed":

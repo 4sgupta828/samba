@@ -136,9 +136,12 @@ class TopologyAdapter:
             return component
 
         elif component_type == 'Pod':
-            # Pod instances (will be linked to parent service and compute node later)
-            # Note: parent_service and compute_node will be set during wiring phase
-            return Pod(self.env, node_id, parent_service=None, compute_node=None)
+            # DISABLED: Pods are now created and managed by DeploymentController
+            # using ComponentLifecycleManager pattern for proper restart isolation.
+            # The topology still defines pod nodes for dependency tracking, but
+            # the actual Pod instances are created by DeploymentController.
+            # Return None to skip instantiation - pods will be created later.
+            return None
 
         elif component_type == 'ComputeNode':
             # Physical/VM resources

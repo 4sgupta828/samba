@@ -41,7 +41,8 @@ class Service(EnrichedComponent):
         self.desired_replicas = desired_replicas  # Target replica count for controller
 
         # Pods managed by DeploymentController
-        self.pods = []  # List of Pod instances
+        self.pods = []  # List of current Pod instances (updated by lifecycle managers)
+        self.pod_managers = []  # List of ComponentLifecycleManagers (persistent)
 
         # Metrics (service-level aggregation)
         self.service_requests_counter = self.meter.create_counter(
