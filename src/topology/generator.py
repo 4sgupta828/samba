@@ -84,13 +84,13 @@ class TopologyGenerator:
         # Add nodes with metadata
         for n in services:
             # New architecture: Service with desired_replicas
-            # Services support GET and POST (PUT/DELETE disabled for now)
+            # Services support all HTTP methods: GET, POST, PUT, DELETE
             G.add_node(n,
                       type='Service',
                       role='service',
                       service_name=n,
                       desired_replicas=3,  # 3 pods per service
-                      supported_request_types=['GET', 'POST'],  # PUT/DELETE disabled temporarily
+                      supported_request_types=['GET', 'POST', 'PUT', 'DELETE'],
                       processing_pipeline=None)  # Will be set during wiring
         for n in dbs:
             G.add_node(n, type='SqlDatabase', role='database')

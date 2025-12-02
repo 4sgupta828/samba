@@ -68,17 +68,16 @@ def create_dynamic_workload(nx_graph, base_rps: int = 80, peak_rps: int = 200):
 
     # Create request mix with realistic HTTP method distribution
     # Each frontend service handles ALL request types with typical traffic patterns:
-    # - GET (read): 70% (most common - browsing, listing, retrieving data)
-    # - POST (create): 30% (creating new resources, submitting forms)
-    # NOTE: PUT and DELETE disabled temporarily for testing
-    # - PUT (update): 7% (updating existing resources)
-    # - DELETE: 3% (removing resources)
+    # - GET (read): 60% (most common - browsing, listing, retrieving data)
+    # - POST (create): 25% (creating new resources, submitting forms)
+    # - PUT (update): 10% (updating existing resources)
+    # - DELETE: 5% (removing resources)
 
     request_type_distribution = {
-        'GET': 0.70,    # 70% read operations
-        'POST': 0.30,   # 30% create operations
-        # 'PUT': 0.07,    # DISABLED - not working yet
-        # 'DELETE': 0.03  # DISABLED - not working yet
+        'GET': 0.60,    # 60% read operations
+        'POST': 0.25,   # 25% create operations
+        'PUT': 0.10,    # 10% update operations
+        'DELETE': 0.05  # 5% delete operations
     }
 
     request_mix = []
