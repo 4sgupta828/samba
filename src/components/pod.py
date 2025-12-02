@@ -54,6 +54,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.thread_pool_size = getattr(config, 'thread_pool_size', 50)
         self.thread_pool = simpy.Resource(env, capacity=self.thread_pool_size)
 
+        # Track active request processes for crash interruption
+        self.active_request_processes = set()
+
         # Track samples for time-averaged gauges (like production systems)
         self.cpu_samples = []
         self.memory_samples = []
@@ -243,6 +246,15 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.memory_samples.clear()
         self.connection_pool_samples.clear()
         self.connection_queue_samples.clear()
+
+        # === Category 6: Active Request Interruption ===
+        # Interrupt in-flight requests (simulates SIGKILL behavior)
+        for proc in list(self.active_request_processes):
+            try:
+                proc.interrupt("PodCrashed")
+            except RuntimeError:
+                pass
+        self.active_request_processes.clear()
 
         # === State that correctly persists ===
         # - self.restarts (cumulative across lifetimes)
@@ -546,6 +558,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         with self.thread_pool.request() as req:
             yield req  # Wait for available thread
 
+            # Track this process for interruption (now that we hold the thread)
+            current_proc = self.env.active_process
+            self.active_request_processes.add(current_proc)
+
             queue_wait_time = (self.env.now - queue_start) * 1000  # Convert to ms
 
             # Add queue wait time to span if we waited
@@ -613,6 +629,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "service.name": self.parent_service.service_name
                     })
                 raise  # Re-raise the exception
+            finally:
+                # Remove from tracking when thread is released
+                self.active_request_processes.discard(current_proc)
 
     def _execute_processing_pipeline(self, request_type: str, span):
         """
