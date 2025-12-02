@@ -49,13 +49,15 @@ class Service(EnrichedComponent):
         self.pods = []  # List of Pod instances
 
         # Metrics (service-level aggregation)
+        # IMPORTANT: Use component_id in metric names for stable identifiers
+        # Use service_name in labels for human-readable display
         self.service_requests_counter = self.meter.create_counter(
-            f"service.{service_name}.requests",
+            f"service.{component_id}.requests",
             description=f"Number of requests routed by {service_name}",
             unit="1",
         )
         self.service_errors_counter = self.meter.create_counter(
-            f"service.{service_name}.errors",
+            f"service.{component_id}.errors",
             description=f"Number of errors in {service_name}",
             unit="1",
         )
@@ -183,35 +185,36 @@ class ApiService(EnrichedComponent):
                 self.dynamics = MetricsDynamicsEngine(config=dynamics_cfg)
 
         # Metrics
+        # IMPORTANT: Use component_id in metric names for stable identifiers
         self.service_requests_counter = self.meter.create_counter(
-            f"service.{service_name}.requests",
+            f"service.{component_id}.requests",
             description=f"Number of requests handled by {service_name}",
             unit="1",
         )
         self.service_latency = self.meter.create_histogram(
-            f"service.{service_name}.duration",
+            f"service.{component_id}.duration",
             description=f"Request duration for {service_name}",
             unit="ms"
         )
         self.service_errors_counter = self.meter.create_counter(
-            f"service.{service_name}.errors",
+            f"service.{component_id}.errors",
             description=f"Number of errors in {service_name}",
             unit="1",
         )
 
         # Client-side metrics for external dependencies (from caller's POV)
         self.dependency_requests_counter = self.meter.create_counter(
-            f"service.{service_name}.dependency.requests",
+            f"service.{component_id}.dependency.requests",
             description=f"Number of outbound requests to dependencies from {service_name}",
             unit="1",
         )
         self.dependency_latency = self.meter.create_histogram(
-            f"service.{service_name}.dependency.duration",
+            f"service.{component_id}.dependency.duration",
             description=f"Request duration to dependencies from {service_name}",
             unit="ms"
         )
         self.dependency_errors_counter = self.meter.create_counter(
-            f"service.{service_name}.dependency.errors",
+            f"service.{component_id}.dependency.errors",
             description=f"Number of errors calling dependencies from {service_name}",
             unit="1",
         )

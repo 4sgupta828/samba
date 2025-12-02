@@ -168,44 +168,48 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             return
 
         service_name = self.parent_service.service_name
+        service_id = self.parent_service.id
 
-        # Request-level metrics (use service namespace for compatibility with visualization)
-        # These will be tagged with service.name for aggregation at service level
+        # Request-level metrics (use service.id namespace for stable identifiers)
+        # IMPORTANT: Use service_id (component ID) in metric names, not service_name (semantic name)
+        # This ensures UI can find metrics even when semantic overlay changes service names
+        # These will be tagged with both service.name (human-readable) and service.id (stable ID)
         self.request_counter = self.meter.create_counter(
-            f"service.{service_name}.requests",
+            f"service.{service_id}.requests",
             unit="1",
-            description="Number of requests handled by pods of this service"
+            description=f"Number of requests handled by pods of {service_name}"
         )
         self.request_duration = self.meter.create_histogram(
-            f"service.{service_name}.duration",
+            f"service.{service_id}.duration",
             unit="ms",
-            description="Request processing duration"
+            description=f"Request processing duration for {service_name}"
         )
         self.request_errors = self.meter.create_counter(
-            f"service.{service_name}.errors",
+            f"service.{service_id}.errors",
             unit="1",
-            description="Number of request errors"
+            description=f"Number of request errors in {service_name}"
         )
 
         # External dependency call metrics (from this pod's perspective as client)
         self.dependency_requests = self.meter.create_counter(
-            f"service.{service_name}.dependency.requests",
+            f"service.{service_id}.dependency.requests",
             unit="1",
-            description="Requests to external dependencies"
+            description=f"Requests to external dependencies from {service_name}"
         )
         self.dependency_duration = self.meter.create_histogram(
-            f"service.{service_name}.dependency.duration",
+            f"service.{service_id}.dependency.duration",
             unit="ms",
-            description="External dependency call duration"
+            description=f"External dependency call duration from {service_name}"
         )
         self.dependency_errors = self.meter.create_counter(
-            f"service.{service_name}.dependency.errors",
+            f"service.{service_id}.dependency.errors",
             unit="1",
-            description="External dependency call errors"
+            description=f"External dependency call errors from {service_name}"
         )
 
         # Initialize propagation metrics (circuit breakers, retries, timeouts)
-        self._initialize_propagation_metrics(service_name)
+        # These use service_id as well for consistency
+        self._initialize_propagation_metrics(service_id)
 
     def _reset_state_on_restart(self):
         """
@@ -648,13 +652,15 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "status": "success",
                         "request_type": request_type,
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                     })
                     self.request_duration.record(latency_ms, {
                         "status": "success",
                         "request_type": request_type,
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                     })
 
             except Exception as e:
@@ -665,18 +671,21 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "status": "error",
                         "request_type": request_type,
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                     })
                     self.request_duration.record(latency_ms, {
                         "status": "error",
                         "request_type": request_type,
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                     })
                     self.request_errors.add(1, {
                         "request_type": request_type,
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                     })
                 raise  # Re-raise the exception
             finally:
@@ -783,14 +792,16 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "dependency_name": "cache",
                         "status": "success",
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
                     })
                     self.dependency_duration.record(cache_latency_ms, {
                         "dependency_id": cache.id,
                         "dependency_name": "cache",
                         "status": "success",
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
                     })
 
                 return (True, None, None)  # Cache hit - no need to track key
@@ -809,14 +820,16 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "dependency_name": "cache",
                         "status": "success",
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
                     })
                     self.dependency_duration.record(cache_latency_ms, {
                         "dependency_id": cache.id,
                         "dependency_name": "cache",
                         "status": "success",
                         "component.id": self.id,
-                        "service.name": self.parent_service.service_name
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
                     })
 
                 return (False, cache_key, cache)  # Cache miss - return key for later population

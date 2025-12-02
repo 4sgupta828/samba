@@ -346,19 +346,35 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         node_type = node_data.get('type', 'Unknown')
         is_root_cause = (node == root_cause_node)
 
+        # NEW: Use semantic name if available
+        semantic_name = node_data.get('semantic_name')
+        resource_profile = node_data.get('resource_profile')
+        domain = node_data.get('domain')
+
         node_colors.append(get_node_color(node_type, is_root_cause))
         node_sizes.append(get_node_size(node_type, is_root_cause))
         node_symbols.append(get_node_symbol(node_type))
 
-        # Node text (displayed on graph)
-        display_text = f"{node}"
+        # Node text (displayed on graph) - use semantic name if available
+        if semantic_name and semantic_name != node:
+            display_text = f"{semantic_name}"
+        else:
+            display_text = f"{node}"
         if is_root_cause:
             display_text += "<br>⚠️ ROOT CAUSE"
         node_text.append(display_text)
 
         # Hover text (additional info)
-        hover_text = f"<b>{node}</b><br>"
+        if semantic_name and semantic_name != node:
+            hover_text = f"<b>{semantic_name}</b><br>"
+            hover_text += f"ID: {node}<br>"
+        else:
+            hover_text = f"<b>{node}</b><br>"
         hover_text += f"Type: {node_type}<br>"
+        if resource_profile:
+            hover_text += f"Profile: {resource_profile}<br>"
+        if domain:
+            hover_text += f"Domain: {domain}<br>"
         if is_root_cause:
             hover_text += "<b style='color:red'>ROOT CAUSE</b><br>"
         hover_text += f"<i>Click for details</i>"

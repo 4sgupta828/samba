@@ -212,7 +212,7 @@ def create_percentile_chart_filtered(metrics_df: pd.DataFrame, component_id: str
 
 def create_service_aggregated_chart(metrics_df: pd.DataFrame, service_id: str,
                                    metric_name: str, title: str, ylabel: str,
-                                   agg_method: str = 'auto') -> go.Figure:
+                                   agg_method: str = 'auto', pod_ids: list = None) -> go.Figure:
     """
     Create aggregated chart for service by aggregating Pod metrics.
 
@@ -226,12 +226,20 @@ def create_service_aggregated_chart(metrics_df: pd.DataFrame, service_id: str,
                    'auto' chooses based on metric type:
                    - 'sum' for requests, errors, connections, threads, queue depths
                    - 'mean' for CPU utilization
+        pod_ids: List of pod IDs to aggregate (if None, will filter by service.id tag)
     """
-    # Aggregate Pod metrics by service.name tag
-    data = metrics_df[
-        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
-        (metrics_df['metric_name'] == metric_name)
-    ].copy()
+    # Aggregate Pod metrics by pod IDs (preferred) or service.id tag (fallback)
+    if pod_ids:
+        data = metrics_df[
+            (metrics_df['component_id'].isin(pod_ids)) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
+    else:
+        # Fallback to service.id filtering
+        data = metrics_df[
+            (metrics_df.get('service.id', pd.Series(dtype='object')) == service_id) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
 
     if data.empty:
         return go.Figure().update_layout(title=f"{title} (No Data)")
@@ -278,7 +286,7 @@ def create_service_aggregated_chart(metrics_df: pd.DataFrame, service_id: str,
 
 
 def create_service_aggregated_percentile_chart(metrics_df: pd.DataFrame, service_id: str,
-                                               metric_name: str, title: str) -> go.Figure:
+                                               metric_name: str, title: str, pod_ids: list = None) -> go.Figure:
     """
     Create aggregated percentile chart for service by aggregating Pod metrics.
 
@@ -287,12 +295,20 @@ def create_service_aggregated_percentile_chart(metrics_df: pd.DataFrame, service
         service_id: Service ID to aggregate for
         metric_name: Metric name to display
         title: Chart title
+        pod_ids: List of pod IDs to aggregate (if None, will filter by service.id tag)
     """
-    # Aggregate Pod percentile metrics by service.name tag
-    data = metrics_df[
-        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
-        (metrics_df['metric_name'] == metric_name)
-    ].copy()
+    # Aggregate Pod percentile metrics by pod IDs (preferred) or service.id tag (fallback)
+    if pod_ids:
+        data = metrics_df[
+            (metrics_df['component_id'].isin(pod_ids)) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
+    else:
+        # Fallback to service.id filtering
+        data = metrics_df[
+            (metrics_df.get('service.id', pd.Series(dtype='object')) == service_id) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
 
     if data.empty:
         return go.Figure().update_layout(title=f"{title} (No Data)")
@@ -351,7 +367,7 @@ def create_service_aggregated_percentile_chart(metrics_df: pd.DataFrame, service
 def create_service_aggregated_chart_filtered(metrics_df: pd.DataFrame, service_id: str,
                                             metric_name: str, title: str, ylabel: str,
                                             filter_col: str, filter_val: str,
-                                            agg_method: str = 'sum') -> go.Figure:
+                                            agg_method: str = 'sum', pod_ids: list = None) -> go.Figure:
     """
     Create aggregated chart for service with additional filter (e.g., for specific dependency).
 
@@ -364,13 +380,22 @@ def create_service_aggregated_chart_filtered(metrics_df: pd.DataFrame, service_i
         filter_col: Column name to filter on (e.g., 'dependency_id')
         filter_val: Value to filter for
         agg_method: Aggregation method - 'sum' or 'mean' (default: 'sum' for dependency metrics)
+        pod_ids: List of pod IDs to aggregate (if None, will filter by service.id tag)
     """
-    # Aggregate Pod metrics by service.name tag with additional filter
-    data = metrics_df[
-        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
-        (metrics_df['metric_name'] == metric_name) &
-        (metrics_df[filter_col] == filter_val)
-    ].copy()
+    # Aggregate Pod metrics by pod IDs (preferred) or service.id tag (fallback) with additional filter
+    if pod_ids:
+        data = metrics_df[
+            (metrics_df['component_id'].isin(pod_ids)) &
+            (metrics_df['metric_name'] == metric_name) &
+            (metrics_df[filter_col] == filter_val)
+        ].copy()
+    else:
+        # Fallback to service.id filtering
+        data = metrics_df[
+            (metrics_df.get('service.id', pd.Series(dtype='object')) == service_id) &
+            (metrics_df['metric_name'] == metric_name) &
+            (metrics_df[filter_col] == filter_val)
+        ].copy()
 
     if data.empty:
         return go.Figure().update_layout(title=f"{title} (No Data)")
@@ -407,7 +432,8 @@ def create_service_aggregated_chart_filtered(metrics_df: pd.DataFrame, service_i
 
 def create_service_aggregated_percentile_chart_filtered(metrics_df: pd.DataFrame, service_id: str,
                                                         metric_name: str, title: str,
-                                                        filter_col: str, filter_val: str) -> go.Figure:
+                                                        filter_col: str, filter_val: str,
+                                                        pod_ids: list = None) -> go.Figure:
     """
     Create aggregated percentile chart for service with additional filter.
 
@@ -418,13 +444,22 @@ def create_service_aggregated_percentile_chart_filtered(metrics_df: pd.DataFrame
         title: Chart title
         filter_col: Column name to filter on (e.g., 'dependency_id')
         filter_val: Value to filter for
+        pod_ids: List of pod IDs to aggregate (if None, will filter by service.id tag)
     """
-    # Aggregate Pod percentile metrics by service.name tag with additional filter
-    data = metrics_df[
-        (metrics_df.get('service.name', pd.Series(dtype='object')) == service_id) &
-        (metrics_df['metric_name'] == metric_name) &
-        (metrics_df[filter_col] == filter_val)
-    ].copy()
+    # Aggregate Pod percentile metrics by pod IDs (preferred) or service.id tag (fallback) with additional filter
+    if pod_ids:
+        data = metrics_df[
+            (metrics_df['component_id'].isin(pod_ids)) &
+            (metrics_df['metric_name'] == metric_name) &
+            (metrics_df[filter_col] == filter_val)
+        ].copy()
+    else:
+        # Fallback to service.id filtering
+        data = metrics_df[
+            (metrics_df.get('service.id', pd.Series(dtype='object')) == service_id) &
+            (metrics_df['metric_name'] == metric_name) &
+            (metrics_df[filter_col] == filter_val)
+        ].copy()
 
     if data.empty:
         return go.Figure().update_layout(title=f"{title} (No Data)")
@@ -731,7 +766,7 @@ def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
 
 
 def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
-                             label_data: Dict) -> List[dcc.Graph]:
+                             label_data: Dict, graph: nx.DiGraph = None) -> List[dcc.Graph]:
     """Create drill-down charts for Service by aggregating Pod metrics."""
     charts = []
 
@@ -739,15 +774,31 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
     component_metrics = metrics_df[metrics_df['component_id'] == component_id]
     available_metrics = set(component_metrics['metric_name'].unique())
 
-    # Get Pod metrics for this service (aggregate by service.name tag)
-    pod_metrics = metrics_df[
-        (metrics_df.get('service.name', pd.Series(dtype='object')) == component_id) &
-        (metrics_df['component_id'].str.startswith('pod_', na=False))
-    ]
+    # Get Pod IDs for this service from the topology graph
+    # This is more reliable than filtering by service.id because not all metrics have service.id labels
+    # (e.g., container.cpu.utilization, container.memory.usage_mb only have service.name)
+    pod_ids = []
+    if graph:
+        for node_id in graph.nodes():
+            node_attrs = graph.nodes[node_id]
+            if node_attrs.get('type') == 'Pod' and node_attrs.get('parent_service') == component_id:
+                pod_ids.append(node_id)
+
+    # Get Pod metrics for this service using pod_ids from topology
+    if pod_ids:
+        pod_metrics = metrics_df[metrics_df['component_id'].isin(pod_ids)]
+    else:
+        # Fallback: Try filtering by service.id tag (for backward compatibility)
+        # Note: service.id contains the component ID (e.g., "svc_1")
+        # while service.name contains the semantic name (e.g., "PaymentProcessor")
+        pod_metrics = metrics_df[
+            (metrics_df.get('service.id', pd.Series(dtype='object')) == component_id) &
+            (metrics_df['component_id'].str.startswith('pod_', na=False))
+        ]
 
     pod_metrics_available = set(pod_metrics['metric_name'].unique()) if not pod_metrics.empty else set()
 
-    # Request rate (aggregate from Pod metrics using service.name tag)
+    # Request rate (aggregate from Pod metrics)
     request_metric = f'service.{component_id}.requests'
     if request_metric in pod_metrics_available:
         charts.append(dcc.Graph(
@@ -755,7 +806,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 metrics_df, component_id,
                 request_metric,
                 'Request Rate',
-                'Requests/s'
+                'Requests/s',
+                pod_ids=pod_ids
             ),
             config={'displayModeBar': False}
         ))
@@ -771,7 +823,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 figure=create_service_aggregated_percentile_chart(
                     metrics_df, component_id,
                     duration_metric,
-                    'Request Duration (Latency)'
+                    'Request Duration (Latency)',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -781,7 +834,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                     metrics_df, component_id,
                     duration_metric,
                     'Request Duration',
-                    'ms'
+                    'ms',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -794,7 +848,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 metrics_df, component_id,
                 error_metric,
                 'Error Rate',
-                'Errors'
+                'Errors',
+                pod_ids=pod_ids
             ),
             config={'displayModeBar': False}
         ))
@@ -820,7 +875,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                     metrics_df, component_id,
                     'container.cpu.utilization',
                     'CPU Utilization (Pods)',
-                    'Percentage (%)'
+                    'Percentage (%)',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -832,7 +888,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                     metrics_df, component_id,
                     'container.memory.usage_mb',
                     'Memory Usage (Pods)',
-                    'MB'
+                    'MB',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -844,7 +901,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                     metrics_df, component_id,
                     'connection_pool.connections.active',
                     'Active Connections (Pods)',
-                    'Count'
+                    'Count',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -856,7 +914,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                     metrics_df, component_id,
                     'connection_pool.queue_depth',
                     'Connection Pool Queue Depth (Pods)',
-                    'Count'
+                    'Count',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -868,7 +927,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                     metrics_df, component_id,
                     'thread_pool.threads.active',
                     'Active Threads (Pods)',
-                    'Count'
+                    'Count',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -880,7 +940,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                     metrics_df, component_id,
                     'thread_pool.queue.depth',
                     'Thread Pool Queue Depth (Pods)',
-                    'Count'
+                    'Count',
+                    pod_ids=pod_ids
                 ),
                 config={'displayModeBar': False}
             ))
@@ -938,7 +999,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                             f'Request Rate',
                             'Requests/s',
                             filter_col='dependency_id',
-                            filter_val=dep_id
+                            filter_val=dep_id,
+                            pod_ids=pod_ids
                         ),
                         config={'displayModeBar': False}
                     ))
@@ -952,7 +1014,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                                 dependency_duration_metric,
                                 f'Latency',
                                 filter_col='dependency_id',
-                                filter_val=dep_id
+                                filter_val=dep_id,
+                                pod_ids=pod_ids
                             ),
                             config={'displayModeBar': False}
                         ))
@@ -964,7 +1027,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                                 f'Latency',
                                 'ms',
                                 filter_col='dependency_id',
-                                filter_val=dep_id
+                                filter_val=dep_id,
+                                pod_ids=pod_ids
                             ),
                             config={'displayModeBar': False}
                         ))
@@ -977,7 +1041,8 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                             f'Errors',
                             'Errors',
                             filter_col='dependency_id',
-                            filter_val=dep_id
+                            filter_val=dep_id,
+                            pod_ids=pod_ids
                         ),
                         config={'displayModeBar': False}
                     ))
@@ -2000,7 +2065,7 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
     charts = []
     if component_type == 'Service':
         # New architecture: Service with Pods
-        charts = create_service_drilldown(metrics_df, component_id, label_data)
+        charts = create_service_drilldown(metrics_df, component_id, label_data, graph)
     elif component_type == 'Pod':
         # New architecture: Individual Pod drill-down
         charts = create_pod_drilldown(metrics_df, component_id, label_data)
