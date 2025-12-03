@@ -151,13 +151,17 @@ Your task:
    - "latency_sensitive": Time-critical services (payment processing, trading)
 5. Define deterministic request flows showing which services call which for each request type
 
-Guidelines:
+Guidelines for domain selection - VARY YOUR CHOICES:
 - Linear chains suggest media pipelines (video_streaming)
-- Hub-and-spoke suggests SaaS/e-commerce
-- Mesh patterns suggest microservices architectures
+- Hub-and-spoke patterns with high fan-out suggest e-commerce/retail
+- Many external APIs suggest supply_chain (3rd party integrations)
+- Message queue heavy architectures suggest iot_fleet (sensor data processing)
+- Latency-sensitive services with databases suggest fintech (trading, payments)
 - Services with many incoming connections are likely databases/caches (io_intensive)
-- Frontend services that fan out to many services suggest e-commerce/SaaS patterns
-- Message queues indicate async processing patterns
+- Mesh patterns with moderate connectivity can be any domain - use variety
+
+IMPORTANT: Do NOT default to e-commerce! Actively consider all 5 domains and pick the best fit.
+If the topology could fit multiple domains, rotate through options to ensure diversity.
 
 IMPORTANT CONSTRAINTS:
 - request_types MUST be HTTP methods: ["GET", "POST", "PUT", "DELETE"] - DO NOT use domain-specific names
@@ -191,7 +195,7 @@ Output ONLY valid JSON in this EXACT format:
 Key rules:
 - EVERY node in the topology MUST appear in the "services" dict
 - Request flows MUST be deterministic (no randomness)
-- Request types should be domain-specific (e.g., "checkout", "upload_video", not generic "GET")
+- request_types MUST be HTTP methods (GET, POST, PUT, DELETE) not domain-specific names
 - Frontend nodes (is_frontend=true) should be entry points in request_flows
 - Each request flow should form a valid path through the topology
 """
@@ -210,17 +214,36 @@ Key rules:
         num_nodes = len(graph.nodes())
         avg_degree = sum(dict(graph.degree()).values()) / num_nodes if num_nodes > 0 else 0
 
-        # Heuristic domain selection
+        # Count node types for domain hints
+        queue_count = sum(1 for _, d in graph.nodes(data=True) if d.get('role') == 'queue')
+        external_count = sum(1 for _, d in graph.nodes(data=True) if d.get('role') == 'external')
+
+        # Heuristic domain selection with variety
         # IMPORTANT: Use HTTP methods for request types, not domain-specific names
-        if avg_degree > 3:
-            domain = "e-commerce"  # Highly connected = e-commerce
-            request_types = ["GET", "POST", "PUT", "DELETE"]
-        elif avg_degree < 2:
+        # Use graph hash to add deterministic pseudo-randomness for variety
+        graph_hash = hash(frozenset(graph.edges())) % 5
+
+        if avg_degree < 2:
+            # Linear/chain topology
             domain = "video_streaming"  # Linear = streaming pipeline
             request_types = ["GET", "POST"]
+        elif queue_count >= 2:
+            # Queue-heavy suggests IoT or event-driven
+            domain = "iot_fleet"
+            request_types = ["GET", "POST", "PUT"]
+        elif external_count >= 2:
+            # Many external dependencies suggest supply chain
+            domain = "supply_chain"
+            request_types = ["GET", "POST", "PUT", "DELETE"]
+        elif avg_degree > 4:
+            # Very highly connected = e-commerce or fintech
+            domain = "fintech" if graph_hash % 2 == 0 else "e-commerce"
+            request_types = ["GET", "POST", "PUT", "DELETE"]
         else:
-            domain = "generic_saas"
-            request_types = ["GET", "POST"]
+            # Moderate connectivity - rotate through domains
+            domains = ["e-commerce", "video_streaming", "supply_chain", "iot_fleet", "fintech"]
+            domain = domains[graph_hash]
+            request_types = ["GET", "POST", "PUT", "DELETE"]
 
         # Assign service names and profiles
         services = {}
