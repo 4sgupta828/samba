@@ -162,6 +162,19 @@ def create_correlation_matrix(metrics_df: pd.DataFrame, graph: nx.DiGraph,
         annotation_position="top"
     )
 
+    # Add fault removal line if recovery exists
+    recovery_start = label_data.get('recovery_start_time')
+    if recovery_start is not None:
+        recovery_bucket_index = recovery_start // bucket_size
+        fig.add_vline(
+            x=recovery_bucket_index,
+            line_dash="dash",
+            line_color="green",
+            line_width=3,
+            annotation_text="Fault Removal",
+            annotation_position="top"
+        )
+
     # Highlight root cause component
     root_cause = label_data.get('root_cause_node')
     if root_cause in components:
@@ -242,9 +255,12 @@ def create_metric_cascade(metrics_df: pd.DataFrame, graph: nx.DiGraph,
                 col=1
             )
 
-    # Add fault injection line
+    # Add fault injection and removal lines
     fault_start = label_data.get('fault_start_time', 0)
+    recovery_start = label_data.get('recovery_start_time')
+
     for idx in range(len(components)):
+        # Fault injection line
         fig.add_vline(
             x=fault_start,
             line_dash="dash",
@@ -253,6 +269,16 @@ def create_metric_cascade(metrics_df: pd.DataFrame, graph: nx.DiGraph,
             row=idx + 1,
             col=1
         )
+        # Fault removal line
+        if recovery_start is not None:
+            fig.add_vline(
+                x=recovery_start,
+                line_dash="dash",
+                line_color="green",
+                line_width=1,
+                row=idx + 1,
+                col=1
+            )
 
     fig.update_layout(
         title=f"Metric Cascade: {metric_name} (Normalized)",

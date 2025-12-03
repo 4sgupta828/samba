@@ -17,6 +17,50 @@ from plotly.subplots import make_subplots
 from typing import Dict
 
 
+def add_fault_markers_with_shading(fig: go.Figure, label_data: Dict, row: int = None, col: int = 1):
+    """
+    Add fault injection and removal markers with shaded region to a figure.
+
+    Args:
+        fig: Plotly figure to add markers to
+        label_data: Label data containing fault timing information
+        row: Row number for subplot (None for single plot)
+        col: Column number for subplot
+    """
+    fault_start = label_data.get('fault_start_time', 0)
+    recovery_start = label_data.get('recovery_start_time')
+
+    # Calculate fault end time (either recovery start or fault_total_duration)
+    if recovery_start is not None:
+        fault_end = recovery_start
+    else:
+        fault_end = fault_start + label_data.get('fault_total_duration', 0)
+
+    # Add shaded region for fault period
+    fig.add_vrect(
+        x0=fault_start, x1=fault_end,
+        fillcolor="rgba(255, 0, 0, 0.1)",
+        layer="below",
+        line_width=0,
+        row=row, col=col
+    )
+
+    # Add fault injection line
+    fig.add_vline(
+        x=fault_start,
+        line=dict(color="red", width=2, dash="dash"),
+        row=row, col=col
+    )
+
+    # Add fault removal line if recovery exists
+    if recovery_start is not None:
+        fig.add_vline(
+            x=recovery_start,
+            line=dict(color="green", width=2, dash="dash"),
+            row=row, col=col
+        )
+
+
 def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> go.Figure:
     """
     Create chart showing workload generator connection pool metrics.
@@ -109,25 +153,9 @@ def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
             row=2, col=1
         )
 
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
-    fault_end = fault_start + label_data.get('fault_total_duration', 0)
-
-    # Add shaded region for fault period
+    # Add fault injection and removal markers
     for row in [1, 2]:
-        fig.add_vrect(
-            x0=fault_start, x1=fault_end,
-            fillcolor="rgba(255, 0, 0, 0.1)",
-            layer="below",
-            line_width=0,
-            row=row, col=1
-        )
-        # Add fault start line (no annotation to avoid overlap)
-        fig.add_vline(
-            x=fault_start,
-            line=dict(color="red", width=2, dash="dash"),
-            row=row, col=1
-        )
+        add_fault_markers_with_shading(fig, label_data, row=row, col=1)
 
     # Update axes
     fig.update_xaxes(title_text="Simulation Time (seconds)", row=2, col=1)
@@ -144,11 +172,11 @@ def create_connection_pool_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
         margin=dict(l=60, r=60, t=100, b=60),
         annotations=[
             dict(
-                text="🔴 Red dashed line = Fault Injection",
+                text="🔴 Red line = Fault Injection | 🟢 Green line = Fault Removal",
                 xref="paper", yref="paper",
                 x=0.5, y=1.08,
                 showarrow=False,
-                font=dict(size=11, color="#ff6b6b"),
+                font=dict(size=11, color="#9ca3af"),
                 xanchor="center"
             )
         ]
@@ -199,20 +227,8 @@ def create_circuit_breaker_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
         )
     )
 
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
-    fault_end = fault_start + label_data.get('fault_total_duration', 0)
-
-    fig.add_vrect(
-        x0=fault_start, x1=fault_end,
-        fillcolor="rgba(255, 0, 0, 0.1)",
-        layer="below",
-        line_width=0
-    )
-    fig.add_vline(
-        x=fault_start,
-        line=dict(color="red", width=2, dash="dash")
-    )
+    # Add fault injection and removal markers
+    add_fault_markers_with_shading(fig, label_data)
 
     fig.update_layout(
         template='plotly_dark',
@@ -229,11 +245,11 @@ def create_circuit_breaker_chart(metrics_df: pd.DataFrame, label_data: Dict) -> 
         margin=dict(l=60, r=60, t=60, b=60),
         annotations=[
             dict(
-                text="🔴 Red line = Fault Injection",
+                text="🔴 Red line = Fault Injection | 🟢 Green line = Fault Removal",
                 xref="paper", yref="paper",
                 x=0.5, y=1.1,
                 showarrow=False,
-                font=dict(size=11, color="#ff6b6b"),
+                font=dict(size=11, color="#9ca3af"),
                 xanchor="center"
             )
         ]
@@ -328,20 +344,8 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
                     )
                 )
 
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
-    fault_end = fault_start + label_data.get('fault_total_duration', 0)
-
-    fig.add_vrect(
-        x0=fault_start, x1=fault_end,
-        fillcolor="rgba(255, 0, 0, 0.1)",
-        layer="below",
-        line_width=0
-    )
-    fig.add_vline(
-        x=fault_start,
-        line=dict(color="red", width=2, dash="dash")
-    )
+    # Add fault injection and removal markers
+    add_fault_markers_with_shading(fig, label_data)
 
     fig.update_layout(
         template='plotly_dark',
@@ -355,11 +359,11 @@ def create_request_outcomes_chart(metrics_df: pd.DataFrame, label_data: Dict) ->
         margin=dict(l=60, r=60, t=80, b=60),
         annotations=[
             dict(
-                text="🔴 Red line = Fault Injection",
+                text="🔴 Red line = Fault Injection | 🟢 Green line = Fault Removal",
                 xref="paper", yref="paper",
                 x=0.5, y=1.12,
                 showarrow=False,
-                font=dict(size=11, color="#ff6b6b"),
+                font=dict(size=11, color="#9ca3af"),
                 xanchor="center"
             )
         ]

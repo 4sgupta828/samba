@@ -1883,7 +1883,7 @@ def create_gateway_drilldown(metrics_df: pd.DataFrame, component_id: str,
 
 def create_fault_injection_timeline(label_data: Dict, component_id: str) -> html.Div:
     """
-    Create a visual timeline showing fault injection details.
+    Create a visual timeline showing fault injection details including recovery.
 
     Args:
         label_data: Label data with fault information
@@ -1902,13 +1902,17 @@ def create_fault_injection_timeline(label_data: Dict, component_id: str) -> html
     ramp_duration = label_data.get('fault_ramp_duration', 0)
     full_effect_time = label_data.get('fault_full_effect_time', 0)
     total_duration = label_data.get('fault_total_duration', 0)
-    fault_end = fault_start + total_duration
+    recovery_start = label_data.get('recovery_start_time')
+    recovery_complete = label_data.get('recovery_complete_time')
     progression_info = label_data.get('progression', {})
     progression_type = progression_info.get('type', 'instant')
     fault_params = label_data.get('fault_params', {})
 
+    # Get timeline from label data if available
+    timeline_data = label_data.get('timeline', {})
+
     # Create timeline visualization
-    # Timeline shows: [healthy] -> [ramp-up] -> [full effect]
+    # Timeline shows: [healthy] -> [ramp-up] -> [full effect] -> [recovery] -> [recovered]
     timeline_items = []
 
     # Healthy phase
@@ -1953,7 +1957,15 @@ def create_fault_injection_timeline(label_data: Dict, component_id: str) -> html
         )
 
     # Full failure phase
-    failure_duration = total_duration - ramp_duration
+    if recovery_start is not None:
+        # Fault ends at recovery start
+        failure_duration = recovery_start - full_effect_time
+        fault_end_time = recovery_start
+    else:
+        # No recovery, fault lasts until end
+        failure_duration = total_duration - ramp_duration
+        fault_end_time = fault_start + total_duration
+
     timeline_items.append(
         html.Div([
             html.Div("Full Failure", style={
@@ -1965,48 +1977,154 @@ def create_fault_injection_timeline(label_data: Dict, component_id: str) -> html
                 'textAlign': 'center',
                 'marginBottom': '4px'
             }),
-            html.Div(f"{full_effect_time}s - {fault_end}s", style={
+            html.Div(f"{full_effect_time}s - {fault_end_time}s", style={
                 'fontSize': '0.85em',
                 'color': '#9ca3af',
                 'textAlign': 'center'
             })
-        ], style={'flex': f'{failure_duration}'})
+        ], style={'flex': f'{failure_duration}', 'marginRight': '8px' if recovery_start else ''})
     )
 
-    # Format fault parameters
+    # Recovery phase (if exists)
+    if recovery_start is not None and recovery_complete is not None:
+        recovery_duration = recovery_complete - recovery_start
+        timeline_items.append(
+            html.Div([
+                html.Div("Recovery", style={
+                    'backgroundColor': '#10b981',
+                    'padding': '8px',
+                    'borderRadius': '4px',
+                    'color': 'white',
+                    'fontWeight': 'bold',
+                    'textAlign': 'center',
+                    'marginBottom': '4px'
+                }),
+                html.Div(f"{recovery_start}s - {recovery_complete}s", style={
+                    'fontSize': '0.85em',
+                    'color': '#9ca3af',
+                    'textAlign': 'center'
+                })
+            ], style={'flex': f'{recovery_duration}', 'marginRight': '8px'})
+        )
+
+        # Recovered/healthy baseline phase
+        episode_end = timeline_data.get('episode_end', 600)
+        recovered_duration = episode_end - recovery_complete
+        if recovered_duration > 0:
+            timeline_items.append(
+                html.Div([
+                    html.Div("Recovered", style={
+                        'backgroundColor': '#22c55e',
+                        'padding': '8px',
+                        'borderRadius': '4px',
+                        'color': 'white',
+                        'fontWeight': 'bold',
+                        'textAlign': 'center',
+                        'marginBottom': '4px'
+                    }),
+                    html.Div(f"{recovery_complete}s - {episode_end}s", style={
+                        'fontSize': '0.85em',
+                        'color': '#9ca3af',
+                        'textAlign': 'center'
+                    })
+                ], style={'flex': f'{recovered_duration}'})
+            )
+
+    # Format fault parameters with detailed breakdown
     param_items = []
+    param_badges = []
+
+    # Group parameters by type (changed, added, removed implied)
     for key, value in fault_params.items():
+        # Format based on parameter type
         if isinstance(value, float):
             if key.endswith('_rate'):
-                param_items.append(f"{key}: {value*100:.1f}%")
+                formatted = f"{value*100:.1f}%"
+                badge_color = '#ef4444' if value > 0.5 else '#f59e0b'
+            elif key.endswith('_latency') or key.endswith('_delay'):
+                formatted = f"{value:.0f}ms"
+                badge_color = '#ef4444' if value > 1000 else '#f59e0b'
             else:
-                param_items.append(f"{key}: {value:.2f}")
+                formatted = f"{value:.2f}"
+                badge_color = '#f59e0b'
+        elif isinstance(value, int):
+            formatted = str(value)
+            badge_color = '#f59e0b'
+        elif isinstance(value, bool):
+            formatted = 'Enabled' if value else 'Disabled'
+            badge_color = '#10b981' if value else '#6b7280'
         else:
-            param_items.append(f"{key}: {value}")
+            formatted = str(value)
+            badge_color = '#6b7280'
+
+        param_name = key.replace('_', ' ').title()
+        param_items.append(f"{param_name}: {formatted}")
+
+        # Create badge for each parameter
+        param_badges.append(
+            html.Span([
+                html.Strong(f"{param_name}: ", style={'color': '#d1d5db'}),
+                html.Span(formatted, style={
+                    'backgroundColor': badge_color,
+                    'padding': '2px 8px',
+                    'borderRadius': '4px',
+                    'marginLeft': '4px',
+                    'fontWeight': 'bold'
+                })
+            ], style={'marginRight': '12px', 'display': 'inline-block', 'marginBottom': '8px'})
+        )
+
+    # Create progression description with recovery info
+    if recovery_start is not None:
+        progression_text = f"A-B-A Pattern: {progression_type.title()} degradation ({ramp_duration}s), then recovery ({recovery_complete - recovery_start if recovery_complete else 0}s)"
+    else:
+        progression_text = f"{progression_type.title()} over {ramp_duration}s" if ramp_duration > 0 else "Instant"
 
     return html.Div([
         html.Div([
-            html.H6("⚠️ Fault Injection Details", style={
+            html.H6("⚠️ Fault Injection & Recovery Details", style={
                 'color': '#ef4444',
                 'marginBottom': '15px',
                 'fontWeight': 'bold'
             }),
             html.Div([
+                # Fault Type
                 html.Div([
-                    html.Strong("Fault Type: "),
-                    html.Span(fault_type.replace('_', ' ').title())
-                ], style={'marginBottom': '8px'}),
+                    html.Strong("Fault Type: ", style={'color': '#d1d5db'}),
+                    html.Span(fault_type.replace('_', ' ').title(), style={
+                        'backgroundColor': '#7c2d12',
+                        'padding': '4px 12px',
+                        'borderRadius': '4px',
+                        'fontWeight': 'bold',
+                        'color': '#fca5a5'
+                    })
+                ], style={'marginBottom': '12px'}),
+
+                # Progression Type
                 html.Div([
-                    html.Strong("Parameters: "),
-                    html.Span(', '.join(param_items) if param_items else 'None')
-                ], style={'marginBottom': '8px'}),
+                    html.Strong("Progression: ", style={'color': '#d1d5db'}),
+                    html.Span(progression_text)
+                ], style={'marginBottom': '12px'}),
+
+                # Parameters Section
                 html.Div([
-                    html.Strong("Progression: "),
-                    html.Span(f"{progression_type.title()} over {ramp_duration}s" if ramp_duration > 0 else "Instant")
+                    html.Strong("Fault Parameters:", style={'color': '#d1d5db', 'display': 'block', 'marginBottom': '8px'}),
+                    html.Div(
+                        param_badges if param_badges else html.Span('No parameters', style={'color': '#9ca3af', 'fontStyle': 'italic'}),
+                        style={'marginLeft': '0px'}
+                    )
                 ], style={'marginBottom': '15px'}),
+
+                # Recovery Info (if exists)
+                *([html.Div([
+                    html.Strong("Recovery: ", style={'color': '#10b981'}),
+                    html.Span(f"Fault removed at {recovery_start}s, fully recovered by {recovery_complete}s", style={'color': '#d1d5db'})
+                ], style={'marginBottom': '15px', 'padding': '8px', 'backgroundColor': '#064e3b', 'borderRadius': '4px'})] if recovery_start else []),
             ]),
+
+            # Timeline Visualization
             html.Div([
-                html.Strong("Timeline:", style={'marginBottom': '10px', 'display': 'block'}),
+                html.Strong("Timeline:", style={'marginBottom': '10px', 'display': 'block', 'color': '#d1d5db'}),
                 html.Div(timeline_items, style={
                     'display': 'flex',
                     'width': '100%',

@@ -16,6 +16,39 @@ import dash_bootstrap_components as dbc
 from typing import Dict
 
 
+def add_fault_markers(fig: go.Figure, label_data: Dict, annotation_position: str = "top"):
+    """
+    Add fault injection and removal vertical lines to a figure.
+
+    Args:
+        fig: Plotly figure to add markers to
+        label_data: Label data containing fault timing information
+        annotation_position: Position for annotations ("top" or "bottom")
+    """
+    # Add fault injection marker
+    fault_start = label_data.get('fault_start_time', 0)
+    fig.add_vline(
+        x=fault_start,
+        line_dash="dash",
+        line_color="red",
+        line_width=2,
+        annotation_text="Fault Injection",
+        annotation_position=annotation_position
+    )
+
+    # Add fault removal marker if recovery data exists
+    recovery_start = label_data.get('recovery_start_time')
+    if recovery_start is not None:
+        fig.add_vline(
+            x=recovery_start,
+            line_dash="dash",
+            line_color="green",
+            line_width=2,
+            annotation_text="Fault Removal",
+            annotation_position=annotation_position
+        )
+
+
 def create_request_rate_chart(metrics_df: pd.DataFrame, label_data: Dict) -> go.Figure:
     """Create request rate chart showing traffic patterns."""
     # Filter for workload metrics
@@ -38,16 +71,8 @@ def create_request_rate_chart(metrics_df: pd.DataFrame, label_data: Dict) -> go.
                 line=dict(width=2)
             ))
 
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
-    fig.add_vline(
-        x=fault_start,
-        line_dash="dash",
-        line_color="red",
-        line_width=2,
-        annotation_text="Fault Injection",
-        annotation_position="top"
-    )
+    # Add fault injection and removal markers
+    add_fault_markers(fig, label_data, annotation_position="top")
 
     fig.update_layout(
         title="Request Rate",
@@ -85,16 +110,8 @@ def create_error_rate_chart(metrics_df: pd.DataFrame, label_data: Dict) -> go.Fi
             fillcolor='rgba(231, 76, 60, 0.2)'
         ))
 
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
-    fig.add_vline(
-        x=fault_start,
-        line_dash="dash",
-        line_color="darkred",
-        line_width=2,
-        annotation_text="Fault Injection",
-        annotation_position="top"
-    )
+    # Add fault injection and removal markers
+    add_fault_markers(fig, label_data, annotation_position="top")
 
     fig.update_layout(
         title="Error Rate",
@@ -140,16 +157,8 @@ def create_latency_chart(metrics_df: pd.DataFrame, label_data: Dict) -> go.Figur
                 line=dict(color=colors.get(percentile), width=2)
             ))
 
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
-    fig.add_vline(
-        x=fault_start,
-        line_dash="dash",
-        line_color="red",
-        line_width=2,
-        annotation_text="Fault Injection",
-        annotation_position="top"
-    )
+    # Add fault injection and removal markers
+    add_fault_markers(fig, label_data, annotation_position="top")
 
     fig.update_layout(
         title="Latency Percentiles (Avg across components)",
@@ -197,16 +206,8 @@ def create_saturation_chart(metrics_df: pd.DataFrame, label_data: Dict) -> go.Fi
             yaxis='y2'
         ))
 
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
-    fig.add_vline(
-        x=fault_start,
-        line_dash="dash",
-        line_color="red",
-        line_width=2,
-        annotation_text="Fault Injection",
-        annotation_position="top"
-    )
+    # Add fault injection and removal markers
+    add_fault_markers(fig, label_data, annotation_position="top")
 
     fig.update_layout(
         title="Resource Saturation (Avg across components)",
