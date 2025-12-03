@@ -120,6 +120,7 @@ class CapacityPlanner:
         """
         Recursively estimates P99 latency of dependencies.
         Stops at Async boundaries (Queues). Handles Circular dependencies.
+        NOW APPLIES semantic profile multipliers for accurate estimation.
         """
         if visited is None: visited = set()
         if node_id in visited: return 0.0
@@ -139,13 +140,28 @@ class CapacityPlanner:
             net_latency = get_network_latency(edge_type).p99
 
             child_role = self.graph.nodes[child].get('role', 'service')
-            child_profile, _ = get_component_profile(child_role)
-            child_base_time = child_profile.p99
+            child_profile_base, _ = get_component_profile(child_role)
+
+            # Apply multiplier here too!
+            # Look up semantic profile
+            child_sem_profile = "standard"
+            if self.semantic_map and 'services' in self.semantic_map:
+                child_sem_profile = self.semantic_map['services'].get(child, {}).get('profile', 'standard')
+
+            mult = 1.0
+            if child_sem_profile == "cpu_intensive":
+                mult = 2.5
+            elif child_sem_profile == "io_intensive":
+                mult = 1.1
+            elif child_sem_profile == "latency_sensitive":
+                mult = 0.8
+
+            child_effective_time = child_profile_base.p99 * mult
 
             child_dep_latency = self._estimate_dependency_latency(child, phi, visited.copy())
 
             # Assume sequential execution for worst-case timeout budgeting
-            total_dep_latency += (net_latency + child_base_time + child_dep_latency)
+            total_dep_latency += (net_latency + child_effective_time + child_dep_latency)
 
         return total_dep_latency
 
@@ -154,50 +170,81 @@ class CapacityPlanner:
         rps = metrics['rps']
         if rps <= 0: rps = 0.1
 
-        # Fix B: Poisson Buffer - Minimum headroom is 1.15x
-        headroom = 1.15 + (2.85 * (1.0 - phi)) # Maps phi 0->4.0x, phi 1->1.15x
+        # Fix B: Poisson Buffer - Increase minimum headroom
+        headroom = 1.25 + (2.75 * (1.0 - phi)) # Maps phi 0->4.0x, phi 1->1.25x
 
         latency_prof, res_prof = get_component_profile(role)
         base_processing_ms = latency_prof.p50
+
+        # --- CRITICAL FIX: Apply Semantic Profile Multipliers ---
+        # We must match the logic in src/components/pod.py
+        resource_profile = "standard"
+        if self.semantic_map and 'services' in self.semantic_map:
+            svc_data = self.semantic_map['services'].get(node_id, {})
+            resource_profile = svc_data.get('profile', 'standard')
+
+        # Apply multipliers used in Pod runtime
+        latency_multiplier = 1.0
+        if resource_profile == "cpu_intensive":
+            latency_multiplier = 2.5
+        elif resource_profile == "io_intensive":
+            latency_multiplier = 1.1
+        elif resource_profile == "latency_sensitive":
+            latency_multiplier = 0.8
+
+        # The actual expected processing time
+        effective_processing_ms = base_processing_ms * latency_multiplier
 
         config = {}
 
         if role == 'service' or role == 'gateway':
             # Horizontal Scaling (Pods)
-            cpu_per_req_ms = res_prof.cpu_ms_per_request
+            cpu_per_req_ms = res_prof.cpu_ms_per_request * latency_multiplier  # CPU scales with time
             # Cap single pod capacity to force horizontal scaling
-            max_rps_per_pod = min(1000.0 / cpu_per_req_ms, 200.0)
+            max_rps_per_pod = min(1000.0 / max(0.1, cpu_per_req_ms), 500.0)
 
             raw_replicas = rps / max_rps_per_pod
             tuned_replicas = math.ceil(raw_replicas * headroom)
-            config['desired_replicas'] = max(1, tuned_replicas)
+
+            # Ensure at least 2 replicas for high load services to reduce variance risk
+            min_replicas = 2 if rps > 50 else 1
+            config['desired_replicas'] = max(min_replicas, tuned_replicas)
 
             # Vertical Tuning (Threads per Pod)
             pod_rps = rps / config['desired_replicas']
-            concurrency_per_pod = math.ceil(pod_rps * (base_processing_ms / 1000.0))
+
+            # Little's Law with EFFECTIVE latency
+            # Demand = RPS * Latency
+            concurrency_per_pod = math.ceil(pod_rps * (effective_processing_ms / 1000.0))
 
             # High phi -> tight pool. Low phi -> huge pool.
-            pool_headroom = 1.0 + (2.0 * (1.0 - phi))
-            config['thread_pool_size'] = max(5, int(concurrency_per_pod * pool_headroom))
-            config['db_connection_pool_capacity'] = max(2, int(config['thread_pool_size'] * 0.5))
+            pool_headroom = 1.0 + (1.5 * (1.0 - phi))
+
+            # CRITICAL FIX: Minimum floor of 10 threads
+            # 5 threads is too fragile for SimPy scheduling variance
+            config['thread_pool_size'] = max(10, int(concurrency_per_pod * pool_headroom))
+
+            # DB Connections: Ensure we don't starve DB calls
+            config['db_connection_pool_capacity'] = max(5, int(config['thread_pool_size'] * 0.8))
 
             # Timeout Tuning (Flow-Aware)
             chain_latency = self._estimate_dependency_latency(node_id, phi)
-            total_expected_ms = base_processing_ms + chain_latency
+            # Use effective local processing time
+            total_expected_ms = effective_processing_ms + chain_latency
 
-            timeout_margin = 1.1 + (3.0 * (1.0 - phi))
+            timeout_margin = 1.2 + (3.0 * (1.0 - phi))  # Increased base margin
             timeout_sec = (total_expected_ms * timeout_margin) / 1000.0
 
             config['timeouts'] = {
-                'database_call_seconds': max(0.1, timeout_sec),
-                'service_call_seconds': max(0.1, timeout_sec),
-                'external_api_seconds': max(0.5, timeout_sec * 2)
+                'database_call_seconds': max(0.2, timeout_sec),
+                'service_call_seconds': max(0.2, timeout_sec),
+                'external_api_seconds': max(1.0, timeout_sec * 2)
             }
 
         elif role == 'database':
             # DB Connections
             system_concurrency = rps * (base_processing_ms / 1000.0)
-            config['connection_pool_capacity'] = max(20, int(system_concurrency * headroom * 2))
+            config['connection_pool_capacity'] = max(50, int(system_concurrency * headroom * 2))
 
             # CPU Cores
             queries_per_core = 1000.0 / res_prof.cpu_ms_per_request

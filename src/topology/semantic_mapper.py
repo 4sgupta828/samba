@@ -8,8 +8,19 @@ with deterministic request flows and resource profiles.
 import os
 import json
 import networkx as nx
+import signal
 from typing import Dict, Optional
 from anthropic import Anthropic
+
+
+class TimeoutError(Exception):
+    """Raised when Claude API call times out"""
+    pass
+
+
+def timeout_handler(signum, frame):
+    """Signal handler for timeout"""
+    raise TimeoutError("Claude API call timed out")
 
 
 class SemanticMapper:
@@ -56,16 +67,24 @@ class SemanticMapper:
             # Convert graph to LLM-friendly format
             graph_repr = self._serialize_graph_for_llm(topology_graph)
 
-            # Call Claude API
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=self._get_system_prompt(),
-                messages=[{
-                    "role": "user",
-                    "content": f"Analyze this topology and assign domain-specific semantics:\n\n{json.dumps(graph_repr, indent=2)}"
-                }]
-            )
+            # Set up timeout (30 seconds for API call)
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(30)
+
+            try:
+                # Call Claude API
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=4096,
+                    system=self._get_system_prompt(),
+                    messages=[{
+                        "role": "user",
+                        "content": f"Analyze this topology and assign domain-specific semantics:\n\n{json.dumps(graph_repr, indent=2)}"
+                    }]
+                )
+            finally:
+                # Cancel the alarm
+                signal.alarm(0)
 
             # Parse response
             response_text = response.content[0].text
@@ -107,6 +126,9 @@ class SemanticMapper:
 
             return semantic_overlay
 
+        except TimeoutError as e:
+            print(f"Warning: Claude API call timed out after 30 seconds (likely out of API credits), falling back to heuristic overlay")
+            return self._generate_heuristic_overlay(topology_graph)
         except Exception as e:
             print(f"Warning: Claude API call failed ({e}), falling back to heuristic overlay")
             return self._generate_heuristic_overlay(topology_graph)

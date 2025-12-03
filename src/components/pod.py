@@ -44,6 +44,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # Load centralized configuration
         config = get_simulation_config().compute
 
+        # Initialize iac_config for capacity planner overrides
+        self.iac_config = {}
+
         # Internal state for cumulative effects
         self.memory_capacity_mb = config.memory_capacity_mb
         self.restarts = 0
