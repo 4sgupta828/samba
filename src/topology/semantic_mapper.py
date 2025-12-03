@@ -92,6 +92,19 @@ class SemanticMapper:
             # Validate the overlay structure
             self._validate_overlay(semantic_overlay, topology_graph)
 
+            # Ensure description exists (add fallback if Claude didn't provide it)
+            if 'description' not in semantic_overlay or not semantic_overlay['description']:
+                domain = semantic_overlay.get('domain', 'unknown')
+                descriptions = {
+                    "video_streaming": "This is a video streaming platform architecture. User requests enter through the API Gateway, which routes traffic to video processing services. The system handles video upload, transcoding, storage, and delivery. Key bottlenecks include transcoding services (CPU-intensive) and content delivery bandwidth. Common fault modes include transcoding service overload, storage system failures, and CDN connectivity issues.",
+                    "e-commerce": "This is an e-commerce platform architecture. User requests flow through the gateway to various services handling product catalog, inventory, shopping cart, and payment processing. The system integrates with external payment providers and shipping APIs. Key bottlenecks include database connections during high traffic and external service latencies. Common fault modes include inventory service failures, payment gateway timeouts, and database connection exhaustion.",
+                    "supply_chain": "This is a supply chain management system. Requests enter through the gateway and coordinate multiple services for order management, warehouse operations, shipping, and supplier integration. The system relies heavily on external APIs for logistics and supplier data. Key bottlenecks include external API rate limits and data synchronization delays. Common fault modes include third-party API failures, message queue backlogs, and data consistency issues.",
+                    "iot_fleet": "This is an IoT fleet management system. Data flows from IoT devices through message queues to processing services that handle device telemetry, analytics, and command distribution. The system processes high volumes of sensor data in near real-time. Key bottlenecks include message queue throughput and time-series database write performance. Common fault modes include queue consumer lag, database write saturation, and device connectivity issues.",
+                    "fintech": "This is a financial technology platform. User transactions flow through the gateway to latency-sensitive services handling payments, trading, account management, and compliance. The system requires high consistency and low latency. Key bottlenecks include database transaction throughput and external banking API latencies. Common fault modes include payment processing failures, database deadlocks, and regulatory compliance service errors."
+                }
+                semantic_overlay['description'] = descriptions.get(domain, "This is a distributed microservices architecture. Requests flow through the system from frontend services to backend data stores. Key bottlenecks may include service dependencies and database connections. Common fault modes include service failures, network issues, and resource exhaustion.")
+                print(f"Warning: Claude did not provide description, using fallback for domain '{domain}'")
+
             return semantic_overlay
 
         except Exception as e:
@@ -150,6 +163,12 @@ Your task:
    - "io_intensive": High I/O usage (databases, caches, log aggregation)
    - "latency_sensitive": Time-critical services (payment processing, trading)
 5. Define deterministic request flows showing which services call which for each request type
+6. Write a comprehensive semantic description explaining:
+   - How the system works end-to-end (from user request to response)
+   - Top-down architecture flow (what calls what and why)
+   - Where the system is typically applied (use cases)
+   - Potential bottlenecks in the architecture
+   - Common fault modes and failure scenarios
 
 Guidelines for domain selection - VARY YOUR CHOICES:
 - Linear chains suggest media pipelines (video_streaming)
@@ -172,6 +191,7 @@ IMPORTANT CONSTRAINTS:
 Output ONLY valid JSON in this EXACT format:
 {
   "domain": "video_streaming",
+  "description": "Multi-paragraph description of how the system works end-to-end, its architecture, use cases, potential bottlenecks, and fault modes. Be specific and detailed.",
   "services": {
     "node_id": {
       "name": "ServiceName",
@@ -198,6 +218,7 @@ Key rules:
 - request_types MUST be HTTP methods (GET, POST, PUT, DELETE) not domain-specific names
 - Frontend nodes (is_frontend=true) should be entry points in request_flows
 - Each request flow should form a valid path through the topology
+- The "description" field should be 3-5 paragraphs covering architecture, flow, use cases, bottlenecks, and fault modes
 """
 
     def _generate_heuristic_overlay(self, graph: nx.DiGraph) -> Dict:
@@ -318,8 +339,20 @@ Key rules:
 
             request_flows[request_type] = flow
 
+        # Generate a basic description based on the domain
+        descriptions = {
+            "video_streaming": "This is a video streaming platform architecture. User requests enter through the API Gateway, which routes traffic to video processing services. The system handles video upload, transcoding, storage, and delivery. Key bottlenecks include transcoding services (CPU-intensive) and content delivery bandwidth. Common fault modes include transcoding service overload, storage system failures, and CDN connectivity issues.",
+            "e-commerce": "This is an e-commerce platform architecture. User requests flow through the gateway to various services handling product catalog, inventory, shopping cart, and payment processing. The system integrates with external payment providers and shipping APIs. Key bottlenecks include database connections during high traffic and external service latencies. Common fault modes include inventory service failures, payment gateway timeouts, and database connection exhaustion.",
+            "supply_chain": "This is a supply chain management system. Requests enter through the gateway and coordinate multiple services for order management, warehouse operations, shipping, and supplier integration. The system relies heavily on external APIs for logistics and supplier data. Key bottlenecks include external API rate limits and data synchronization delays. Common fault modes include third-party API failures, message queue backlogs, and data consistency issues.",
+            "iot_fleet": "This is an IoT fleet management system. Data flows from IoT devices through message queues to processing services that handle device telemetry, analytics, and command distribution. The system processes high volumes of sensor data in near real-time. Key bottlenecks include message queue throughput and time-series database write performance. Common fault modes include queue consumer lag, database write saturation, and device connectivity issues.",
+            "fintech": "This is a financial technology platform. User transactions flow through the gateway to latency-sensitive services handling payments, trading, account management, and compliance. The system requires high consistency and low latency. Key bottlenecks include database transaction throughput and external banking API latencies. Common fault modes include payment processing failures, database deadlocks, and regulatory compliance service errors."
+        }
+
+        description = descriptions.get(domain, "This is a distributed microservices architecture. Requests flow through the system from frontend services to backend data stores. Key bottlenecks may include service dependencies and database connections. Common fault modes include service failures, network issues, and resource exhaustion.")
+
         return {
             "domain": domain,
+            "description": description,
             "services": services,
             "request_types": request_types,
             "request_flows": request_flows

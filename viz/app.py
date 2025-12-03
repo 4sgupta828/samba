@@ -448,7 +448,8 @@ app.layout = dbc.Container([
                             dbc.Button("3 Hops", id='zoom-depth-3', size="sm", outline=True, color="info"),
                             dbc.Button("4+ Hops", id='zoom-depth-4', size="sm", outline=True, color="info"),
                         ], className="mt-2")
-                    ], style={'display': 'none'})
+                    ], style={'display': 'none'}),
+                    html.Div(id='semantic-description', className="mt-3")
                 ], style={'padding': '10px'})
             ], className="shadow-sm")
         ], width=12)
@@ -955,6 +956,7 @@ def update_zoom_button_states(zoom_state):
 @app.callback(
     Output('topology-graph', 'figure'),
     Output('topology-info', 'children'),
+    Output('semantic-description', 'children'),
     Input('episode-data-store', 'data'),
     Input('topology-filters', 'value'),
     Input('use-filtered-topology', 'value'),
@@ -965,7 +967,7 @@ def update_zoom_button_states(zoom_state):
 def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layout_type, zoom_state):
     """Update topology graph when episode is loaded or filters change."""
     if not episode_id or episode_id not in current_episode_data:
-        return {}, ""
+        return {}, "", ""
 
     episode_data = current_episode_data[episode_id]
 
@@ -1047,13 +1049,85 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
                 info_text += f", {entry_point_count} gateway(s) kept visible"
             info_text += ")"
 
+    # Build semantic description section
+    semantic_map = episode_data.get('semantic_map')
+    if semantic_map and 'description' in semantic_map:
+        domain = semantic_map.get('domain', 'Unknown')
+        description = semantic_map.get('description', '')
+
+        # Split description into paragraphs for better formatting
+        paragraphs = [p.strip() for p in description.split('.') if p.strip()]
+
+        # Group sentences into logical paragraphs (roughly 2-3 sentences each)
+        formatted_paragraphs = []
+        current_para = []
+        for i, sentence in enumerate(paragraphs):
+            current_para.append(sentence + '.')
+            # Create paragraph every 2-3 sentences or if we detect topic change keywords
+            if (len(current_para) >= 2 and any(keyword in sentence.lower() for keyword in
+                ['bottleneck', 'fault mode', 'common', 'key', 'failure'])) or len(current_para) >= 3:
+                formatted_paragraphs.append(' '.join(current_para))
+                current_para = []
+
+        # Add any remaining sentences
+        if current_para:
+            formatted_paragraphs.append(' '.join(current_para))
+
+        semantic_content = dbc.Card([
+            dbc.CardHeader([
+                html.Div([
+                    html.H6([
+                        "📚 Architecture Overview - ",
+                        html.Span(domain.replace('_', ' ').title(), className="text-info")
+                    ], className="mb-0 d-inline-block"),
+                    dbc.Button(
+                        "Show Details",
+                        id="semantic-description-toggle",
+                        size="sm",
+                        color="info",
+                        outline=True,
+                        className="float-end"
+                    )
+                ], className="clearfix")
+            ]),
+            dbc.Collapse([
+                dbc.CardBody([
+                    html.Div([
+                        html.P(para, className="mb-3", style={
+                            'lineHeight': '1.8',
+                            'fontSize': '0.95rem',
+                            'textAlign': 'justify'
+                        }) for para in formatted_paragraphs
+                    ])
+                ], style={'backgroundColor': '#f8f9fa'})
+            ], id="semantic-description-collapse", is_open=False)
+        ], className="border-secondary mt-3")
+    else:
+        semantic_content = html.Div("")
+
     return create_topology_chart(
         graph,
         episode_data['label'],
         visible_types=visible_types,
         hidden_nodes=hidden_nodes,
         layout_type=layout_type or 'hierarchical'
-    ), info_text
+    ), info_text, semantic_content
+
+
+@app.callback(
+    Output('semantic-description-collapse', 'is_open'),
+    Output('semantic-description-toggle', 'children'),
+    Input('semantic-description-toggle', 'n_clicks'),
+    State('semantic-description-collapse', 'is_open'),
+    prevent_initial_call=True
+)
+def toggle_semantic_description(n_clicks, is_open):
+    """Toggle semantic description collapse."""
+    if n_clicks:
+        new_state = not is_open
+        button_text = "Hide Details" if new_state else "Show Details"
+        return new_state, button_text
+    return is_open, "Show Details" if not is_open else "Hide Details"
 
 
 @app.callback(
