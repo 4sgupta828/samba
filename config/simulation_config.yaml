@@ -263,14 +263,17 @@ defaults:
 # =============================================================================
 compute:
   # Phase 3.1: Thread pool configuration
-  thread_pool_size: 100  # Thread pool size for request processing (increased to handle fault scenarios)
+  # FIX: Reduced from 100 to 15 to create resource scarcity
+  # With 15 threads, a 200ms latency spike @ 50 RPS fills the pool instantly
+  thread_pool_size: 15  # Thread pool size for request processing
 
   # Resource capacities
   resources:
     memory_base_mb: 200.0  # Base memory usage when idle
     memory_capacity_mb: 512.0  # Total memory capacity
     cpu_capacity_cores: 1.0  # Total CPU cores (overridden by IaC if specified)
-    db_connection_pool_capacity: 5  # Max concurrent DB connections (forces natural exhaustion)
+    # FIX: Reduced from 5 to 10 to force connection queuing during DB slowdowns
+    db_connection_pool_capacity: 10  # Max concurrent DB connections
 
   # Client-side timeouts for dependencies (balanced for normal ops + fault detection)
   timeouts:

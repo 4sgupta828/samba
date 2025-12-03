@@ -364,20 +364,33 @@ def estimate_component_capacity(
     """
     latency_profile, resource_profile = get_component_profile(component_role)
 
-    # === Constraint 1: Processing Time Limit ===
-    # Service rate = 1 / processing_time (original logic)
-    processing_time_sec = latency_profile.p50 / 1000.0
-    processing_limited_rps = (1.0 / processing_time_sec if processing_time_sec > 0 else float('inf')) * num_replicas
-
-    # === Constraint 2: Thread Pool Limit ===
-    # Using Little's Law: Capacity = Concurrency / Latency
+    # === Constraint 1: Thread Pool Limit (Logical Concurrency) ===
+    # Using Little's Law: Throughput = Concurrency / Latency
     # If we have N threads and latency L, max throughput = N / L
+    processing_time_sec = latency_profile.p50 / 1000.0
+
     thread_pool_limited_rps = None
     if thread_pool_size is not None:
         # Total threads across all replicas
         total_threads = thread_pool_size * num_replicas
         # Max RPS = threads / latency
         thread_pool_limited_rps = total_threads / processing_time_sec if processing_time_sec > 0 else float('inf')
+
+    # === Constraint 2: CPU Limit (Physical Concurrency) ===
+    # How many requests can we process given CPU time per request?
+    # Max RPS = (Total CPU Cores) / (CPU seconds per request)
+    cpu_cores_per_node = 4.0  # Standard from topology generation
+    cpu_time_per_req_sec = resource_profile.cpu_ms_per_request / 1000.0
+
+    cpu_limited_rps = None
+    if cpu_time_per_req_sec > 0:
+        cpu_limited_rps = (cpu_cores_per_node * num_replicas) / cpu_time_per_req_sec
+    else:
+        cpu_limited_rps = float('inf')
+
+    # === Constraint 3: Processing Time Limit (Legacy) ===
+    # Service rate = 1 / processing_time (kept for backward compatibility)
+    processing_limited_rps = (1.0 / processing_time_sec if processing_time_sec > 0 else float('inf')) * num_replicas
 
     # === Constraint 3: DB Connection Pool Limit ===
     # Use ACTUAL DB latency from component profiles, not a hardcoded fraction
@@ -420,6 +433,9 @@ def estimate_component_capacity(
     if thread_pool_limited_rps is not None:
         constraints['thread_pool'] = thread_pool_limited_rps
 
+    if cpu_limited_rps is not None:
+        constraints['cpu'] = cpu_limited_rps
+
     if db_pool_limited_rps is not None:
         constraints['db_connection_pool'] = db_pool_limited_rps
 
@@ -437,6 +453,7 @@ def estimate_component_capacity(
         'processing_time_p50': processing_time_sec,
         'limiting_factor': limiting_factor,
         'thread_pool_limited_rps': thread_pool_limited_rps,
+        'cpu_limited_rps': cpu_limited_rps,
         'db_pool_limited_rps': db_pool_limited_rps,
         'processing_limited_rps': processing_limited_rps,
     }

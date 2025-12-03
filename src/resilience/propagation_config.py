@@ -155,10 +155,12 @@ AGGRESSIVE_PROPAGATION = PropagationConfig(
 )
 
 # STANDARD: Balanced propagation (default for most scenarios)
+# FIX: Increased error_propagation_probability to 0.9 for stronger fault propagation
+# FIX: Increased thread_pool_exhaustion_error_rate to 1.0 (must reject when pool full)
 STANDARD_PROPAGATION = PropagationConfig(
-    error_propagation_probability=0.5,  # 50% of dep failures cause request failure
+    error_propagation_probability=0.9,  # 90% of dep failures cause request failure
     timeout_causes_error=True,
-    thread_pool_exhaustion_error_rate=0.2,  # +20% error rate when exhausted
+    thread_pool_exhaustion_error_rate=1.0,  # 100% error rate when thread pool exhausted
 )
 
 # RESILIENT: Services are highly resilient (good for testing GNN on hard cases)

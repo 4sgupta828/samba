@@ -320,6 +320,170 @@ class TrainingFailureInjector:
             if self.tracker.active_incident:
                 self.tracker.end_incident(self.env.now)
 
+    def revert_gradual_failure(
+        self,
+        target_id: str,
+        failure_mode: str,
+        params: Dict[str, Any],
+        duration: float = 10.0
+    ):
+        """
+        Reverts a gradual failure GRADUALLY over specified duration.
+
+        This enables realistic A-B-A timeline: Healthy -> Fault -> Recovery
+
+        Args:
+            target_id: Component ID that had the failure
+            failure_mode: Type of failure to revert
+            params: Original failure parameters (used to compute inverse)
+            duration: How long the recovery takes (gradual revert)
+
+        Note: Uses apply_infrastructure_change with negative deltas for gradual recovery.
+        """
+        if target_id not in self.component_registry:
+            print(f"ERROR: Target component '{target_id}' not found for revert")
+            return
+
+        target = self.component_registry[target_id]
+
+        # Log the revert event
+        print(f"[{self.env.now:.2f}s] <<< REVERTING GRADUAL FAILURE: '{failure_mode}' on {target_id} over {duration:.1f}s")
+
+        # Apply GRADUAL revert using infrastructure change mechanism
+        # Use negative deltas to reverse the fault
+        if failure_mode == 'inject_latency':
+            # Gradually remove injected latency
+            target.apply_infrastructure_change(
+                parameter='latency_ms',
+                delta=-params.get('latency_ms', 1000),  # Negative delta removes latency
+                duration=duration,
+                progression='linear',
+                start_time=self.env.now
+            )
+            print(f"   Gradual latency removal scheduled")
+
+        elif failure_mode == 'inject_errors':
+            # Gradually remove error rate
+            target.apply_infrastructure_change(
+                parameter='error_rate',
+                delta=-params.get('error_rate', 0.5),  # Negative delta removes errors
+                duration=duration,
+                progression='linear',
+                start_time=self.env.now
+            )
+            print(f"   Gradual error rate reduction scheduled")
+
+        elif failure_mode == 'cpu_saturation':
+            # Remove CPU floor constraint
+            # Note: This is inherently instant (can't gradually remove a constraint)
+            # But we call it anyway for consistency
+            if hasattr(target, 'dynamics') and target.dynamics:
+                target.dynamics.fault_cpu_floor_percent = None
+                print(f"   CPU floor removed (instant - constraint removal)")
+
+        elif failure_mode == 'memory_leak':
+            # Stop the leak - prevents further memory accumulation
+            # This is instant (toggles the leak on/off)
+            # Already-leaked memory remains until pod restart (realistic)
+            if hasattr(target, 'dynamics') and target.dynamics:
+                leak_rate = params.get('leak_mb_per_request', 0.5)
+                # Reduce memory per request back to normal
+                target.dynamics.config.memory_per_request_mb = max(
+                    0.1,
+                    target.dynamics.config.memory_per_request_mb - leak_rate
+                )
+                print(f"   Memory leak stopped (leaked memory remains until restart)")
+
+        elif failure_mode == 'slow_queries':
+            # Remove query latency floor
+            # Note: This is inherently instant (can't gradually remove a constraint)
+            if hasattr(target, 'dynamics') and target.dynamics:
+                target.dynamics.fault_latency_floor_ms = None
+                print(f"   Query latency floor removed (instant - constraint removal)")
+
+        elif failure_mode == 'cache_failure':
+            # Cache failure: GRADUALLY restore cache health
+            # Use the same cache_failure function with decreasing progress (1.0 -> 0.0)
+            from src.failures.modes import cache_failure
+
+            if hasattr(target, 'forced_error_rate'):
+                # Gradually restore by calling cache_failure with decreasing progress
+                num_updates = 20  # 20 updates over the duration
+                update_interval = duration / num_updates
+
+                # Generator to gradually restore cache
+                def gradual_cache_restore():
+                    for i in range(num_updates + 1):
+                        # Progress from 1.0 (full fault) to 0.0 (healthy)
+                        progress = 1.0 - (i / num_updates)
+                        params_with_progress = params.copy()
+                        params_with_progress['progress'] = progress
+                        cache_failure(target, params_with_progress)
+
+                        if i < num_updates:
+                            yield self.env.timeout(update_interval)
+
+                # Return the generator so it can be yielded from in generate_dataset.py
+                print(f"   Gradual cache restoration scheduled ({num_updates} steps over {duration:.1f}s)")
+                return gradual_cache_restore()
+            else:
+                print(f"   Warning: Target doesn't support cache_failure revert")
+
+        elif failure_mode == 'memory_pressure':
+            # Reduce memory pressure (baseline memory increase)
+            # This is instant in current implementation
+            if hasattr(target, 'dynamics') and target.dynamics:
+                memory_increase_mb = params.get("memory_increase_mb", 300)
+                target.dynamics.config.memory_base = max(
+                    10.0,
+                    target.dynamics.config.memory_base - memory_increase_mb
+                )
+                print(f"   Memory pressure reduced (instant)")
+
+        elif failure_mode == 'connection_exhaustion':
+            # Restore connection pool capacity
+            # This is instant in current implementation
+            if hasattr(target, 'connection_pool_exhaustion_rate'):
+                target.connection_pool_exhaustion_rate = 0.0
+                print(f"   Connection pool capacity restored (instant)")
+
+        elif failure_mode == 'queue_consumer_slowdown':
+            # Gradually remove consumer slowdown latency
+            target.apply_infrastructure_change(
+                parameter='latency_ms',
+                delta=-params.get('latency_ms', 500),  # Negative delta removes slowdown
+                duration=duration,
+                progression='linear',
+                start_time=self.env.now
+            )
+            print(f"   Gradual consumer speedup scheduled")
+
+        elif failure_mode == 'enable_background_job':
+            # Stop background job
+            # This is instant (can't gradually stop a background process)
+            if hasattr(target, 'background_job_enabled'):
+                target.background_job_enabled = False
+                print(f"   Background job stopped (instant)")
+
+        elif failure_mode == 'start_db_background_job':
+            # Stop DB background job
+            # This is instant (can't gradually stop a background process)
+            if hasattr(target, 'background_job_enabled'):
+                target.background_job_enabled = False
+                print(f"   DB background job stopped (instant)")
+
+        elif failure_mode == 'inject_db_wear':
+            # Reset DB wear
+            # This is instant (wear factor is a single value)
+            if hasattr(target, 'wear_factor'):
+                target.wear_factor = 0.0
+                print(f"   DB wear reset to 0 (instant)")
+
+        else:
+            print(f"WARNING: Revert logic not implemented for '{failure_mode}'")
+
+        print(f"   Recovery will complete at t={self.env.now + duration:.2f}s")
+
     def _record_failure_event(
         self,
         event_id: str,

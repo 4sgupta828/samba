@@ -445,20 +445,26 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     if verbose and target_score > 0:
         print(f"  Selected target {target_id} (connectivity score: {target_score})")
 
-    # Calculate gradual failure timeline:
-    # - Start at 20% through episode (earlier than before to see healthy baseline)
-    # - Apply gradually over 40% of episode duration
-    # - Reach full effect at 60%, remains until end
-    # FIXED: Added minimum 30s warmup to ensure system stabilizes before baseline measurement
-    start_time = max(30, int(cfg.duration * 0.2))
-    ramp_duration = int(cfg.duration * 0.4)
+    # Calculate A-B-A timeline (Healthy -> Fault -> Recovery):
+    # - Warmup: 0 to start_time (healthy baseline)
+    # - Fault Ramp: start_time to start_time + ramp_duration (degradation)
+    # - Fault Sustain: start_time + ramp_duration to recovery_start (full failure)
+    # - Recovery: recovery_start to recovery_start + ramp_duration (healing)
+    # - Post-Recovery: recovery_start + ramp_duration to end (recovered baseline)
+
+    fault_start_time = int(cfg.duration * 0.20)  # Start at 20%
+    fault_ramp_duration = int(cfg.duration * 0.10)  # Fast ramp (10%)
+    fault_sustain_duration = int(cfg.duration * 0.40)  # Sustain fault for 40%
+    recovery_start_time = fault_start_time + fault_ramp_duration + fault_sustain_duration
 
     if verbose:
-        print(f"\n[Fault Injection - GRADUAL]")
+        print(f"\n[Fault Injection - A-B-A TIMELINE]")
         print(f"  Target: {target_id}")
-        print(f"  Start: {start_time}s (20% through episode)")
-        print(f"  Ramp: {ramp_duration}s (applies gradually)")
-        print(f"  Full effect at: {start_time + ramp_duration}s (60% through)")
+        print(f"  Phase A (Healthy): 0s - {fault_start_time}s")
+        print(f"  Phase B Ramp (Degradation): {fault_start_time}s - {fault_start_time + fault_ramp_duration}s")
+        print(f"  Phase B Sustain (Full Fault): {fault_start_time + fault_ramp_duration}s - {recovery_start_time}s")
+        print(f"  Phase A Recovery: {recovery_start_time}s - {recovery_start_time + fault_ramp_duration}s")
+        print(f"  Phase A Post-Recovery: {recovery_start_time + fault_ramp_duration}s - {cfg.duration}s")
 
     # Initialize new training-focused injector
     injector = TrainingFailureInjector(
@@ -471,18 +477,39 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     # Configure failure parameters based on type
     params = cfg.get_failure_params()
 
-    # Schedule GRADUAL fault injection
+    # Schedule GRADUAL fault injection (Phase A -> B)
     injector.inject_gradual_failure(
         target_id=target_id,
         failure_mode=cfg.fault_type,
-        start_time=start_time,
-        duration=ramp_duration,
+        start_time=fault_start_time,
+        duration=fault_ramp_duration,
         params=params,
         progression=cfg.progression,
         episode_id=f'ep{episode_id}_fault'
     )
 
-    # 8. Save Ground Truth Label (WITH PROGRESSION INFO)
+    # Schedule GRADUAL fault revert (Phase B -> A Recovery)
+    def schedule_revert():
+        """SimPy process to schedule the recovery phase."""
+        # Wait until recovery should start
+        yield sim.env.timeout(recovery_start_time)
+
+        # Apply gradual revert (which may or may not be a generator itself)
+        revert_result = injector.revert_gradual_failure(
+            target_id=target_id,
+            failure_mode=cfg.fault_type,
+            params=params,
+            duration=fault_ramp_duration  # Symmetric recovery duration
+        )
+
+        # If revert_gradual_failure returned a generator (e.g., for cache_failure), yield from it
+        if revert_result is not None:
+            yield from revert_result
+
+    # Start the revert scheduling process
+    sim.env.process(schedule_revert())
+
+    # 8. Save Ground Truth Label (WITH A-B-A TIMELINE)
     label = {
         'episode': episode_id,
         'level': level,
@@ -490,17 +517,29 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         'root_cause_node': target_id,
         'root_cause_role': cfg.fault_target_role,
         'fault_type': cfg.fault_type,
-        'fault_start_time': start_time,
-        'fault_ramp_duration': ramp_duration,
-        'fault_full_effect_time': start_time + ramp_duration,
-        'fault_total_duration': cfg.duration - start_time,
+        'fault_start_time': fault_start_time,
+        'fault_ramp_duration': fault_ramp_duration,
+        'fault_full_effect_time': fault_start_time + fault_ramp_duration,
+        'recovery_start_time': recovery_start_time,
+        'recovery_complete_time': recovery_start_time + fault_ramp_duration,
+        'fault_total_duration': cfg.duration - fault_start_time,
+        'timeline': {
+            'healthy_start': 0,
+            'fault_injection_start': fault_start_time,
+            'fault_full_effect': fault_start_time + fault_ramp_duration,
+            'recovery_start': recovery_start_time,
+            'recovery_complete': recovery_start_time + fault_ramp_duration,
+            'episode_end': cfg.duration
+        },
         'progression': {
             'type': cfg.progression,
-            'description': f'{cfg.progression} progression over {ramp_duration}s',
-            'timeline': {
-                'healthy_baseline': f'0s - {start_time}s',
-                'degradation_ramp': f'{start_time}s - {start_time + ramp_duration}s',
-                'full_failure': f'{start_time + ramp_duration}s - {cfg.duration}s'
+            'description': f'A-B-A timeline: Healthy -> Fault ({cfg.progression} over {fault_ramp_duration}s) -> Recovery ({fault_ramp_duration}s)',
+            'phases': {
+                'healthy_baseline': f'0s - {fault_start_time}s',
+                'degradation_ramp': f'{fault_start_time}s - {fault_start_time + fault_ramp_duration}s',
+                'full_failure': f'{fault_start_time + fault_ramp_duration}s - {recovery_start_time}s',
+                'recovery_ramp': f'{recovery_start_time}s - {recovery_start_time + fault_ramp_duration}s',
+                'recovered_baseline': f'{recovery_start_time + fault_ramp_duration}s - {cfg.duration}s'
             }
         },
         'fault_params': params,
@@ -622,7 +661,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             is_valid, reason, validation_details = validate_system_health(
                 metrics_file=Path(os.path.join(episode_dir, 'metrics.jsonl')),
                 topology_file=Path(topology_path),
-                fault_start_time=start_time,
+                fault_start_time=fault_start_time,
                 thresholds={
                     'max_utilization': 0.80,
                     'max_error_rate': 0.01,

@@ -286,8 +286,18 @@ class MetricsDynamicsEngine:
         else:
             contention_cpu = 0.0
 
+        # FIX: Add Memory Pressure Overhead (Thrashing/Paging)
+        # If memory > 80%, add exponential CPU penalty before OOM kill
+        memory_usage_ratio = self.memory_percent / self.config.memory_max
+        memory_pressure_cpu = 0.0
+        if memory_usage_ratio > 0.8:
+            # at 80% -> 0% CPU penalty
+            # at 95% -> ~56% CPU penalty
+            # at 100% -> ~100% CPU penalty
+            memory_pressure_cpu = 100.0 * ((memory_usage_ratio - 0.8) / 0.2) ** 2
+
         # Combine all CPU sources
-        target_cpu = target_cpu_from_load + queue_contention_cpu + contention_cpu
+        target_cpu = target_cpu_from_load + queue_contention_cpu + contention_cpu + memory_pressure_cpu
 
         # Apply CPU multiplier from deployments (e.g., buggy code using 6x CPU)
         # This is applied to the TARGET, so the dynamics naturally drive toward the new state
