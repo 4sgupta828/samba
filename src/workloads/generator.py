@@ -65,16 +65,11 @@ class WorkloadGenerator:
                     half_open_max_requests=cb_config.half_open_max_requests,
                 )
         else:
-            # Fallback: circuit breaker enabled with defaults
-            # FIXED: Relaxed thresholds to prevent false positives during healthy baseline
-            self.circuit_breaker_enabled = True
-            self.circuit_breaker = CircuitBreaker(
-                failure_threshold=0.9,          # Opens at 90% failure (was 0.7)
-                success_threshold=0.8,
-                window_size=100,                # Larger window for smoother decisions (was 50)
-                open_duration=10.0,             # Shorter duration to recover faster (was 15.0)
-                half_open_max_requests=10,
-            )
+            # Fallback: circuit breaker DISABLED for fragility-first architecture
+            # Disabling circuit breaker ensures systems operate at planned fragility level
+            # without automatic protections interfering with fault propagation
+            self.circuit_breaker_enabled = False
+            self.circuit_breaker = None
 
         # Metrics tracking
         self._setup_metrics()

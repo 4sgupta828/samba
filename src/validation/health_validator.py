@@ -269,6 +269,13 @@ def validate_workload_generator_sizing(
 
 def calculate_safe_workload(topology, target_utilization: float = 0.70, workload_config_path: str = None) -> Dict:
     """
+    DEPRECATED: This function is replaced by src.core.capacity_planner.CapacityPlanner.
+
+    The new CapacityPlanner uses semantic flow analysis and fragility-based tuning
+    for more accurate capacity planning. Use that instead.
+
+    This function is kept for backward compatibility with existing tests only.
+
     Calculate the maximum safe workload for a given topology using queueing theory
     and realistic component profiles, INCLUDING resource pool constraints.
 

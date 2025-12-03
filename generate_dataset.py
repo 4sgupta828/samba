@@ -36,7 +36,8 @@ from src.components.deployment_controller import DeploymentController
 from analysis.propagation_analyzer import analyze_episode
 from analysis.forensic_analyzer import analyze_episode as forensic_analyze_episode
 from validate_baseline_health import validate_episode_health
-from src.validation.health_validator import calculate_safe_workload, validate_system_health
+from src.validation.health_validator import validate_system_health
+from src.core.capacity_planner import CapacityPlanner
 import networkx as nx
 
 
@@ -284,71 +285,74 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"\n[Semantic Mapping]")
             print(f"  Semantic overlay DISABLED (using standard profiles and probabilistic routing)")
 
-    # 2.5. Create initial workload config (for request mix analysis)
-    # We'll create it with default RPS first, then adjust after capacity calculation
-    # NEW: Use semantic request types if available
-    # Note: create_dynamic_workload currently uses HTTP methods, but semantic_overlay has domain-specific types
-    # For now, we'll keep HTTP methods for compatibility with existing workload system
-    initial_workload_path = create_dynamic_workload(nx_graph, base_rps=80, peak_rps=200)
-
-    # 2.6. Pre-Flight Health Check: Calculate Safe Workload
+    # --- Deterministic Capacity Planning ---
     if verbose:
-        print(f"\n[Pre-Flight Health Check]")
-        print(f"  Calculating safe workload using queueing theory...")
+        print(f"\n[Capacity Planning]")
+        print(f"  Analyzing flows and tuning resources...")
 
-    safe_workload = calculate_safe_workload(nx_graph, target_utilization=0.70, workload_config_path=initial_workload_path)
+    # 1. Define Target Workload (Fixed high load to stress the system)
+    target_rps = 200
+
+    # 2. Randomize Fragility (Curriculum Learning)
+    # phi -> 1.0 means system is tuned "just in time" (metastable)
+    # phi -> 0.0 means system is over-provisioned (robust)
+    phi = random.uniform(0.6, 0.95)
 
     if verbose:
-        print(f"  Critical path latency (p99): {safe_workload['critical_path_latency_p99_ms']:.1f}ms")
-        print(f"  Critical path: {safe_workload['critical_path']}")
-        print(f"  Bottleneck: {safe_workload['bottleneck_node']} ({safe_workload['bottleneck_role']})")
-        print(f"  Bottleneck capacity: {safe_workload['bottleneck_capacity_rps']:.0f} RPS")
-        print(f"  Safe baseline RPS: {safe_workload['safe_baseline_rps']} RPS")
-        print(f"  Safe peak RPS: {safe_workload['safe_peak_rps']} RPS")
-        print(f"  Required connection pool: {safe_workload['required_connection_pool']}")
-        print(f"  Paths analyzed: {safe_workload['num_paths_analyzed']}")
+        print(f"  Fragility Index (phi): {phi:.2f}")
 
-    # 3. Create Dynamic Workload (using safe calculated values)
-    # Use the smaller of requested or safe workload
-    actual_base_rps = min(80, safe_workload['safe_baseline_rps'])
-    actual_peak_rps = min(200, safe_workload['safe_peak_rps'])
+    # 3. Run Capacity Planner
+    planner = CapacityPlanner(nx_graph, semantic_overlay)
+    tuned_configs = planner.plan_capacity(target_rps, phi)
 
-    if actual_base_rps < 80 or actual_peak_rps < 200:
-        if verbose:
-            print(f"  ⚠ WARNING: Adjusting workload to safe levels")
-            print(f"    Requested: {80}-{200} RPS")
-            print(f"    Adjusted:  {actual_base_rps}-{actual_peak_rps} RPS")
+    # 4. Apply Configs to Graph Nodes (Service level)
+    for node_id, config in tuned_configs.items():
+        nx_graph.nodes[node_id]['iac_config_overrides'] = config
 
-    # Recreate workload with adjusted RPS
-    workload_path = create_dynamic_workload(nx_graph, base_rps=actual_base_rps, peak_rps=actual_peak_rps)
+    # 5. Propagate Configs to Pods (Infrastructure level)
+    # Since Pods are separate nodes in the graph, we need to copy the parent service's
+    # thread/connection pool settings to the pod nodes so Adapter picks them up.
+    for node_id, attrs in nx_graph.nodes(data=True):
+        if attrs.get('type') == 'Pod':
+            parent_svc = attrs.get('parent_service')
+            if parent_svc and parent_svc in tuned_configs:
+                # Copy relevant resource configs to pod
+                svc_config = tuned_configs[parent_svc]
+                pod_override = {
+                    'thread_pool_size': svc_config.get('thread_pool_size'),
+                    'db_connection_pool_capacity': svc_config.get('db_connection_pool_capacity'),
+                    'timeouts': svc_config.get('timeouts')
+                }
+                nx_graph.nodes[node_id]['iac_config_overrides'] = pod_override
+
+    # 6. Create Workload Config matching the target RPS
+    workload_path = create_dynamic_workload(nx_graph, base_rps=int(target_rps*0.8), peak_rps=target_rps)
+
+    # --- End Capacity Planning ---
 
     # 4. Configure Simulation
     episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
     os.makedirs(episode_dir, exist_ok=True)
 
-    # Export safe workload analysis with rationale
-    safe_workload_export = {
-        **safe_workload,
-        'workload_decision': {
-            'requested_baseline_rps': 80,
-            'requested_peak_rps': 200,
-            'actual_baseline_rps': actual_base_rps,
-            'actual_peak_rps': actual_peak_rps,
-            'was_adjusted': actual_base_rps < 80 or actual_peak_rps < 200,
-            'adjustment_reason': f"Limited by {safe_workload.get('bottleneck_limiting_factor', 'processing_time')} constraint on {safe_workload.get('bottleneck_node', 'unknown')}" if actual_base_rps < 80 or actual_peak_rps < 200 else None
-        }
+    # Export capacity planning analysis
+    capacity_export = {
+        'target_rps': target_rps,
+        'fragility_index': phi,
+        'tuned_nodes': len(tuned_configs),
+        'configurations': tuned_configs
     }
 
-    with open(os.path.join(episode_dir, 'safe_workload_analysis.json'), 'w') as f:
-        json.dump(safe_workload_export, f, indent=2)
+    with open(os.path.join(episode_dir, 'capacity_planning.json'), 'w') as f:
+        json.dump(capacity_export, f, indent=2)
 
     if verbose:
-        print(f"  ✓ Safe workload analysis saved to: {episode_dir}/safe_workload_analysis.json")
+        print(f"  ✓ Capacity planning saved to: {episode_dir}/capacity_planning.json")
 
     sim_config = {
         'simulation': {
             'duration': cfg.duration,
-            'output_dir': episode_dir
+            'output_dir': episode_dir,
+            'warmup_period': 60.0  # Fix D: Cold Start handling
         },
         'telemetry': {
             'metric_export_interval': cfg.export_interval,

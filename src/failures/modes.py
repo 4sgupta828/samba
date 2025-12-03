@@ -163,11 +163,17 @@ def cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
         component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject CPU saturation")
         return
 
-    cpu_target = params.get("cpu_percent", 80)
+    cpu_target = params.get("cpu_percent", 95)  # Default 95%
 
-    # Set FLOOR: CPU never goes below target (CRITICAL FIX)
+    # Set FLOOR
     component.dynamics.fault_cpu_floor_percent = cpu_target
-    component._emit_log("WARN", f"CPU saturation: {cpu_target}% floor")
+
+    # FIX: Add additive latency to simulate scheduler contention
+    # When CPU is pinned at 95%, threads don't just run slower, they wait for time slices.
+    # Add 200ms processing delay penalty.
+    component.dynamics.fault_latency_additive_ms = 200.0
+
+    component._emit_log("WARN", f"CPU saturation: {cpu_target}% floor + 200ms contention lag")
 
 def revert_cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
     """Revert CPU saturation by removing CPU floor."""
@@ -176,7 +182,8 @@ def revert_cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
 
     if hasattr(component, 'dynamics') and component.dynamics is not None:
         component.dynamics.fault_cpu_floor_percent = None
-        component._emit_log("INFO", "CPU saturation reverted (floor removed)")
+        component.dynamics.fault_latency_additive_ms = 0.0  # Reset
+        component._emit_log("INFO", "CPU saturation reverted")
     else:
         component._emit_log("WARN", "Component does not have dynamics engine")
 

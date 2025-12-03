@@ -9,6 +9,7 @@ Supports two architectures:
 2. Legacy: ApiService/ComputeAgent for backward compatibility
 """
 import networkx as nx
+import simpy
 from typing import Dict, Any
 
 # Import all component types
@@ -106,7 +107,14 @@ class TopologyAdapter:
             return RequestGateway(self.env, node_id)
 
         elif component_type == 'SqlDatabase' or component_type == 'Database':
-            return SqlDatabase(self.env, node_id)
+            component = SqlDatabase(self.env, node_id)
+
+            # Apply resource overrides from CapacityPlanner
+            overrides = node_data.get('iac_config_overrides', {})
+            if overrides:
+                self._apply_overrides(component, overrides)
+
+            return component
 
         elif component_type == 'InMemoryCache' or component_type == 'Cache':
             return InMemoryCache(self.env, node_id)
@@ -133,7 +141,13 @@ class TopologyAdapter:
             supported_request_types = node_data.get('supported_request_types', ['GET', 'POST'])
 
             processing_pipeline = node_data.get('processing_pipeline')
-            desired_replicas = node_data.get('desired_replicas', 3)
+
+            # Check for overrides from CapacityPlanner
+            overrides = node_data.get('iac_config_overrides', {})
+
+            # Use overridden replicas if present, else default
+            desired_replicas = overrides.get('desired_replicas',
+                                           node_data.get('desired_replicas', 3))
 
             # Include full semantic config (with request_flows)
             full_semantic_config = {
@@ -150,6 +164,10 @@ class TopologyAdapter:
                 desired_replicas=desired_replicas,
                 semantic_config=full_semantic_config
             )
+
+            # Apply resource overrides after component creation
+            self._apply_overrides(component, overrides)
+
             return component
 
         elif component_type == 'Pod':
@@ -171,7 +189,14 @@ class TopologyAdapter:
                     semantic_profile = semantic_services.get(parent_svc_id, {})
 
             # If still no profile, it will default to "standard" in Pod.__init__
-            return Pod(self.env, node_id, parent_service=None, compute_node=None, semantic_profile=semantic_profile)
+            component = Pod(self.env, node_id, parent_service=None, compute_node=None, semantic_profile=semantic_profile)
+
+            # Apply resource overrides from CapacityPlanner
+            overrides = node_data.get('iac_config_overrides', {})
+            if overrides:
+                self._apply_overrides(component, overrides)
+
+            return component
 
         elif component_type == 'ComputeNode':
             # Physical/VM resources
@@ -304,6 +329,44 @@ class TopologyAdapter:
                 # New: Service consumes from queue (pods will handle consumption)
                 if 'queue_in' not in tgt.connections:
                     tgt.connections['queue_in'] = src
+
+    def _apply_overrides(self, component, overrides: Dict[str, Any]):
+        """
+        Apply capacity planning overrides to a component.
+
+        Args:
+            component: Component instance to modify
+            overrides: Dictionary of override parameters
+        """
+        if not overrides:
+            return
+
+        # Apply thread pool size
+        if 'thread_pool_size' in overrides and hasattr(component, 'thread_pool'):
+            # Re-create resource with new capacity
+            component.thread_pool_size = overrides['thread_pool_size']
+            component.thread_pool = simpy.Resource(component.env, capacity=component.thread_pool_size)
+
+        # Apply DB pool size
+        if 'db_connection_pool_capacity' in overrides and hasattr(component, 'db_connection_pool'):
+            capacity = overrides['db_connection_pool_capacity']
+            component.db_connection_pool = simpy.Resource(component.env, capacity=capacity)
+
+        # Apply Timeouts (update the component's config object)
+        if 'timeouts' in overrides and hasattr(component, 'iac_config'):
+            if not component.iac_config:
+                component.iac_config = {}
+            component.iac_config['timeouts'] = overrides['timeouts']
+
+        # Apply CPU Cores (for Database)
+        if 'cpu_cores' in overrides and hasattr(component, 'cpu_resource'):
+            capacity = overrides['cpu_cores']
+            component.cpu_resource = simpy.PriorityResource(component.env, capacity=capacity)
+
+        # Apply connection pool capacity (for Database)
+        if 'connection_pool_capacity' in overrides and hasattr(component, 'connection_pool'):
+            capacity = overrides['connection_pool_capacity']
+            component.connection_pool = simpy.Resource(component.env, capacity=capacity)
 
 
 def print_topology_summary(G: nx.DiGraph):

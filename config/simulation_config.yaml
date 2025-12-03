@@ -193,8 +193,9 @@ workload_generator:
   max_queue_size: 100
 
   # Circuit breaker configuration (fail-fast pattern)
+  # DISABLED for fragility-first architecture to allow fault propagation
   circuit_breaker:
-    enabled: true  # Enable circuit breaker pattern
+    enabled: false  # Disabled to ensure systems operate at planned fragility level
 
     # Open circuit when failure rate exceeds this threshold (0.0-1.0)
     # Real-world: 50-70% is common (Hystrix default: 50%, but we use 70% to tolerate rolling deployments)
