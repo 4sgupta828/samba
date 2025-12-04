@@ -26,16 +26,28 @@ class CapacityPlanner:
 
         tuned_configs = {}
 
+        # PASS 1: Tune Services & Gateways (The Clients) first
+        # We need their thread/connection pool sizes finalized before we can size the DBs
+        client_roles = ['service', 'gateway']
         for node_id, metrics in node_metrics.items():
             if node_id == 'workload': continue
             if node_id not in self.graph.nodes: continue
 
-            node_data = self.graph.nodes[node_id]
-            role = node_data.get('role', 'service')
+            role = self.graph.nodes[node_id].get('role', 'service')
+            if role in client_roles:
+                tuned_configs[node_id] = self._tune_node(node_id, role, metrics, phi, tuned_configs)
 
-            # Tune the node based on its specific load
-            config = self._tune_node(node_id, role, metrics, phi)
-            tuned_configs[node_id] = config
+        # PASS 2: Tune Infrastructure (Databases, Caches, Queues)
+        # Now we can accurately sum up the upstream client demand
+        infra_roles = ['database', 'cache', 'queue']
+        for node_id, metrics in node_metrics.items():
+            if node_id == 'workload': continue
+            if node_id not in self.graph.nodes: continue
+
+            role = self.graph.nodes[node_id].get('role', 'service')
+            if role in infra_roles:
+                # Pass the already-computed tuned_configs so DB can look up its clients
+                tuned_configs[node_id] = self._tune_node(node_id, role, metrics, phi, tuned_configs)
 
         return tuned_configs
 
@@ -165,74 +177,76 @@ class CapacityPlanner:
 
         return total_dep_latency
 
-    def _tune_node(self, node_id: str, role: str, metrics: Dict, phi: float) -> Dict[str, Any]:
+    def _tune_node(self, node_id: str, role: str, metrics: Dict, phi: float, existing_configs: Dict[str, Any]) -> Dict[str, Any]:
         """Calculates resource parameters."""
         rps = metrics['rps']
         if rps <= 0: rps = 0.1
 
-        # Fix B: Poisson Buffer - Increase minimum headroom
-        headroom = 1.25 + (2.75 * (1.0 - phi)) # Maps phi 0->4.0x, phi 1->1.25x
+        # Poisson Buffer
+        headroom = 1.15 + (2.85 * (1.0 - phi))
 
         latency_prof, res_prof = get_component_profile(role)
         base_processing_ms = latency_prof.p50
 
-        # --- CRITICAL FIX: Apply Semantic Profile Multipliers ---
-        # We must match the logic in src/components/pod.py
+        # 1. Determine Semantic Profile & Multiplier
         resource_profile = "standard"
         if self.semantic_map and 'services' in self.semantic_map:
             svc_data = self.semantic_map['services'].get(node_id, {})
             resource_profile = svc_data.get('profile', 'standard')
 
-        # Apply multipliers used in Pod runtime
         latency_multiplier = 1.0
-        if resource_profile == "cpu_intensive":
-            latency_multiplier = 2.5
-        elif resource_profile == "io_intensive":
-            latency_multiplier = 1.1
-        elif resource_profile == "latency_sensitive":
-            latency_multiplier = 0.8
+        if resource_profile == "cpu_intensive": latency_multiplier = 2.5
+        elif resource_profile == "io_intensive": latency_multiplier = 1.1
+        elif resource_profile == "latency_sensitive": latency_multiplier = 0.8
 
-        # The actual expected processing time
+        # Effective local processing time
         effective_processing_ms = base_processing_ms * latency_multiplier
 
         config = {}
 
         if role == 'service' or role == 'gateway':
-            # Horizontal Scaling (Pods)
-            cpu_per_req_ms = res_prof.cpu_ms_per_request * latency_multiplier  # CPU scales with time
-            # Cap single pod capacity to force horizontal scaling
+            # --- Horizontal Scaling ---
+            cpu_per_req_ms = res_prof.cpu_ms_per_request * latency_multiplier
             max_rps_per_pod = min(1000.0 / max(0.1, cpu_per_req_ms), 500.0)
 
-            raw_replicas = rps / max_rps_per_pod
-            tuned_replicas = math.ceil(raw_replicas * headroom)
-
-            # Ensure at least 2 replicas for high load services to reduce variance risk
+            tuned_replicas = math.ceil((rps / max_rps_per_pod) * headroom)
             min_replicas = 2 if rps > 50 else 1
             config['desired_replicas'] = max(min_replicas, tuned_replicas)
 
-            # Vertical Tuning (Threads per Pod)
+            # --- Vertical Tuning (Threads per Pod) ---
             pod_rps = rps / config['desired_replicas']
 
-            # Little's Law with EFFECTIVE latency
-            # Demand = RPS * Latency
-            concurrency_per_pod = math.ceil(pod_rps * (effective_processing_ms / 1000.0))
+            # [FIX 1] Calculate Cumulative Latency (Local + Downstream Wait)
+            chain_latency = self._estimate_dependency_latency(node_id, phi)
+            total_thread_occupancy_ms = effective_processing_ms + chain_latency
 
-            # High phi -> tight pool. Low phi -> huge pool.
+            # Little's Law: Threads = RPS * Total_Time_Thread_Is_Blocked
+            concurrency_per_pod = math.ceil(pod_rps * (total_thread_occupancy_ms / 1000.0))
+
+            # Pool Headroom
             pool_headroom = 1.0 + (1.5 * (1.0 - phi))
 
-            # CRITICAL FIX: Minimum floor of 10 threads
-            # 5 threads is too fragile for SimPy scheduling variance
+            # Ensure minimum floor of 10 threads
             config['thread_pool_size'] = max(10, int(concurrency_per_pod * pool_headroom))
 
-            # DB Connections: Ensure we don't starve DB calls
-            config['db_connection_pool_capacity'] = max(5, int(config['thread_pool_size'] * 0.8))
+            # Only allocate DB connection pool if this service actually connects to a database
+            has_db_dependency = any(
+                self.graph.nodes[succ].get('role') == 'database'
+                for succ in self.graph.successors(node_id)
+            )
+            if has_db_dependency:
+                config['db_connection_pool_capacity'] = max(5, int(config['thread_pool_size'] * 0.8))
+            else:
+                config['db_connection_pool_capacity'] = 0  # No DB connections needed
 
-            # Timeout Tuning (Flow-Aware)
-            chain_latency = self._estimate_dependency_latency(node_id, phi)
-            # Use effective local processing time
+            # --- [FIX 2] Strict Timeout Tuning ---
+            # Calculate Total Expected Latency (P99 chain + local)
             total_expected_ms = effective_processing_ms + chain_latency
 
-            timeout_margin = 1.2 + (3.0 * (1.0 - phi))  # Increased base margin
+            # STRICT Margin: Max 1.5x (Robust) down to 1.05x (Critical)
+            # We do NOT multiply by 3.0 or 4.0 anymore to avoid compounding.
+            timeout_margin = 1.05 + (0.45 * (1.0 - phi))
+
             timeout_sec = (total_expected_ms * timeout_margin) / 1000.0
 
             config['timeouts'] = {
@@ -242,9 +256,33 @@ class CapacityPlanner:
             }
 
         elif role == 'database':
-            # DB Connections
+            # --- FIX: Database Vertical Scaling based on Client Demand ---
+
+            # 1. Calculate concurrency-based demand (Active Queries)
             system_concurrency = rps * (base_processing_ms / 1000.0)
-            config['connection_pool_capacity'] = max(50, int(system_concurrency * headroom * 2))
+            base_capacity = int(system_concurrency * headroom * 2)
+
+            # 2. Calculate connection-based demand (Persistent Pools)
+            # We MUST support the sum of all configured upstream connection pools
+            # ONLY count services that actually connect to this database (predecessors in graph)
+            client_demand = 0
+            for pred in self.graph.predecessors(node_id):
+                # Look up the CONFIG we just generated in Pass 1
+                pred_config = existing_configs.get(pred, {})
+
+                client_pool = pred_config.get('db_connection_pool_capacity', 0)
+
+                # Skip services with 0 pool (they don't connect to any DB)
+                if client_pool > 0:
+                    # Count connections from ALL replicas
+                    replicas = pred_config.get('desired_replicas', 1)
+                    client_demand += (client_pool * replicas)
+
+            # The DB capacity is the MAX of active query needs or holding open idle connections
+            # We add 50 as a safety floor
+            total_capacity = max(50, base_capacity, int(client_demand * 1.2))
+
+            config['connection_pool_capacity'] = total_capacity
 
             # CPU Cores
             queries_per_core = 1000.0 / res_prof.cpu_ms_per_request

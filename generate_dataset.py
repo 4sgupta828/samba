@@ -352,7 +352,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         'simulation': {
             'duration': cfg.duration,
             'output_dir': episode_dir,
-            'warmup_period': 60.0  # Fix D: Cold Start handling
+            'warmup_period': 60.0
         },
         'telemetry': {
             'metric_export_interval': cfg.export_interval,
@@ -362,7 +362,19 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             'path': workload_path
         },
         'infrastructure': {
-            'path': 'generated_internal'  # Placeholder (bypassing IaC parsing)
+            'path': 'generated_internal'
+        },
+        # [FIX 3] Explicitly set massive workload capacity
+        'workload_generator': {
+            'connection_pool_size': 5000,
+            'request_timeout_seconds': 60.0,
+            'max_queue_size': 10000,
+            'circuit_breaker': {
+                'enabled': True,
+                'failure_threshold': 0.9,
+                'success_threshold': 0.8,
+                'window_size': 100
+            }
         }
     }
 
