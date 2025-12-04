@@ -312,9 +312,11 @@ class CircuitBreakerConfig:
 @dataclass
 class WorkloadGeneratorConfig:
     """Workload generator configuration (realistic client behavior)."""
-    connection_pool_size: int = 50
+    # FIX: Increased from 50 to 500 to prevent client-side bottlenecks at 200 RPS
+    connection_pool_size: int = 500
     request_timeout_seconds: float = 30.0
-    max_queue_size: int = 100
+    # FIX: Increased from 100 to 2000 to allow bursts without immediate rejection
+    max_queue_size: int = 2000
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
 
 
