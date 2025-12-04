@@ -124,8 +124,8 @@ class CapacityPlanner:
                     if d.get('type') == 'async_consume'
                 ]
                 for consumer in consumers:
-                    # Pass empty set for visited to restart cycle detection for new async context
-                    self._traverse_flow(consumer, infra_load, flow_map, stats, phi, visited=set())
+                    # Continue tracking visited nodes to prevent infinite recursion in cycles
+                    self._traverse_flow(consumer, infra_load, flow_map, stats, phi, visited.copy())
             else:
                 stats[infra]['rps'] += infra_load
 
