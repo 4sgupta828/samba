@@ -166,6 +166,51 @@ app.layout = dbc.Container([
                                 ),
                             ], width=2),
                             dbc.Col([
+                                dbc.Label("Fault Type (optional):", html_for="fault-type-dropdown"),
+                                dcc.Dropdown(
+                                    id='fault-type-dropdown',
+                                    options=[
+                                        {'label': 'Any (Random)', 'value': ''},
+                                        {'label': 'CPU Saturation', 'value': 'cpu_saturation'},
+                                        {'label': 'Memory Leak', 'value': 'memory_leak'},
+                                        {'label': 'Inject Latency', 'value': 'inject_latency'},
+                                        {'label': 'Slow Queries', 'value': 'slow_queries'},
+                                        {'label': 'Connection Exhaustion', 'value': 'connection_exhaustion'},
+                                        {'label': 'Background Job', 'value': 'enable_background_job'},
+                                        {'label': 'Cache Failure', 'value': 'cache_failure'},
+                                        {'label': 'Inject Errors', 'value': 'inject_errors'},
+                                        {'label': 'Queue Consumer Slowdown', 'value': 'queue_consumer_slowdown'},
+                                        {'label': 'Noisy Neighbor', 'value': 'noisy_neighbor'},
+                                        {'label': 'Hot Shard', 'value': 'hot_shard'},
+                                        {'label': 'Network Partition', 'value': 'network_partition'},
+                                        {'label': 'Force Deadlock', 'value': 'force_deadlock'},
+                                    ],
+                                    value='',
+                                    placeholder="Select fault type...",
+                                    clearable=True
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Label("Node Type (optional):", html_for="fault-role-dropdown"),
+                                dcc.Dropdown(
+                                    id='fault-role-dropdown',
+                                    options=[
+                                        {'label': 'Any (Random)', 'value': ''},
+                                        {'label': 'Service', 'value': 'service'},
+                                        {'label': 'Database', 'value': 'database'},
+                                        {'label': 'Cache', 'value': 'cache'},
+                                        {'label': 'Queue', 'value': 'queue'},
+                                        {'label': 'External', 'value': 'external'},
+                                        {'label': 'Network', 'value': 'network'},
+                                    ],
+                                    value='',
+                                    placeholder="Select node type...",
+                                    clearable=True
+                                ),
+                            ], width=2),
+                        ]),
+                        dbc.Row([
+                            dbc.Col([
                                 dbc.Label("Output Directory:", html_for="output-dir-input"),
                                 dbc.Input(
                                     id='output-dir-input',
@@ -954,12 +999,14 @@ def toggle_generator_collapse(n_clicks, is_open):
     Input('generate-button', 'n_clicks'),
     State('episodes-input', 'value'),
     State('topology-size-input', 'value'),
+    State('fault-type-dropdown', 'value'),
+    State('fault-role-dropdown', 'value'),
     State('output-dir-input', 'value'),
     State('seed-input', 'value'),
     State('verbose-checkbox', 'value'),
     prevent_initial_call=True
 )
-def start_generation(n_clicks, num_episodes, topology_size, output_dir, seed, verbose_list):
+def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list):
     """Start dataset generation in background when button is clicked."""
     import subprocess
     import sys
@@ -992,6 +1039,12 @@ def start_generation(n_clicks, num_episodes, topology_size, output_dir, seed, ve
 
     if topology_size:
         cmd.extend(['--topology-size', str(topology_size)])
+
+    if fault_type:
+        cmd.extend(['--fault-type', fault_type])
+
+    if fault_role:
+        cmd.extend(['--fault-role', fault_role])
 
     if seed:
         cmd.extend(['--seed', str(seed)])
