@@ -147,8 +147,8 @@ class TopologyStateExporter:
                 state["memory_mb"] = pod.dynamics.get_memory()
                 state["thread_pool_active"] = pod.thread_pool.count
                 state["thread_pool_queued"] = len(pod.thread_pool.queue)
-                state["connection_pool_active"] = pod.db_connection_pool.count
-                state["connection_pool_queued"] = len(pod.db_connection_pool.queue)
+                state["connection_pool_active"] = pod.db_connection_pool.count if pod.db_connection_pool else 0
+                state["connection_pool_queued"] = len(pod.db_connection_pool.queue) if pod.db_connection_pool else 0
 
             pod_states.append(state)
 

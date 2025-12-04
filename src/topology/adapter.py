@@ -347,10 +347,14 @@ class TopologyAdapter:
             component.thread_pool_size = overrides['thread_pool_size']
             component.thread_pool = simpy.Resource(component.env, capacity=component.thread_pool_size)
 
-        # Apply DB pool size
+        # Apply DB pool size (only if capacity > 0)
         if 'db_connection_pool_capacity' in overrides and hasattr(component, 'db_connection_pool'):
             capacity = overrides['db_connection_pool_capacity']
-            component.db_connection_pool = simpy.Resource(component.env, capacity=capacity)
+            if capacity > 0:
+                component.db_connection_pool = simpy.Resource(component.env, capacity=capacity)
+            else:
+                # Service doesn't need database connections, set to None
+                component.db_connection_pool = None
 
         # Apply Timeouts (update the component's config object)
         if 'timeouts' in overrides and hasattr(component, 'iac_config'):

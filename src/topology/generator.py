@@ -198,14 +198,29 @@ class TopologyGenerator:
                 caller = self.rng.choice(services)
                 self._add_edge(G, caller, ext, 'sync_external')
 
-        # F. Service → Service (RPC)
+        # F. Service → Service (RPC) - UPDATED to prevent cycles
         # Add inter-service dependencies (50% additional edges)
         num_rpc_links = int(len(services) * 0.5)
-        for _ in range(num_rpc_links):
+
+        # Track attempts to avoid infinite loops if graph is saturated
+        attempts = 0
+        max_attempts = num_rpc_links * 5
+        edges_added = 0
+
+        while edges_added < num_rpc_links and attempts < max_attempts:
+            attempts += 1
             u = self.rng.choice(services)
             v = self.rng.choice(services)
-            if u != v and not G.has_edge(u, v):
+
+            # Skip if same node or edge already exists
+            if u == v: continue
+            if G.has_edge(u, v): continue
+
+            # CRITICAL FIX: Check for Synchronous Cycles
+            # Only add u->v if it doesn't create a cycle in the synchronous subgraph
+            if not self._creates_sync_cycle(G, u, v):
                 self._add_edge(G, u, v, 'sync_rpc')
+                edges_added += 1
 
         # G. Ensure Connectivity
         # Repair any disconnected components by connecting them to the main component
@@ -223,17 +238,35 @@ class TopologyGenerator:
                 if main_services and comp_services:
                     u = self.rng.choice(main_services)
                     v = self.rng.choice(comp_services)
-                    self._add_edge(G, u, v, 'sync_rpc')
+                    # Check if Main->Island would create a cycle; if so, try Island->Main
+                    if not self._creates_sync_cycle(G, u, v):
+                        self._add_edge(G, u, v, 'sync_rpc')
+                    elif not self._creates_sync_cycle(G, v, u):
+                        self._add_edge(G, v, u, 'sync_rpc')
+                    else:
+                        # Very rare case: just add the edge to ensure connectivity
+                        # This shouldn't happen with isolated islands, but be defensive
+                        self._add_edge(G, u, v, 'sync_rpc')
                 elif main_services:
                     # If no services in island, connect to any node
                     u = self.rng.choice(main_services)
                     v = self.rng.choice(list(comp))
-                    self._add_edge(G, u, v, 'sync_rpc')
+                    if not self._creates_sync_cycle(G, u, v):
+                        self._add_edge(G, u, v, 'sync_rpc')
+                    elif not self._creates_sync_cycle(G, v, u):
+                        self._add_edge(G, v, u, 'sync_rpc')
+                    else:
+                        self._add_edge(G, u, v, 'sync_rpc')
                 else:
                     # Last resort: connect any two nodes
                     u = self.rng.choice(list(main_comp))
                     v = self.rng.choice(list(comp))
-                    self._add_edge(G, u, v, 'sync_rpc')
+                    if not self._creates_sync_cycle(G, u, v):
+                        self._add_edge(G, u, v, 'sync_rpc')
+                    elif not self._creates_sync_cycle(G, v, u):
+                        self._add_edge(G, v, u, 'sync_rpc')
+                    else:
+                        self._add_edge(G, u, v, 'sync_rpc')
 
         # H. Ensure Gateway Reachability (CRITICAL FIX)
         # All nodes must be reachable from the gateway for a valid microservice architecture
@@ -256,7 +289,15 @@ class TopologyGenerator:
                         if reachable_frontends:
                             # Connect to a frontend via RPC
                             target = self.rng.choice(reachable_frontends)
-                            self._add_edge(G, target, node, 'sync_rpc')
+                            # Check for cycles before adding edge
+                            if not self._creates_sync_cycle(G, target, node):
+                                self._add_edge(G, target, node, 'sync_rpc')
+                            elif not self._creates_sync_cycle(G, node, target):
+                                # Try reverse direction if forward would create cycle
+                                self._add_edge(G, node, target, 'sync_rpc')
+                            else:
+                                # Last resort for connectivity
+                                self._add_edge(G, target, node, 'sync_rpc')
                         else:
                             # Make this service a frontend
                             G.nodes[node]['is_frontend'] = True
@@ -302,7 +343,28 @@ class TopologyGenerator:
                     reachable = set(nx.descendants(G, 'gateway')) | {'gateway'}
                     unreachable = set(G.nodes()) - reachable
 
-        # I. Add New Architecture Components (Service/Pod/Node Model)
+        # I. Remove Unreachable Service-Layer Nodes
+        # After all connectivity attempts, remove any service-layer nodes that remain unreachable
+        # Infrastructure nodes (pods, compute nodes, etc.) are excluded from this check
+        if 'gateway' in G:
+            reachable = set(nx.descendants(G, 'gateway')) | {'gateway'}
+            unreachable = set(G.nodes()) - reachable
+
+            # Only remove service-layer nodes (not infrastructure like pods/nodes)
+            service_layer_roles = ['service', 'database', 'cache', 'queue', 'external']
+            nodes_to_remove = [
+                node for node in unreachable
+                if G.nodes[node].get('role') in service_layer_roles
+            ]
+
+            if nodes_to_remove:
+                # Also need to update the services list for pod creation
+                for node in nodes_to_remove:
+                    if G.nodes[node].get('role') == 'service' and node in services:
+                        services.remove(node)
+                G.remove_nodes_from(nodes_to_remove)
+
+        # J. Add New Architecture Components (Service/Pod/Node Model)
         # Calculate pods and nodes needed
         total_pods = len(services) * 3  # 3 pods per service
         pods_per_node = 5  # Target 5 pods per node
@@ -346,6 +408,37 @@ class TopologyGenerator:
         self._set_processing_pipelines(G)
 
         return G
+
+    def _creates_sync_cycle(self, G: nx.DiGraph, u: str, v: str) -> bool:
+        """
+        Checks if adding a synchronous edge u->v would create a cycle.
+        Ignores async (queue) edges which break temporal cycles.
+
+        Args:
+            G: The graph to check
+            u: Source node for proposed edge
+            v: Target node for proposed edge
+
+        Returns:
+            True if adding u->v would create a cycle in the synchronous subgraph
+        """
+        # Build a view/subgraph of only synchronous edges
+        # Exclude async edges and infrastructure edges (pod_pool, pod_placement)
+        sync_edges = [
+            (s, t) for s, t, d in G.edges(data=True)
+            if 'async' not in d.get('type', 'sync')
+            and d.get('type') != 'pod_pool'
+            and d.get('type') != 'pod_placement'
+        ]
+
+        # Create temporary graph with only sync edges
+        G_sync = nx.DiGraph()
+        G_sync.add_nodes_from(G.nodes())
+        G_sync.add_edges_from(sync_edges)
+
+        # Check if v can already reach u via sync edges
+        # If yes, adding u->v would close the loop
+        return nx.has_path(G_sync, v, u)
 
     def _add_edge(self, G: nx.DiGraph, u: str, v: str, edge_type: str):
         """

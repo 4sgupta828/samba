@@ -240,9 +240,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.thread_pool.queue.clear()
         self.thread_pool.users.clear()
 
-        # Clear DB connection pool
-        self.db_connection_pool.queue.clear()
-        self.db_connection_pool.users.clear()
+        # Clear DB connection pool (if it exists)
+        if self.db_connection_pool:
+            self.db_connection_pool.queue.clear()
+            self.db_connection_pool.users.clear()
 
         # === Category 2: Dynamics Engine State ===
         # Reset dynamics to baseline (simulates fresh process)
@@ -490,8 +491,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             self.last_request_count = self.request_count
 
             # Get current observations from SimPy resources
-            active_connections = self.db_connection_pool.count
-            queue_depth = len(self.db_connection_pool.queue)
+            active_connections = self.db_connection_pool.count if self.db_connection_pool else 0
+            queue_depth = len(self.db_connection_pool.queue) if self.db_connection_pool else 0
 
             # Read actual thread pool usage from SimPy
             actual_threads_active = self.thread_pool.count  # Actual blocked threads
@@ -530,11 +531,12 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             current_memory = self.dynamics.get_memory()
             self.memory_samples.append((current_time, current_memory))
 
-            # Sample connection pool metrics
-            active_connections = self.db_connection_pool.count
-            queue_depth = len(self.db_connection_pool.queue)
-            self.connection_pool_samples.append((current_time, active_connections))
-            self.connection_queue_samples.append((current_time, queue_depth))
+            # Sample connection pool metrics (if pool exists)
+            if self.db_connection_pool:
+                active_connections = self.db_connection_pool.count
+                queue_depth = len(self.db_connection_pool.queue)
+                self.connection_pool_samples.append((current_time, active_connections))
+                self.connection_queue_samples.append((current_time, queue_depth))
 
             # Remove samples older than the window
             cutoff_time = current_time - self.sample_window
@@ -893,6 +895,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         """Execute database query logic."""
         db = self.parent_service.connections.get('database')
         if not db:
+            return
+
+        # Check if this pod has a database connection pool configured
+        if not self.db_connection_pool:
             return
 
         config = get_simulation_config().compute
@@ -1330,7 +1336,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         if self.connection_pool_samples:
             avg_active = sum(v for _, v in self.connection_pool_samples) / len(self.connection_pool_samples)
         else:
-            avg_active = self.db_connection_pool.count
+            avg_active = self.db_connection_pool.count if self.db_connection_pool else 0
 
         attributes = {
             "component.id": self.id,
@@ -1348,7 +1354,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         if self.connection_queue_samples:
             avg_queue = sum(v for _, v in self.connection_queue_samples) / len(self.connection_queue_samples)
         else:
-            avg_queue = len(self.db_connection_pool.queue)
+            avg_queue = len(self.db_connection_pool.queue) if self.db_connection_pool else 0
 
         attributes = {
             "component.id": self.id,
