@@ -161,6 +161,51 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     Returns:
         Dictionary with episode metadata
     """
+    # 0. Setup episode directory and logging
+    episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
+    os.makedirs(episode_dir, exist_ok=True)
+
+    # Initialize variables for cleanup
+    workload_path = None
+    log_file = None
+    file_handler = None
+
+    # Set up logging to file in episode directory
+    import logging
+    simulation_log_path = os.path.join(episode_dir, 'simulation.log')
+
+    # Create a file handler for this episode
+    file_handler = logging.FileHandler(simulation_log_path, mode='w')
+    file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+
+    # Get the root logger and add the file handler
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_handler)
+
+    # Also set up console output to be duplicated to the log file
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+
+    class TeeStream:
+        """Stream that writes to both file and console"""
+        def __init__(self, file_obj, console_obj):
+            self.file = file_obj
+            self.console = console_obj
+
+        def write(self, data):
+            self.file.write(data)
+            self.console.write(data)
+
+        def flush(self):
+            self.file.flush()
+            self.console.flush()
+
+    # Open log file for stdout/stderr capture
+    log_file = open(simulation_log_path, 'a')
+    sys.stdout = TeeStream(log_file, original_stdout)
+    sys.stderr = TeeStream(log_file, original_stderr)
     # 1. Generate Topology first to see what node types are available
     # Override topology size if specified, otherwise use random size between 8-15
     if topology_size is not None:
@@ -332,9 +377,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     # --- End Capacity Planning ---
 
-    # 4. Configure Simulation
-    episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
-    os.makedirs(episode_dir, exist_ok=True)
+    # 4. Configure Simulation (episode_dir already created in step 0)
 
     # Export capacity planning analysis
     capacity_export = {
@@ -763,8 +806,19 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     finally:
         # Cleanup temp workload file
-        if os.path.exists(workload_path):
+        if workload_path and os.path.exists(workload_path):
             os.remove(workload_path)
+
+        # Restore stdout/stderr and close log file
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        if log_file:
+            log_file.close()
+
+        # Remove the file handler from root logger to prevent leaking file descriptors
+        if file_handler:
+            root_logger.removeHandler(file_handler)
+            file_handler.close()
 
     return {
         'episode_id': episode_id,

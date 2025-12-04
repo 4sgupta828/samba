@@ -291,7 +291,18 @@ app.layout = dbc.Container([
                                     className="mt-4",
                                     style={'width': '100%'}
                                 ),
-                            ], width=2),
+                            ], width=1),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Cancel",
+                                    id="cancel-button",
+                                    color="danger",
+                                    outline=True,
+                                    className="mt-4",
+                                    style={'width': '100%'},
+                                    disabled=True
+                                ),
+                            ], width=1),
                         ]),
                         html.Hr(),
                         dbc.Row([
@@ -1299,6 +1310,7 @@ def update_fault_dropdowns(fault_type, fault_role):
     Output('generation-status', 'children'),
     Output('generation-poll-interval', 'disabled'),
     Output('generate-button', 'disabled'),
+    Output('cancel-button', 'disabled'),
     Input('generate-button', 'n_clicks'),
     State('episodes-input', 'value'),
     State('topology-size-input', 'value'),
@@ -1317,24 +1329,24 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
     import time
 
     if not n_clicks:
-        return html.Div("Ready to generate training data", className="text-muted"), True, False
+        return html.Div("Ready to generate training data", className="text-muted"), True, False, True
 
     # Check if generation is already running
     global generation_state
     if generation_state['running']:
-        return dbc.Alert("Generation is already running", color="warning"), False, True
+        return dbc.Alert("Generation is already running", color="warning"), False, True, False
 
     # Validate inputs
     if not num_episodes or num_episodes < 1:
-        return dbc.Alert("Please enter a valid number of episodes (minimum 1)", color="danger"), True, False
+        return dbc.Alert("Please enter a valid number of episodes (minimum 1)", color="danger"), True, False, True
 
     # Validate fault forcing only works with single episode
     if (fault_type or fault_role) and num_episodes > 1:
-        return dbc.Alert("Fault forcing only works with single episode generation. Please set episodes to 1.", color="danger"), True, False
+        return dbc.Alert("Fault forcing only works with single episode generation. Please set episodes to 1.", color="danger"), True, False, True
 
     # Validate that both fault type and role are provided together
     if (fault_type and not fault_role) or (fault_role and not fault_type):
-        return dbc.Alert("Both fault type and fault role must be specified together.", color="danger"), True, False
+        return dbc.Alert("Both fault type and fault role must be specified together.", color="danger"), True, False, True
 
     # Validate that the fault type and role combination is valid
     if fault_type and fault_role:
@@ -1344,7 +1356,7 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
                 f"Invalid combination: '{fault_type}' cannot be applied to '{fault_role}'. "
                 f"Valid roles for {fault_type}: {', '.join(valid_roles)}",
                 color="danger"
-            ), True, False
+            ), True, False, True
 
     if not output_dir:
         output_dir = 'data'
@@ -1410,7 +1422,7 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
             dbc.Spinner(size="sm")
         ], color="info")
 
-        return starting_msg, False, True  # Enable polling, disable button
+        return starting_msg, False, True, False  # Enable polling, disable generate button, enable cancel button
 
     except Exception as e:
         exception_msg = dbc.Alert([
@@ -1418,13 +1430,14 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
             html.P(f"Error: {str(e)}")
         ], color="danger")
 
-        return exception_msg, True, False  # Disable polling, enable button
+        return exception_msg, True, False, True  # Disable polling, enable generate button, disable cancel button
 
 
 @app.callback(
     Output('generation-status', 'children', allow_duplicate=True),
     Output('generation-poll-interval', 'disabled', allow_duplicate=True),
     Output('generate-button', 'disabled', allow_duplicate=True),
+    Output('cancel-button', 'disabled', allow_duplicate=True),
     Output('datarun-dropdown', 'options', allow_duplicate=True),
     Output('datarun-dropdown', 'value', allow_duplicate=True),
     Input('generation-poll-interval', 'n_intervals'),
@@ -1437,7 +1450,7 @@ def poll_generation_status(n_intervals):
     global generation_state
 
     if not generation_state['running']:
-        return dash.no_update, True, False, dash.no_update, dash.no_update
+        return dash.no_update, True, False, True, dash.no_update, dash.no_update
 
     process = generation_state['process']
     config = generation_state['config']
@@ -1450,15 +1463,38 @@ def poll_generation_status(n_intervals):
         elapsed = time.time() - generation_state['start_time']
         mins, secs = divmod(int(elapsed), 60)
 
+        # Read available output (non-blocking)
+        import select
+        trailing_lines = []
+        try:
+            # Check if there's data available to read (non-blocking)
+            if hasattr(select, 'select'):
+                # Unix-based systems
+                ready, _, _ = select.select([process.stdout], [], [], 0)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        trailing_lines.append(line.strip())
+                        generation_state['output'].append(line.strip())
+        except Exception:
+            pass  # Ignore errors in non-blocking read
+
+        # Get last 10 lines from output buffer
+        recent_output = '\n'.join(generation_state['output'][-10:]) if generation_state['output'] else "Waiting for output..."
+
         running_msg = dbc.Alert([
             html.H6("⏳ Generation In Progress", className="alert-heading"),
             html.P(f"Generating {config['episodes']} episodes..."),
             html.P(f"Elapsed time: {mins}m {secs}s", className="mb-2"),
             dbc.Progress(animated=True, striped=True, value=100, color="info", className="mb-2"),
-            html.P(f"Command: {config['command']}", className="small mb-0")
+            html.P(f"Command: {config['command']}", className="small mb-2"),
+            html.Hr(),
+            html.P("Recent output:", className="small mb-1"),
+            html.Pre(recent_output, className="small mb-0",
+                    style={'maxHeight': '150px', 'overflow': 'auto', 'backgroundColor': '#f8f9fa', 'fontSize': '0.75rem'})
         ], color="info")
 
-        return running_msg, False, True, dash.no_update, dash.no_update
+        return running_msg, False, True, False, dash.no_update, dash.no_update
 
     else:
         # Process finished
@@ -1490,19 +1526,73 @@ def poll_generation_status(n_intervals):
             ]
             default_value = runs[0]['path'] if runs else None
 
-            return success_msg, True, False, options, default_value
+            return success_msg, True, False, True, options, default_value
         else:
-            # Error
+            # Error (including cancelled)
+            error_title = "❌ Generation Cancelled" if returncode == -15 or returncode == -9 else "❌ Generation Failed"
             error_msg = dbc.Alert([
-                html.H6("❌ Generation Failed", className="alert-heading"),
+                html.H6(error_title, className="alert-heading"),
                 html.P(f"Process exited with code: {returncode}"),
                 html.Hr(),
                 html.P("Error output (last 1000 chars):", className="small mb-1"),
                 html.Pre(stderr[-1000:] if stderr else "No error output", className="small mb-0",
                         style={'maxHeight': '200px', 'overflow': 'auto', 'backgroundColor': '#fff5f5'})
-            ], color="danger")
+            ], color="warning" if returncode == -15 or returncode == -9 else "danger")
 
-            return error_msg, True, False, dash.no_update, dash.no_update
+            return error_msg, True, False, True, dash.no_update, dash.no_update
+
+
+@app.callback(
+    Output('generation-status', 'children', allow_duplicate=True),
+    Output('generation-poll-interval', 'disabled', allow_duplicate=True),
+    Output('generate-button', 'disabled', allow_duplicate=True),
+    Output('cancel-button', 'disabled', allow_duplicate=True),
+    Input('cancel-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+def cancel_generation(n_clicks):
+    """Cancel the running generation process."""
+    import signal
+
+    global generation_state
+
+    if not n_clicks or not generation_state['running']:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    process = generation_state['process']
+
+    try:
+        # Try graceful termination first (SIGTERM)
+        process.terminate()
+
+        # Give it 2 seconds to terminate gracefully
+        import time
+        for _ in range(20):
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        # If still running, force kill (SIGKILL)
+        if process.poll() is None:
+            process.kill()
+
+        generation_state['running'] = False
+        generation_state['process'] = None
+
+        cancel_msg = dbc.Alert([
+            html.H6("⚠️ Generation Cancelled", className="alert-heading"),
+            html.P("Dataset generation has been cancelled by user."),
+        ], color="warning")
+
+        return cancel_msg, True, False, True  # Disable polling, enable generate button, disable cancel button
+
+    except Exception as e:
+        error_msg = dbc.Alert([
+            html.H6("❌ Failed to Cancel", className="alert-heading"),
+            html.P(f"Error: {str(e)}")
+        ], color="danger")
+
+        return error_msg, True, False, True  # Disable polling, enable generate button, disable cancel button
 
 
 if __name__ == '__main__':
