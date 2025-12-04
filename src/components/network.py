@@ -10,6 +10,11 @@ import simpy
 import random
 
 
+class NetworkPartitionError(Exception):
+    """Raised when a network partition blocks communication between components."""
+    pass
+
+
 class NetworkLink(EnrichedComponent):
     """
     Simulates a network link between components with realistic network errors.
@@ -34,6 +39,9 @@ class NetworkLink(EnrichedComponent):
         self.base_latency_ms = config.base_latency_ms
         self.latency_jitter_ms = config.latency_jitter_ms
         self.bandwidth_mbps = config.bandwidth_mbps
+
+        # Network partition rules (source_id, target_id) tuples
+        self.partition_rules = set()  # Empty = no partitions
 
         # Metrics
         self.bytes_transmitted_counter = self.meter.create_counter(
@@ -67,7 +75,8 @@ class NetworkLink(EnrichedComponent):
         """Network link is passive - it doesn't have its own process."""
         yield self.env.process(super().run())
 
-    def transmit(self, data_size_bytes: int = 1024, should_trace: bool = False, parent_span_context=None):
+    def transmit(self, data_size_bytes: int = 1024, should_trace: bool = False, parent_span_context=None,
+                 source_id: str = None, target_id: str = None):
         """
         Simulate transmitting data over the network with realistic errors.
 
@@ -75,21 +84,29 @@ class NetworkLink(EnrichedComponent):
             data_size_bytes: Size of data to transmit
             should_trace: Whether to create tracing spans
             parent_span_context: Parent span context for distributed tracing
+            source_id: ID of the source component (for partition checks)
+            target_id: ID of the target component (for partition checks)
 
         Yields:
             SimPy timeout for network latency
 
         Raises:
-            Exception: On network failures (connection reset, timeout, etc.)
+            NetworkPartitionError: When network partition blocks communication
+            Exception: On other network failures (connection reset, timeout, etc.)
         """
         if should_trace and parent_span_context:
             with self._start_span("network.transmit", parent_span_context=parent_span_context) as span:
                 span.set_attribute("network.bytes", data_size_bytes)
-                yield from self._transmit_internal(data_size_bytes, span)
+                if source_id:
+                    span.set_attribute("network.source", source_id)
+                if target_id:
+                    span.set_attribute("network.target", target_id)
+                yield from self._transmit_internal(data_size_bytes, span, source_id=source_id, target_id=target_id)
         else:
-            yield from self._transmit_internal(data_size_bytes, None)
+            yield from self._transmit_internal(data_size_bytes, None, source_id=source_id, target_id=target_id)
 
-    def _transmit_internal(self, data_size_bytes: int, span=None, target_component_type: str = None):
+    def _transmit_internal(self, data_size_bytes: int, span=None, target_component_type: str = None,
+                          source_id: str = None, target_id: str = None):
         """Internal transmission logic with error injection.
 
         Args:
@@ -97,7 +114,17 @@ class NetworkLink(EnrichedComponent):
             span: Optional tracing span
             target_component_type: Optional component type (e.g., "SqlDatabase", "InMemoryCache")
                                   to determine component-specific network latency
+            source_id: ID of the source component (for partition checks)
+            target_id: ID of the target component (for partition checks)
         """
+        # Check for network partition FIRST (blocks all traffic)
+        if source_id and target_id and (source_id, target_id) in self.partition_rules:
+            self._emit_log("ERROR", f"Network partition blocks traffic from {source_id} to {target_id}")
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "network_partition")
+            raise NetworkPartitionError(f"Connection timed out: network partition between {source_id} and {target_id}")
+
         # Check for connection establishment failure
         if self._should_transient_error_occur('connection_failure'):
             if span:

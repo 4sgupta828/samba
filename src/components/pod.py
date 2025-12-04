@@ -484,6 +484,15 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             if span and queue_wait_time > 0:
                 span.set_attribute("thread_pool.queue_wait_ms", queue_wait_time)
 
+            # Apply CPU steal time penalty if on a contended node
+            if self.compute_node:
+                contention_penalty_ms = self.compute_node.get_contention_penalty()
+                if contention_penalty_ms > 0:
+                    self._emit_log("DEBUG", f"CPU Steal Time: {contention_penalty_ms:.2f}ms")
+                    if span:
+                        span.set_attribute("cpu_steal_time_ms", contention_penalty_ms)
+                    yield self.env.timeout(contention_penalty_ms / 1000.0)
+
             self._emit_log("DEBUG", f"Processing request type: {request_type}")
 
             # Wrap processing in try/except to record metrics

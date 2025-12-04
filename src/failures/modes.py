@@ -9,9 +9,12 @@ from typing import Dict, Any
 
 from src.components.base_component import SimulatedComponent
 from src.components.compute import ComputeAgent
+from src.components.pod import Pod
+from src.components.service import Service
 from src.components.database import SqlDatabase
 from src.components.storage import InMemoryCache
 from src.components.messaging import MessageQueue
+from src.components.network import NetworkLink
 
 def set_component_state(component: SimulatedComponent, params: Dict[str, Any]):
     """Forces a component into a specific operational state."""
@@ -375,6 +378,286 @@ def disable_background_job(component: SqlDatabase, params: Dict[str, Any]):
     """
     stop_db_background_job(component, params)
 
+def noisy_neighbor(component, params: Dict[str, Any]):
+    """
+    Simulates noisy neighbor by pinning CPU to 100% on the aggressor pod.
+    This causes resource contention on the shared node, affecting other pods
+    on the same node through CPU steal time.
+
+    Args:
+        component: The aggressor Pod or Service (if Service, picks a random pod)
+        params: cpu_percent (default: 100.0)
+    """
+    # If component is a Service, pick a random pod
+    if isinstance(component, Service):
+        if not component.pods:
+            component._emit_log("WARN", "noisy_neighbor: Service has no pods")
+            return
+        target_pod = component.pods[0]  # Pick first pod as aggressor
+        # Store the affected pod ID on the Service for robust revert
+        component._noisy_neighbor_pod_id = target_pod.id
+        component._emit_log("INFO", f"noisy_neighbor: Applying to pod {target_pod.id}")
+    elif isinstance(component, Pod):
+        target_pod = component
+        # Store pod ID on itself for consistency
+        component._noisy_neighbor_pod_id = target_pod.id
+    else:
+        component._emit_log("WARN", f"noisy_neighbor can only be applied to Pod or Service components (got {type(component).__name__})")
+        return
+
+    if not hasattr(target_pod, 'dynamics') or target_pod.dynamics is None:
+        target_pod._emit_log("ERROR", "Pod does not have dynamics engine - cannot inject noisy neighbor")
+        return
+
+    cpu_target = params.get("cpu_percent", 100.0)
+
+    # Set CPU floor to pin the CPU
+    target_pod.dynamics.fault_cpu_floor_percent = cpu_target
+    target_pod._emit_log("WARN", f"Noisy neighbor: CPU pinned to {cpu_target}% (aggressor pod)")
+
+def revert_noisy_neighbor(component, params: Dict[str, Any]):
+    """Revert noisy neighbor by removing CPU floor from the originally affected pod."""
+    # Get the originally affected pod ID
+    if not hasattr(component, '_noisy_neighbor_pod_id'):
+        component._emit_log("WARN", "No noisy_neighbor pod ID tracked - cannot revert")
+        return
+
+    affected_pod_id = component._noisy_neighbor_pod_id
+
+    # Find the pod by ID
+    if isinstance(component, Service):
+        # Look up pod in service's current pod list
+        target_pod = None
+        for pod in component.pods:
+            if pod.id == affected_pod_id:
+                target_pod = pod
+                break
+
+        if target_pod is None:
+            component._emit_log("WARN", f"noisy_neighbor: Original pod {affected_pod_id} no longer exists (may have been replaced)")
+            # Clean up tracking
+            del component._noisy_neighbor_pod_id
+            return
+
+        component._emit_log("INFO", f"noisy_neighbor: Reverting on pod {target_pod.id}")
+    elif isinstance(component, Pod):
+        target_pod = component
+    else:
+        return
+
+    if hasattr(target_pod, 'dynamics') and target_pod.dynamics is not None:
+        target_pod.dynamics.fault_cpu_floor_percent = None
+        target_pod._emit_log("INFO", "Noisy neighbor reverted")
+    else:
+        target_pod._emit_log("WARN", "Component does not have dynamics engine")
+
+    # Clean up tracking
+    del component._noisy_neighbor_pod_id
+
+def hot_shard(component: Service, params: Dict[str, Any]):
+    """
+    Simulates hot shard by skewing traffic to a specific pod.
+
+    Args:
+        component: The Service to apply traffic skew to
+        params: target_pod_index (int), skew_factor (float, e.g., 0.8 for 80%)
+    """
+    if not isinstance(component, Service):
+        component._emit_log("WARN", "hot_shard can only be applied to Service components.")
+        return
+
+    target_pod_index = params.get("target_pod_index", 0)
+    skew_factor = params.get("skew_factor", 0.8)
+
+    if target_pod_index >= len(component.pods):
+        component._emit_log("ERROR", f"Invalid target_pod_index {target_pod_index} (only {len(component.pods)} pods)")
+        return
+
+    # Identify the hot shard pod
+    hot_pod = component.pods[target_pod_index]
+
+    # Build traffic weights
+    num_pods = len(component.pods)
+    remaining_weight = 1.0 - skew_factor
+    other_weight = remaining_weight / (num_pods - 1) if num_pods > 1 else 0.0
+
+    component.traffic_weights = {}
+    for pod in component.pods:
+        if pod.id == hot_pod.id:
+            component.traffic_weights[pod.id] = skew_factor
+        else:
+            component.traffic_weights[pod.id] = other_weight
+
+    component._emit_log("WARN", f"Hot shard: {skew_factor*100:.0f}% traffic to pod {hot_pod.id}")
+
+def revert_hot_shard(component: Service, params: Dict[str, Any]):
+    """Revert hot shard by resetting traffic weights to uniform."""
+    if not isinstance(component, Service):
+        return
+
+    component.traffic_weights = {}
+    component._emit_log("INFO", "Hot shard reverted - uniform traffic distribution")
+
+def network_partition(component: NetworkLink, params: Dict[str, Any]):
+    """
+    Simulates network partition by blocking traffic between source and target.
+
+    Args:
+        component: The NetworkLink to apply partition to
+        params: source_component_id (str), target_component_id (str), bidirectional (bool, default: True)
+    """
+    if not isinstance(component, NetworkLink):
+        component._emit_log("WARN", "network_partition can only be applied to NetworkLink components.")
+        return
+
+    source_id = params.get("source_component_id")
+    target_id = params.get("target_component_id")
+    bidirectional = params.get("bidirectional", True)
+
+    if not source_id or not target_id:
+        component._emit_log("ERROR", "network_partition requires source_component_id and target_component_id")
+        return
+
+    # Add partition rule(s)
+    component.partition_rules.add((source_id, target_id))
+    if bidirectional:
+        component.partition_rules.add((target_id, source_id))
+
+    direction = "bidirectional" if bidirectional else "unidirectional"
+    component._emit_log("WARN", f"Network partition: {source_id} <-> {target_id} ({direction})")
+
+def revert_network_partition(component: NetworkLink, params: Dict[str, Any]):
+    """Revert network partition by removing partition rules."""
+    if not isinstance(component, NetworkLink):
+        return
+
+    source_id = params.get("source_component_id")
+    target_id = params.get("target_component_id")
+    bidirectional = params.get("bidirectional", True)
+
+    if not source_id or not target_id:
+        component._emit_log("ERROR", "revert_network_partition requires source_component_id and target_component_id")
+        return
+
+    # Remove partition rule(s)
+    component.partition_rules.discard((source_id, target_id))
+    if bidirectional:
+        component.partition_rules.discard((target_id, source_id))
+
+    component._emit_log("INFO", f"Network partition reverted: {source_id} <-> {target_id}")
+
+def force_deadlock(component, params: Dict[str, Any]):
+    """
+    Simulates logical deadlock by consuming threads without consuming CPU.
+    This models lock waits or circular dependencies.
+
+    Args:
+        component: The Pod or Service to deadlock (if Service, picks a random pod)
+        params: locked_threads (int, default: 10), duration (float, seconds)
+    """
+    # If component is a Service, pick a random pod
+    if isinstance(component, Service):
+        if not component.pods:
+            component._emit_log("WARN", "force_deadlock: Service has no pods")
+            return
+        target_pod = component.pods[0]  # Pick first pod to deadlock
+        # Store the affected pod ID on the Service for robust revert
+        component._force_deadlock_pod_id = target_pod.id
+        component._emit_log("INFO", f"force_deadlock: Applying to pod {target_pod.id}")
+    elif isinstance(component, Pod):
+        target_pod = component
+        # Store pod ID on itself for consistency
+        component._force_deadlock_pod_id = target_pod.id
+    else:
+        component._emit_log("WARN", f"force_deadlock can only be applied to Pod or Service components (got {type(component).__name__})")
+        return
+
+    locked_threads = params.get("locked_threads", 10)  # Default to 10 threads
+    duration = params.get("duration", 300.0)  # 5 minutes default
+
+    # Initialize zombie process tracking if not exists
+    if not hasattr(target_pod, '_zombie_processes'):
+        target_pod._zombie_processes = []
+
+    # Spawn zombie processes that acquire threads but don't do work
+    def _zombie_task():
+        try:
+            with target_pod.thread_pool.request() as req:
+                yield req  # Acquire thread
+                target_pod._emit_log("DEBUG", "Deadlock: thread locked (zombie task)")
+                # Just sleep - no CPU consumption, no dynamics update
+                yield target_pod.env.timeout(duration)
+                target_pod._emit_log("DEBUG", "Deadlock: thread released (duration expired)")
+        except Exception as e:
+            # Handle interruption (from revert_force_deadlock)
+            target_pod._emit_log("DEBUG", f"Deadlock: thread released (interrupted: {e})")
+
+    # Spawn the zombie tasks and track them
+    for _ in range(locked_threads):
+        zombie_proc = target_pod.env.process(_zombie_task())
+        target_pod._zombie_processes.append(zombie_proc)
+
+    target_pod._emit_log("WARN", f"Force deadlock: {locked_threads} threads locked for {duration}s")
+
+def revert_force_deadlock(component, params: Dict[str, Any]):
+    """
+    Revert force deadlock by interrupting all zombie processes on the originally affected pod.
+
+    This allows threads to be released early before the deadlock duration expires.
+    """
+    # Get the originally affected pod ID
+    if not hasattr(component, '_force_deadlock_pod_id'):
+        component._emit_log("WARN", "No force_deadlock pod ID tracked - cannot revert")
+        return
+
+    affected_pod_id = component._force_deadlock_pod_id
+
+    # Find the pod by ID
+    if isinstance(component, Service):
+        # Look up pod in service's current pod list
+        target_pod = None
+        for pod in component.pods:
+            if pod.id == affected_pod_id:
+                target_pod = pod
+                break
+
+        if target_pod is None:
+            component._emit_log("WARN", f"force_deadlock: Original pod {affected_pod_id} no longer exists (may have been replaced)")
+            # Clean up tracking
+            del component._force_deadlock_pod_id
+            return
+
+        component._emit_log("INFO", f"force_deadlock: Reverting on pod {target_pod.id}")
+    elif isinstance(component, Pod):
+        target_pod = component
+    else:
+        return
+
+    if not hasattr(target_pod, '_zombie_processes') or not target_pod._zombie_processes:
+        target_pod._emit_log("INFO", "No zombie processes to revert")
+        # Clean up tracking
+        del component._force_deadlock_pod_id
+        return
+
+    # Interrupt all zombie processes
+    interrupted_count = 0
+    for zombie_proc in target_pod._zombie_processes:
+        if zombie_proc.is_alive:
+            try:
+                zombie_proc.interrupt("Deadlock reverted")
+                interrupted_count += 1
+            except RuntimeError:
+                # Process already finished
+                pass
+
+    # Clear the zombie process list
+    target_pod._zombie_processes = []
+
+    target_pod._emit_log("INFO", f"Force deadlock reverted: {interrupted_count} threads released early")
+
+    # Clean up tracking
+    del component._force_deadlock_pod_id
+
 # A registry mapping the 'mode' string to the actual function
 FAILURE_MODES = {
     # State manipulation
@@ -414,4 +697,14 @@ FAILURE_MODES = {
     # Queue/messaging failures
     "queue_consumer_slowdown": queue_consumer_slowdown,
     "revert_queue_consumer_slowdown": revert_queue_consumer_slowdown,
+
+    # Structural failure modes
+    "noisy_neighbor": noisy_neighbor,
+    "revert_noisy_neighbor": revert_noisy_neighbor,
+    "hot_shard": hot_shard,
+    "revert_hot_shard": revert_hot_shard,
+    "network_partition": network_partition,
+    "revert_network_partition": revert_network_partition,
+    "force_deadlock": force_deadlock,
+    "revert_force_deadlock": revert_force_deadlock,
 }

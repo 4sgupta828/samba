@@ -43,6 +43,9 @@ class Service(EnrichedComponent):
         # Pods managed by DeploymentController
         self.pods = []  # List of Pod instances
 
+        # Traffic weights for hot shard simulation (pod_id -> weight)
+        self.traffic_weights = {}  # Empty = uniform distribution
+
         # Metrics (service-level aggregation)
         self.service_requests_counter = self.meter.create_counter(
             f"service.{service_name}.requests",
@@ -121,15 +124,36 @@ class Service(EnrichedComponent):
 
     def get_pod_target(self):
         """
-        Load balance to a healthy pod instance.
+        Load balance to a healthy pod instance with optional weighted routing.
+
+        Supports hot shard simulation via traffic_weights:
+        - If traffic_weights is empty: uniform random selection
+        - If traffic_weights is set: weighted random selection based on pod weights
 
         Returns:
             Pod: A healthy pod from the pool, or None if no pods available
         """
         healthy_pods = [p for p in self.pods if p.state.operational == "RUNNING"]
-        if healthy_pods:
+        if not healthy_pods:
+            return None
+
+        # Uniform distribution (default behavior)
+        if not self.traffic_weights:
             return random.choice(healthy_pods)
-        return None
+
+        # Weighted distribution (hot shard scenario)
+        # Build weights list for healthy pods only
+        weights = []
+        for pod in healthy_pods:
+            weight = self.traffic_weights.get(pod.id, 0.0)
+            weights.append(weight)
+
+        # If all weights are zero, fall back to uniform
+        if sum(weights) == 0:
+            return random.choice(healthy_pods)
+
+        # Weighted random selection
+        return random.choices(healthy_pods, weights=weights, k=1)[0]
 
     # No run() method - Service doesn't have background processes
     # DeploymentController handles pod lifecycle management
