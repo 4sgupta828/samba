@@ -583,117 +583,124 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
         # Request thread from pool
         queue_start = self.env.now
-        with self.thread_pool.request() as req:
-            yield req  # Wait for available thread
 
-            # Track this process for interruption (now that we hold the thread)
-            current_proc = self.env.active_process
-            self.active_request_processes.add(current_proc)
+        # Track this process for interruption (before acquiring thread)
+        current_proc = self.env.active_process
 
-            queue_wait_time = (self.env.now - queue_start) * 1000  # Convert to ms
+        # FIX: Wrap the entire with block in try/finally to ensure cleanup happens
+        # AFTER the with block's __exit__, preventing SimPy resource conflicts
+        try:
+            with self.thread_pool.request() as req:
+                yield req  # Wait for available thread
 
-            # Add queue wait time to span if we waited
-            if span and queue_wait_time > 0:
-                span.set_attribute("thread_pool.queue_wait_ms", queue_wait_time)
+                # Add to tracking set now that we hold the thread
+                self.active_request_processes.add(current_proc)
 
-            self._emit_log("DEBUG", f"Processing request type: {request_type}")
+                queue_wait_time = (self.env.now - queue_start) * 1000  # Convert to ms
 
-            # Wrap processing in try/except to record metrics
-            try:
-                # Check dynamics-based error before processing
-                if random.random() < self.dynamics.get_error_rate():
-                    self._emit_log("ERROR", "Request failed due to dynamics-driven error")
-                    if span:
-                        span.set_attribute("error", True)
-                        span.set_attribute("error.type", "dynamics_error")
-                    raise Exception("Request processing failed: Service temporarily unavailable")
+                # Add queue wait time to span if we waited
+                if span and queue_wait_time > 0:
+                    span.set_attribute("thread_pool.queue_wait_ms", queue_wait_time)
 
-                # Apply dynamics-based latency
-                base_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
+                self._emit_log("DEBUG", f"Processing request type: {request_type}")
 
-                # NEW: Apply resource profile multipliers
-                # Note: We apply multipliers to latency and add temporary resource spikes
-                # but we do NOT permanently modify dynamics state (that would accumulate)
-                if self.resource_profile == "cpu_intensive":
-                    # CPU-intensive services take 2.5x longer to process
-                    service_latency = base_latency * 2.5
-                    if span:
-                        span.set_attribute("resource.profile", "cpu_intensive")
-                        span.set_attribute("profile.latency_multiplier", 2.5)
-                elif self.resource_profile == "io_intensive":
-                    # I/O-intensive services have similar latency but model I/O wait time
-                    # Add a small I/O wait penalty (10% increase)
-                    service_latency = base_latency * 1.1
-                    if span:
-                        span.set_attribute("resource.profile", "io_intensive")
-                        span.set_attribute("profile.latency_multiplier", 1.1)
-                elif self.resource_profile == "latency_sensitive":
-                    # Latency-sensitive services process faster
-                    service_latency = base_latency * 0.8
-                    if span:
-                        span.set_attribute("resource.profile", "latency_sensitive")
-                        span.set_attribute("profile.latency_multiplier", 0.8)
-                else:
-                    # Standard profile
-                    service_latency = base_latency
-                    if span:
-                        span.set_attribute("resource.profile", "standard")
+                # Wrap processing in try/except to record metrics
+                try:
+                    # Check dynamics-based error before processing
+                    if random.random() < self.dynamics.get_error_rate():
+                        self._emit_log("ERROR", "Request failed due to dynamics-driven error")
+                        if span:
+                            span.set_attribute("error", True)
+                            span.set_attribute("error.type", "dynamics_error")
+                        raise Exception("Request processing failed: Service temporarily unavailable")
 
-                yield self.env.timeout(service_latency)
+                    # Apply dynamics-based latency
+                    base_latency = self.dynamics.get_latency() / 1000.0  # Convert ms to seconds
 
-                # Execute parent service's processing pipeline
-                if self.parent_service and hasattr(self.parent_service, 'processing_pipeline'):
-                    yield from self._execute_processing_pipeline(request_type, span)
-                else:
-                    # Fallback to legacy behavior if no pipeline defined
-                    yield from self._execute_legacy_request_logic(request_type, span)
+                    # NEW: Apply resource profile multipliers
+                    # Note: We apply multipliers to latency and add temporary resource spikes
+                    # but we do NOT permanently modify dynamics state (that would accumulate)
+                    if self.resource_profile == "cpu_intensive":
+                        # CPU-intensive services take 2.5x longer to process
+                        service_latency = base_latency * 2.5
+                        if span:
+                            span.set_attribute("resource.profile", "cpu_intensive")
+                            span.set_attribute("profile.latency_multiplier", 2.5)
+                    elif self.resource_profile == "io_intensive":
+                        # I/O-intensive services have similar latency but model I/O wait time
+                        # Add a small I/O wait penalty (10% increase)
+                        service_latency = base_latency * 1.1
+                        if span:
+                            span.set_attribute("resource.profile", "io_intensive")
+                            span.set_attribute("profile.latency_multiplier", 1.1)
+                    elif self.resource_profile == "latency_sensitive":
+                        # Latency-sensitive services process faster
+                        service_latency = base_latency * 0.8
+                        if span:
+                            span.set_attribute("resource.profile", "latency_sensitive")
+                            span.set_attribute("profile.latency_multiplier", 0.8)
+                    else:
+                        # Standard profile
+                        service_latency = base_latency
+                        if span:
+                            span.set_attribute("resource.profile", "standard")
 
-                # Record success metrics (only if metrics are initialized)
-                latency_ms = (self.env.now - start_time) * 1000
-                if self.request_counter and self.request_duration and self.parent_service:
-                    self.request_counter.add(1, {
-                        "status": "success",
-                        "request_type": request_type,
-                        "component.id": self.id,
-                        "service.name": self.parent_service.service_name,
-                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
-                    })
-                    self.request_duration.record(latency_ms, {
-                        "status": "success",
-                        "request_type": request_type,
-                        "component.id": self.id,
-                        "service.name": self.parent_service.service_name,
-                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
-                    })
+                    yield self.env.timeout(service_latency)
 
-            except Exception as e:
-                # Record error metrics (only if metrics are initialized)
-                latency_ms = (self.env.now - start_time) * 1000
-                if self.request_counter and self.request_duration and self.request_errors and self.parent_service:
-                    self.request_counter.add(1, {
-                        "status": "error",
-                        "request_type": request_type,
-                        "component.id": self.id,
-                        "service.name": self.parent_service.service_name,
-                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
-                    })
-                    self.request_duration.record(latency_ms, {
-                        "status": "error",
-                        "request_type": request_type,
-                        "component.id": self.id,
-                        "service.name": self.parent_service.service_name,
-                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
-                    })
-                    self.request_errors.add(1, {
-                        "request_type": request_type,
-                        "component.id": self.id,
-                        "service.name": self.parent_service.service_name,
-                        "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
-                    })
-                raise  # Re-raise the exception
-            finally:
-                # Remove from tracking when thread is released
-                self.active_request_processes.discard(current_proc)
+                    # Execute parent service's processing pipeline
+                    if self.parent_service and hasattr(self.parent_service, 'processing_pipeline'):
+                        yield from self._execute_processing_pipeline(request_type, span)
+                    else:
+                        # Fallback to legacy behavior if no pipeline defined
+                        yield from self._execute_legacy_request_logic(request_type, span)
+
+                    # Record success metrics (only if metrics are initialized)
+                    latency_ms = (self.env.now - start_time) * 1000
+                    if self.request_counter and self.request_duration and self.parent_service:
+                        self.request_counter.add(1, {
+                            "status": "success",
+                            "request_type": request_type,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name,
+                            "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
+                        })
+                        self.request_duration.record(latency_ms, {
+                            "status": "success",
+                            "request_type": request_type,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name,
+                            "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
+                        })
+
+                except Exception as e:
+                    # Record error metrics (only if metrics are initialized)
+                    latency_ms = (self.env.now - start_time) * 1000
+                    if self.request_counter and self.request_duration and self.request_errors and self.parent_service:
+                        self.request_counter.add(1, {
+                            "status": "error",
+                            "request_type": request_type,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name,
+                            "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
+                        })
+                        self.request_duration.record(latency_ms, {
+                            "status": "error",
+                            "request_type": request_type,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name,
+                            "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
+                        })
+                        self.request_errors.add(1, {
+                            "request_type": request_type,
+                            "component.id": self.id,
+                            "service.name": self.parent_service.service_name,
+                            "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
+                        })
+                    raise  # Re-raise the exception
+        finally:
+            # Remove from tracking AFTER the with block's __exit__ completes
+            # This prevents conflicts with SimPy's resource cleanup
+            self.active_request_processes.discard(current_proc)
 
     def _execute_processing_pipeline(self, request_type: str, span):
         """
