@@ -9,6 +9,7 @@ A Pod is a container instance that:
 """
 from .base_component import EnrichedComponent
 from src.core.simulation_config import get_simulation_config
+from src.core.constants import get_profile_multiplier
 from src.dynamics.metrics_dynamics_engine import MetricsDynamicsEngine, DynamicsConfig
 from src.resilience.service_propagation_mixin import ServicePropagationMixin, DependencyFailureException
 import simpy
@@ -620,30 +621,12 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     # NEW: Apply resource profile multipliers
                     # Note: We apply multipliers to latency and add temporary resource spikes
                     # but we do NOT permanently modify dynamics state (that would accumulate)
-                    if self.resource_profile == "cpu_intensive":
-                        # CPU-intensive services take 2.5x longer to process
-                        service_latency = base_latency * 2.5
-                        if span:
-                            span.set_attribute("resource.profile", "cpu_intensive")
-                            span.set_attribute("profile.latency_multiplier", 2.5)
-                    elif self.resource_profile == "io_intensive":
-                        # I/O-intensive services have similar latency but model I/O wait time
-                        # Add a small I/O wait penalty (10% increase)
-                        service_latency = base_latency * 1.1
-                        if span:
-                            span.set_attribute("resource.profile", "io_intensive")
-                            span.set_attribute("profile.latency_multiplier", 1.1)
-                    elif self.resource_profile == "latency_sensitive":
-                        # Latency-sensitive services process faster
-                        service_latency = base_latency * 0.8
-                        if span:
-                            span.set_attribute("resource.profile", "latency_sensitive")
-                            span.set_attribute("profile.latency_multiplier", 0.8)
-                    else:
-                        # Standard profile
-                        service_latency = base_latency
-                        if span:
-                            span.set_attribute("resource.profile", "standard")
+                    latency_multiplier = get_profile_multiplier(self.resource_profile)
+                    service_latency = base_latency * latency_multiplier
+
+                    if span:
+                        span.set_attribute("resource.profile", self.resource_profile)
+                        span.set_attribute("profile.latency_multiplier", latency_multiplier)
 
                     yield self.env.timeout(service_latency)
 

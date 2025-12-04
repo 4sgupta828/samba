@@ -7,6 +7,7 @@ import math
 import networkx as nx
 from typing import Dict, Any, List, Tuple, Set
 from src.validation.component_profiles import get_component_profile, get_network_latency
+from src.core.constants import get_profile_multiplier
 
 class CapacityPlanner:
     def __init__(self, graph: nx.DiGraph, semantic_map: Dict = None):
@@ -160,13 +161,7 @@ class CapacityPlanner:
             if self.semantic_map and 'services' in self.semantic_map:
                 child_sem_profile = self.semantic_map['services'].get(child, {}).get('profile', 'standard')
 
-            mult = 1.0
-            if child_sem_profile == "cpu_intensive":
-                mult = 2.5
-            elif child_sem_profile == "io_intensive":
-                mult = 1.1
-            elif child_sem_profile == "latency_sensitive":
-                mult = 0.8
+            mult = get_profile_multiplier(child_sem_profile)
 
             child_effective_time = child_profile_base.p99 * mult
 
@@ -194,10 +189,7 @@ class CapacityPlanner:
             svc_data = self.semantic_map['services'].get(node_id, {})
             resource_profile = svc_data.get('profile', 'standard')
 
-        latency_multiplier = 1.0
-        if resource_profile == "cpu_intensive": latency_multiplier = 2.5
-        elif resource_profile == "io_intensive": latency_multiplier = 1.1
-        elif resource_profile == "latency_sensitive": latency_multiplier = 0.8
+        latency_multiplier = get_profile_multiplier(resource_profile)
 
         # Effective local processing time
         effective_processing_ms = base_processing_ms * latency_multiplier
