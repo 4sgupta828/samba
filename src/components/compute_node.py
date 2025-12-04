@@ -35,6 +35,14 @@ class ComputeNode(EnrichedComponent):
         # Pods running on this node
         self.pods = []  # List of Pod objects
 
+        # Load contention configuration from centralized config
+        config = get_simulation_config().compute.contention
+        self.contention_config = {
+            'cpu_threshold': config.cpu_threshold,
+            'base_penalty_ms': config.base_penalty_ms,
+            'sensitivity': config.sensitivity,
+        }
+
         # Node-level metrics
         self.node_cpu_metric = self.meter.create_observable_gauge(
             "node.cpu.utilization",
@@ -128,6 +136,40 @@ class ComputeNode(EnrichedComponent):
         cpu_util = self.get_total_pod_cpu() / (self.cpu_cores * 100)
         memory_util = self.get_total_pod_memory() / (self.memory_gb * 1024)
         return cpu_util, memory_util
+
+    def get_contention_penalty(self):
+        """
+        Calculate CPU steal time penalty based on node-level resource contention.
+
+        When total CPU utilization exceeds threshold (default 90%), pods experience
+        CPU steal time where the OS scheduler cannot give them CPU slices.
+
+        Returns:
+            float: Penalty in milliseconds (0 if below threshold)
+
+        Formula:
+            penalty_ms = base_penalty * exp((util - threshold) * sensitivity)
+
+        Examples:
+            At 95% util: ~50ms penalty
+            At 99% util: ~500ms penalty
+        """
+        import math
+
+        cpu_util, _ = self.get_utilization()
+
+        # Below threshold - no contention
+        if cpu_util < self.contention_config['cpu_threshold']:
+            return 0.0
+
+        # Calculate exponential steal time penalty
+        excess = cpu_util - self.contention_config['cpu_threshold']
+        base = self.contention_config['base_penalty_ms']
+        sensitivity = self.contention_config['sensitivity']
+
+        penalty_ms = base * math.exp(excess * sensitivity)
+
+        return penalty_ms
 
     def _report_node_cpu(self, options):
         """Report total CPU utilization across all pods."""

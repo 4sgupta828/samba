@@ -68,6 +68,14 @@ class TimeoutsConfig:
 
 
 @dataclass
+class ContentionConfig:
+    """Node-level resource contention configuration (Noisy Neighbor)."""
+    cpu_threshold: float = 0.90  # CPU utilization threshold for contention (90%)
+    base_penalty_ms: float = 10.0  # Base penalty at threshold
+    sensitivity: float = 10.0  # Exponential sensitivity factor
+
+
+@dataclass
 class ComputeConfig:
     """Compute component configuration."""
     # Resource capacities
@@ -75,6 +83,9 @@ class ComputeConfig:
     memory_capacity_mb: float = 512.0
     cpu_capacity_cores: float = 1.0
     db_connection_pool_capacity: int = 20
+
+    # Node-level contention
+    contention: ContentionConfig = field(default_factory=ContentionConfig)
 
     # Client-side timeouts
     timeouts: TimeoutsConfig = field(default_factory=TimeoutsConfig)
@@ -417,6 +428,14 @@ class SimulationConfig:
         # Compute
         compute_data = data.get('compute', {})
 
+        # Parse contention
+        contention_data = compute_data.get('contention', {})
+        contention = ContentionConfig(
+            cpu_threshold=contention_data.get('cpu_threshold', 0.90),
+            base_penalty_ms=contention_data.get('base_penalty_ms', 10.0),
+            sensitivity=contention_data.get('sensitivity', 10.0)
+        )
+
         # Parse timeouts
         timeouts_data = compute_data.get('timeouts', {})
         timeouts = TimeoutsConfig(
@@ -431,6 +450,7 @@ class SimulationConfig:
             cpu_capacity_cores=compute_data.get('resources', {}).get('cpu_capacity_cores', 1.0),
             db_connection_pool_capacity=compute_data.get('resources', {}).get('db_connection_pool_capacity', 20),
 
+            contention=contention,
             timeouts=timeouts,
 
             startup_time_range_seconds=compute_data.get('startup', {}).get('time_range_seconds', [5, 15]),

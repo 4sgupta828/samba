@@ -34,9 +34,53 @@ class EpisodeConfig:
         if self.fault_params:
             return self.fault_params
 
-        # All faults load defaults from simulation_config.yaml
-        # Return empty dict for all fault types
-        return {}
+        # Default parameters for each failure type
+        param_defaults = {
+            'cpu_saturation': {
+                'cpu_multiplier': 3.0,
+                'latency_multiplier': 2.0,
+                'cpu_latency_ms': 500
+            },
+            'memory_leak': {
+                'leak_mb_per_request': 0.5
+            },
+            'inject_latency': {
+                'latency_ms': 2000
+            },
+            'slow_queries': {
+                'wear_factor': 0.5
+            },
+            'connection_exhaustion': {
+                'latency_ms': 1000
+            },
+            'enable_background_job': {},
+            'cache_failure': {},
+            'inject_errors': {
+                'error_rate': 0.3
+            },
+            'queue_consumer_slowdown': {
+                'latency_ms': 8000  # 8 seconds - exceeds visibility timeout to cause redelivery
+            },
+            # Structural failure modes
+            'noisy_neighbor': {
+                'cpu_percent': 100.0  # Pin CPU to 100% on aggressor pod
+            },
+            'hot_shard': {
+                'target_pod_index': 0,
+                'skew_factor': 0.8  # 80% traffic to hot shard
+            },
+            'network_partition': {
+                'source_component_id': None,  # Will be set dynamically
+                'target_component_id': None,   # Will be set dynamically
+                'bidirectional': True
+            },
+            'force_deadlock': {
+                'locked_threads': 10,  # Lock 10 threads
+                'duration': 300.0       # 5 minutes
+            }
+        }
+
+        return param_defaults.get(self.fault_type, {})
 
 
 class ScenarioLibrary:
@@ -153,7 +197,7 @@ class ScenarioLibrary:
         ]
 
     def _get_level3_scenarios(self) -> List[EpisodeConfig]:
-        """Level 3: Complex interactions (caches, queues)."""
+        """Level 3: Complex interactions (caches, queues, multi-tenancy)."""
         return [
             EpisodeConfig(
                 level=3,
@@ -185,10 +229,40 @@ class ScenarioLibrary:
                 description="Message queue backlog",
                 progression="exponential"  # Queue backlogs compound exponentially
             ),
+            EpisodeConfig(
+                level=3,
+                topology_size=20,
+                duration=900,
+                fault_type="hot_shard",
+                fault_target_role="service",
+                export_interval=10,
+                description="Hot shard causing traffic skew",
+                progression="step"  # Traffic shifts are often sudden
+            ),
+            EpisodeConfig(
+                level=3,
+                topology_size=20,
+                duration=900,
+                fault_type="force_deadlock",
+                fault_target_role="service",
+                export_interval=10,
+                description="Thread deadlock causing request queueing",
+                progression="step"  # Deadlocks occur suddenly
+            ),
+            EpisodeConfig(
+                level=3,
+                topology_size=20,
+                duration=900,
+                fault_type="noisy_neighbor",
+                fault_target_role="service",
+                export_interval=10,
+                description="Noisy neighbor causing CPU contention",
+                progression="linear"  # Resource contention can build gradually
+            ),
         ]
 
     def _get_level4_scenarios(self) -> List[EpisodeConfig]:
-        """Level 4: External dependencies (black swan events)."""
+        """Level 4: External dependencies and network failures (black swan events)."""
         return [
             EpisodeConfig(
                 level=4,
@@ -209,6 +283,16 @@ class ScenarioLibrary:
                 export_interval=5,
                 description="External API error rate increase",
                 progression="step"  # External failures often happen suddenly
+            ),
+            EpisodeConfig(
+                level=4,
+                topology_size=25,
+                duration=600,
+                fault_type="network_partition",
+                fault_target_role="network",
+                export_interval=5,
+                description="Network partition between components",
+                progression="step"  # Network splits are sudden
             ),
         ]
 
