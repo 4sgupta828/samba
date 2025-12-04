@@ -232,7 +232,7 @@ telemetry:
   metric_flush_interval_seconds: 2  # Check every 2 seconds for more frequent exports
 
   # Logging configuration - more diverse log levels
-  min_log_level: "INFO"
+  min_log_level: "WARN"
   log_throttle_window_seconds: 5.0  # Shorter throttle window for more log diversity
   log_throttle_cleanup_threshold_seconds: 30.0  # Faster cleanup for more dynamic logs
 

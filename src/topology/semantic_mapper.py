@@ -59,13 +59,18 @@ class SemanticMapper:
         Returns:
             Dictionary with domain, services, request_types, and request_flows
         """
+        import time
+
         if not self.client:
             # Fallback to deterministic heuristic if no API key
             return self._generate_heuristic_overlay(topology_graph)
 
         try:
             # Convert graph to LLM-friendly format
+            t0 = time.time()
             graph_repr = self._serialize_graph_for_llm(topology_graph)
+            serialization_time = time.time() - t0
+            print(f"  [Timing] Graph serialization: {serialization_time:.3f}s")
 
             # Set up timeout (30 seconds for API call)
             signal.signal(signal.SIGALRM, timeout_handler)
@@ -73,6 +78,7 @@ class SemanticMapper:
 
             try:
                 # Call Claude API
+                t0 = time.time()
                 response = self.client.messages.create(
                     model=self.model,
                     max_tokens=4096,
@@ -82,11 +88,14 @@ class SemanticMapper:
                         "content": f"Analyze this topology and assign domain-specific semantics:\n\n{json.dumps(graph_repr, indent=2)}"
                     }]
                 )
+                api_call_time = time.time() - t0
+                print(f"  [Timing] Claude API call: {api_call_time:.3f}s")
             finally:
                 # Cancel the alarm
                 signal.alarm(0)
 
             # Parse response
+            t0 = time.time()
             response_text = response.content[0].text
 
             # Extract JSON from response (handle markdown code blocks)
@@ -103,12 +112,15 @@ class SemanticMapper:
                     json_text = response_text.strip()
 
                 semantic_overlay = json.loads(json_text)
+                parsing_time = time.time() - t0
+                print(f"  [Timing] Response parsing: {parsing_time:.3f}s")
             except (ValueError, json.JSONDecodeError) as parse_error:
                 print(f"Warning: Failed to parse Claude response as JSON: {parse_error}")
                 print(f"Response text: {response_text[:200]}...")
                 raise
 
             # Validate the overlay structure
+            t0 = time.time()
             self._validate_overlay(semantic_overlay, topology_graph)
 
             # Ensure description exists (add fallback if Claude didn't provide it)
@@ -123,6 +135,9 @@ class SemanticMapper:
                 }
                 semantic_overlay['description'] = descriptions.get(domain, "This is a distributed microservices architecture. Requests flow through the system from frontend services to backend data stores. Key bottlenecks may include service dependencies and database connections. Common fault modes include service failures, network issues, and resource exhaustion.")
                 print(f"Warning: Claude did not provide description, using fallback for domain '{domain}'")
+
+            validation_time = time.time() - t0
+            print(f"  [Timing] Validation & post-processing: {validation_time:.3f}s")
 
             return semantic_overlay
 

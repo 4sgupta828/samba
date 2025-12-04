@@ -161,9 +161,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     Returns:
         Dictionary with episode metadata
     """
+    # Performance timing
+    import time
+    phase_timings = {}
+    episode_start = time.time()
+
     # 0. Setup episode directory and logging
+    phase_start = time.time()
     episode_dir = os.path.join(output_dir, f'ep_{episode_id}')
     os.makedirs(episode_dir, exist_ok=True)
+    phase_timings['setup'] = time.time() - phase_start
 
     # Initialize variables for cleanup
     workload_path = None
@@ -206,7 +213,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     log_file = open(simulation_log_path, 'a')
     sys.stdout = TeeStream(log_file, original_stdout)
     sys.stderr = TeeStream(log_file, original_stderr)
+
     # 1. Generate Topology first to see what node types are available
+    phase_start = time.time()
     # Override topology size if specified, otherwise use random size between 8-15
     if topology_size is not None:
         actual_topology_size = topology_size
@@ -297,7 +306,10 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"{'='*60}")
         print_topology_summary(nx_graph)
 
+    phase_timings['topology_generation'] = time.time() - phase_start
+
     # 2.3. Generate Semantic Overlay using Claude (if enabled)
+    phase_start = time.time()
     from src.core.simulation_config import get_simulation_config
     sim_config_obj = get_simulation_config()
     semantic_config = getattr(sim_config_obj, 'semantic', None)
@@ -332,7 +344,10 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"\n[Semantic Mapping]")
             print(f"  Semantic overlay DISABLED (using standard profiles and probabilistic routing)")
 
+    phase_timings['semantic_overlay'] = time.time() - phase_start
+
     # --- Deterministic Capacity Planning ---
+    phase_start = time.time()
     if verbose:
         print(f"\n[Capacity Planning]")
         print(f"  Analyzing flows and tuning resources...")
@@ -376,8 +391,10 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     workload_path = create_dynamic_workload(nx_graph, base_rps=int(target_rps*0.8), peak_rps=target_rps)
 
     # --- End Capacity Planning ---
+    phase_timings['capacity_planning'] = time.time() - phase_start
 
     # 4. Configure Simulation (episode_dir already created in step 0)
+    phase_start = time.time()
 
     # Export capacity planning analysis
     capacity_export = {
@@ -688,7 +705,10 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"\n[Initial Topology State]")
         print(f"  Exported initial snapshot at t=0")
 
+    phase_timings['simulation_setup'] = time.time() - phase_start
+
     # 10. Run Simulation
+    phase_start = time.time()
     try:
         if verbose:
             print(f"\n[Simulation]")
@@ -704,7 +724,10 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"  Exported final topology snapshot")
             print(f"  Output directory: {episode_dir}")
 
+        phase_timings['simulation_run'] = time.time() - phase_start
+
         # 11. Auto-generate Fault Propagation Analysis
+        phase_start = time.time()
         if verbose:
             print(f"\n[Fault Propagation Analysis]")
             print(f"  Analyzing fault propagation...")
@@ -820,12 +843,34 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             root_logger.removeHandler(file_handler)
             file_handler.close()
 
+    # Record post-processing time
+    phase_timings['post_processing'] = time.time() - phase_start
+    phase_timings['total'] = time.time() - episode_start
+
+    # Save performance timing data
+    timing_file = os.path.join(episode_dir, 'performance_timing.json')
+    with open(timing_file, 'w') as f:
+        json.dump(phase_timings, f, indent=2)
+
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"PERFORMANCE TIMING BREAKDOWN")
+        print(f"{'='*60}")
+        for phase, duration in phase_timings.items():
+            if phase != 'total':
+                pct = (duration / phase_timings['total']) * 100 if phase_timings['total'] > 0 else 0
+                print(f"  {phase:25s}: {duration:6.2f}s ({pct:5.1f}%)")
+        print(f"  {'='*25}   {'='*6}   {'='*7}")
+        print(f"  {'TOTAL':25s}: {phase_timings['total']:6.2f}s (100.0%)")
+        print(f"{'='*60}\n")
+
     return {
         'episode_id': episode_id,
         'level': level,
         'output_dir': episode_dir,
         'root_cause': actual_target_id,
-        'fault_type': cfg.fault_type
+        'fault_type': cfg.fault_type,
+        'performance_timings': phase_timings
     }
 
 
