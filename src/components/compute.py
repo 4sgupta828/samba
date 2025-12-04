@@ -18,7 +18,10 @@ class ComputeAgent(EnrichedComponent):
 
         # Client-side connection pool (like HikariCP, pgBouncer, etc.)
         # Each compute agent manages its own pool of DB connections
-        self.db_connection_pool = simpy.Resource(env, capacity=config.db_connection_pool_capacity)
+        if config.db_connection_pool_capacity > 0:
+            self.db_connection_pool = simpy.Resource(env, capacity=config.db_connection_pool_capacity)
+        else:
+            self.db_connection_pool = None
 
         # Phase 3.1: Thread pool for request processing
         self.thread_pool_size = getattr(config, 'thread_pool_size', 50)
