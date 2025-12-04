@@ -86,6 +86,11 @@ VALID_FAULT_COMBINATIONS = {
     'cache_failure': ['cache'],
     'inject_errors': ['external'],
     'queue_consumer_slowdown': ['queue'],
+    # Structural faults
+    'noisy_neighbor': ['service'],
+    'hot_shard': ['service'],
+    'force_deadlock': ['service'],
+    'network_partition': ['network'],
 }
 
 # Fault type durations (from scenario library)
@@ -99,6 +104,11 @@ FAULT_DURATIONS = {
     'cache_failure': 900,  # 15 min
     'inject_errors': 600,  # 10 min
     'queue_consumer_slowdown': 900,  # 15 min
+    # Structural faults
+    'noisy_neighbor': 900,  # 15 min
+    'hot_shard': 900,  # 15 min
+    'force_deadlock': 900,  # 15 min
+    'network_partition': 600,  # 10 min
 }
 
 # Reverse mapping: role -> valid fault types
@@ -202,6 +212,51 @@ app.layout = dbc.Container([
                                 ),
                             ], width=2),
                             dbc.Col([
+                                dbc.Label("Fault Type (optional):", html_for="fault-type-dropdown"),
+                                dcc.Dropdown(
+                                    id='fault-type-dropdown',
+                                    options=[
+                                        {'label': 'Any (Random)', 'value': ''},
+                                        {'label': 'CPU Saturation', 'value': 'cpu_saturation'},
+                                        {'label': 'Memory Leak', 'value': 'memory_leak'},
+                                        {'label': 'Inject Latency', 'value': 'inject_latency'},
+                                        {'label': 'Slow Queries', 'value': 'slow_queries'},
+                                        {'label': 'Connection Exhaustion', 'value': 'connection_exhaustion'},
+                                        {'label': 'Background Job', 'value': 'enable_background_job'},
+                                        {'label': 'Cache Failure', 'value': 'cache_failure'},
+                                        {'label': 'Inject Errors', 'value': 'inject_errors'},
+                                        {'label': 'Queue Consumer Slowdown', 'value': 'queue_consumer_slowdown'},
+                                        {'label': 'Noisy Neighbor', 'value': 'noisy_neighbor'},
+                                        {'label': 'Hot Shard', 'value': 'hot_shard'},
+                                        {'label': 'Network Partition', 'value': 'network_partition'},
+                                        {'label': 'Force Deadlock', 'value': 'force_deadlock'},
+                                    ],
+                                    value='',
+                                    placeholder="Select fault type...",
+                                    clearable=True
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Label("Node Type (optional):", html_for="fault-role-dropdown"),
+                                dcc.Dropdown(
+                                    id='fault-role-dropdown',
+                                    options=[
+                                        {'label': 'Any (Random)', 'value': ''},
+                                        {'label': 'Service', 'value': 'service'},
+                                        {'label': 'Database', 'value': 'database'},
+                                        {'label': 'Cache', 'value': 'cache'},
+                                        {'label': 'Queue', 'value': 'queue'},
+                                        {'label': 'External', 'value': 'external'},
+                                        {'label': 'Network', 'value': 'network'},
+                                    ],
+                                    value='',
+                                    placeholder="Select node type...",
+                                    clearable=True
+                                ),
+                            ], width=2),
+                        ]),
+                        dbc.Row([
+                            dbc.Col([
                                 dbc.Label("Output Directory:", html_for="output-dir-input"),
                                 dbc.Input(
                                     id='output-dir-input',
@@ -238,53 +293,6 @@ app.layout = dbc.Container([
                                 ),
                             ], width=2),
                         ]),
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Label("Force Fault Type (optional):", html_for="fault-type-input"),
-                                dcc.Dropdown(
-                                    id='fault-type-input',
-                                    options=[
-                                        {'label': 'CPU Saturation (5min)', 'value': 'cpu_saturation'},
-                                        {'label': 'Memory Leak (5min)', 'value': 'memory_leak'},
-                                        {'label': 'Inject Latency (5-15min)', 'value': 'inject_latency'},
-                                        {'label': 'Slow Queries (10min)', 'value': 'slow_queries'},
-                                        {'label': 'Connection Exhaustion (10min)', 'value': 'connection_exhaustion'},
-                                        {'label': 'Enable Background Job (10min)', 'value': 'enable_background_job'},
-                                        {'label': 'Cache Failure (15min)', 'value': 'cache_failure'},
-                                        {'label': 'Inject Errors (10min)', 'value': 'inject_errors'},
-                                        {'label': 'Queue Consumer Slowdown (15min)', 'value': 'queue_consumer_slowdown'},
-                                    ],
-                                    placeholder="Select fault type (leave empty for random)",
-                                    clearable=True
-                                ),
-                            ], width=3),
-                            dbc.Col([
-                                dbc.Label("Force Fault Role (optional):", html_for="fault-role-input"),
-                                dcc.Dropdown(
-                                    id='fault-role-input',
-                                    options=[
-                                        {'label': 'Service', 'value': 'service'},
-                                        {'label': 'Database', 'value': 'database'},
-                                        {'label': 'Cache', 'value': 'cache'},
-                                        {'label': 'Queue', 'value': 'queue'},
-                                        {'label': 'External', 'value': 'external'},
-                                    ],
-                                    placeholder="Select fault role (leave empty for random)",
-                                    clearable=True
-                                ),
-                            ], width=3),
-                            dbc.Col([
-                                html.Div([
-                                    dbc.Badge("Single Episode Only", color="warning", className="mt-4"),
-                                    html.Small(" Fault forcing only works with 1 episode", className="text-muted ms-2")
-                                ]),
-                                html.Div([
-                                    html.Small("💡 Tip: Select fault type or role first - options will auto-filter to valid combinations",
-                                             className="text-info mt-2", style={'fontSize': '0.85rem'})
-                                ]),
-                                html.Div(id='duration-warning', className="mt-2")
-                            ], width=6),
-                        ], className="mt-3"),
                         html.Hr(),
                         dbc.Row([
                             dbc.Col([
@@ -1210,10 +1218,10 @@ def toggle_generator_collapse(n_clicks, is_open):
 
 
 @app.callback(
-    Output('fault-role-input', 'options'),
-    Output('fault-type-input', 'options'),
-    Input('fault-type-input', 'value'),
-    Input('fault-role-input', 'value'),
+    Output('fault-role-dropdown', 'options'),
+    Output('fault-type-dropdown', 'options'),
+    Input('fault-type-dropdown', 'value'),
+    Input('fault-role-dropdown', 'value'),
 )
 def update_fault_dropdowns(fault_type, fault_role):
     """Update both fault type and role dropdown options to show only valid combinations.
@@ -1235,6 +1243,7 @@ def update_fault_dropdowns(fault_type, fault_role):
         'cache': 'Cache',
         'queue': 'Queue',
         'external': 'External',
+        'network': 'Network',
     }
 
     fault_type_labels = {
@@ -1247,6 +1256,10 @@ def update_fault_dropdowns(fault_type, fault_role):
         'cache_failure': 'Cache Failure (15min)',
         'inject_errors': 'Inject Errors (10min)',
         'queue_consumer_slowdown': 'Queue Consumer Slowdown (15min)',
+        'noisy_neighbor': 'Noisy Neighbor (15min)',
+        'hot_shard': 'Hot Shard (15min)',
+        'force_deadlock': 'Force Deadlock (15min)',
+        'network_partition': 'Network Partition (10min)',
     }
 
     # Default: show all options
@@ -1261,7 +1274,7 @@ def update_fault_dropdowns(fault_type, fault_role):
     ]
 
     # If fault type was just selected, filter roles
-    if trigger_id == 'fault-type-input' and fault_type:
+    if trigger_id == 'fault-type-dropdown' and fault_type:
         valid_roles = VALID_FAULT_COMBINATIONS.get(fault_type, [])
         role_options = [
             {'label': role_labels[role], 'value': role}
@@ -1270,7 +1283,7 @@ def update_fault_dropdowns(fault_type, fault_role):
         return role_options, all_fault_type_options
 
     # If role was just selected, filter fault types
-    elif trigger_id == 'fault-role-input' and fault_role:
+    elif trigger_id == 'fault-role-dropdown' and fault_role:
         valid_fault_types = VALID_ROLE_FAULTS.get(fault_role, [])
         fault_type_options = [
             {'label': fault_type_labels[ft], 'value': ft}
@@ -1283,51 +1296,20 @@ def update_fault_dropdowns(fault_type, fault_role):
 
 
 @app.callback(
-    Output('duration-warning', 'children'),
-    Input('fault-type-input', 'value'),
-)
-def show_duration_warning(fault_type):
-    """Show a warning for long-running scenarios."""
-    if not fault_type:
-        return ""
-
-    duration = FAULT_DURATIONS.get(fault_type, 0)
-    duration_mins = duration // 60
-
-    if duration >= 900:  # 15 minutes or more
-        return dbc.Alert([
-            html.Strong("⏰ Long-running scenario: "),
-            html.Span(f"This will take approximately {duration_mins} minutes to complete.")
-        ], color="warning", className="py-2 px-3 mb-0", style={'fontSize': '0.85rem'})
-    elif duration >= 600:  # 10 minutes or more
-        return html.Small(
-            f"⏱️ Estimated duration: ~{duration_mins} minutes",
-            className="text-warning",
-            style={'fontSize': '0.85rem'}
-        )
-    else:
-        return html.Small(
-            f"⏱️ Estimated duration: ~{duration_mins} minutes",
-            className="text-muted",
-            style={'fontSize': '0.85rem'}
-        )
-
-
-@app.callback(
     Output('generation-status', 'children'),
     Output('generation-poll-interval', 'disabled'),
     Output('generate-button', 'disabled'),
     Input('generate-button', 'n_clicks'),
     State('episodes-input', 'value'),
     State('topology-size-input', 'value'),
+    State('fault-type-dropdown', 'value'),
+    State('fault-role-dropdown', 'value'),
     State('output-dir-input', 'value'),
     State('seed-input', 'value'),
     State('verbose-checkbox', 'value'),
-    State('fault-type-input', 'value'),
-    State('fault-role-input', 'value'),
     prevent_initial_call=True
 )
-def start_generation(n_clicks, num_episodes, topology_size, output_dir, seed, verbose_list, fault_type, fault_role):
+def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list):
     """Start dataset generation in background when button is clicked."""
     import subprocess
     import sys
@@ -1378,6 +1360,12 @@ def start_generation(n_clicks, num_episodes, topology_size, output_dir, seed, ve
 
     if topology_size:
         cmd.extend(['--topology-size', str(topology_size)])
+
+    if fault_type:
+        cmd.extend(['--fault-type', fault_type])
+
+    if fault_role:
+        cmd.extend(['--fault-role', fault_role])
 
     if seed:
         cmd.extend(['--seed', str(seed)])
