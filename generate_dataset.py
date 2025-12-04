@@ -201,11 +201,12 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         topo_gen = TopologyGenerator(seed=episode_id)
         nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
 
-        # Verify the topology has the required role
-        available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
-        if cfg.fault_target_role not in available_roles:
-            print(f"Error: Generated topology doesn't have required role '{cfg.fault_target_role}'")
-            return None
+        # Verify the topology has the required role (skip for network_partition)
+        if cfg.fault_type != 'network_partition':
+            available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
+            if cfg.fault_target_role not in available_roles:
+                print(f"Error: Generated topology doesn't have required role '{cfg.fault_target_role}'")
+                return None
 
         level = cfg.topology_size  # Use topology size as level for display
     # If topology_size is specified, generate topology first to determine available node types
@@ -224,7 +225,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             temp_cfg.topology_size = actual_topology_size
 
             # Check if this scenario's target role exists in the topology
-            if temp_cfg.fault_target_role in available_roles:
+            # Skip role check for network_partition (it works with any topology)
+            if temp_cfg.fault_type == 'network_partition' or temp_cfg.fault_target_role in available_roles:
                 cfg = temp_cfg
                 break
 
@@ -415,51 +417,87 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"  Registered {len([c for c in registry.values() if isinstance(c, DeploymentController)])} controllers")
 
     # 7. Inject Fault Programmatically (GRADUAL APPLICATION)
-    valid_targets = [
-        nid for nid, data in nx_graph.nodes(data=True)
-        if data.get('role') == cfg.fault_target_role
-    ]
+    # Special handling for network_partition
+    if cfg.fault_type == 'network_partition':
+        # Network partition requires two components (source and target)
+        # Pick any two components from the topology
+        all_component_ids = list(nx_graph.nodes())
+        if len(all_component_ids) < 2:
+            print(f"Error: Network partition requires at least 2 components, found {len(all_component_ids)}")
+            return None
 
-    # This should never happen now since we pre-validate scenarios
-    if not valid_targets:
-        raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
+        # Randomly select two different components
+        source_id, target_id = random.sample(all_component_ids, 2)
 
-    # Select target with good propagation potential
-    # Prefer targets with multiple upstream callers for better fault propagation
-    def score_target_connectivity(target_node):
-        """Score a target based on propagation potential."""
-        # Count direct upstream callers (who will be impacted)
-        predecessors = list(nx_graph.predecessors(target_node))
-        num_callers = len(predecessors)
+        # Update params with the selected components
+        params = cfg.get_failure_params()
+        params['source_component_id'] = source_id
+        params['target_component_id'] = target_id
 
-        # Count second-order callers (propagation depth)
-        second_order = set()
-        for pred in predecessors:
-            second_order.update(nx_graph.predecessors(pred))
+        # For network partition, the target is the global_network NetworkLink
+        # We need to ensure it exists in the registry
+        if 'global_network' not in registry:
+            # Create the global NetworkLink if it doesn't exist
+            from src.components.network import NetworkLink
+            registry['global_network'] = NetworkLink(sim.env, 'global_network')
 
-        # Higher score = better propagation potential
-        # Prioritize: multiple direct callers + deep propagation potential
-        return num_callers * 10 + len(second_order)
+        # Set target_id to global_network for fault injection
+        actual_target_id = 'global_network'
 
-    # Score all targets and select from top candidates
-    target_scores = [(t, score_target_connectivity(t)) for t in valid_targets]
-    target_scores.sort(key=lambda x: x[1], reverse=True)
-
-    # Select from top 50% to maintain some randomness but avoid worst cases
-    top_half = max(1, len(target_scores) // 2)
-    target_candidates = [t for t, score in target_scores[:top_half] if score > 0]
-
-    # Fallback to all targets if no good candidates (shouldn't happen often)
-    if not target_candidates:
-        target_candidates = valid_targets
         if verbose:
-            print(f"  Warning: No well-connected targets found, using all {len(valid_targets)} candidates")
+            print(f"\n[Network Partition Setup]")
+            print(f"  Partitioning: {source_id} <-> {target_id}")
+            print(f"  Target component: {actual_target_id}")
+    else:
+        # Normal fault injection: select one component with matching role
+        valid_targets = [
+            nid for nid, data in nx_graph.nodes(data=True)
+            if data.get('role') == cfg.fault_target_role
+        ]
 
-    target_id = random.choice(target_candidates)
-    target_score = next((score for t, score in target_scores if t == target_id), 0)
+        # This should never happen now since we pre-validate scenarios
+        if not valid_targets:
+            raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
 
-    if verbose and target_score > 0:
-        print(f"  Selected target {target_id} (connectivity score: {target_score})")
+        # Select target with good propagation potential
+        # Prefer targets with multiple upstream callers for better fault propagation
+        def score_target_connectivity(target_node):
+            """Score a target based on propagation potential."""
+            # Count direct upstream callers (who will be impacted)
+            predecessors = list(nx_graph.predecessors(target_node))
+            num_callers = len(predecessors)
+
+            # Count second-order callers (propagation depth)
+            second_order = set()
+            for pred in predecessors:
+                second_order.update(nx_graph.predecessors(pred))
+
+            # Higher score = better propagation potential
+            # Prioritize: multiple direct callers + deep propagation potential
+            return num_callers * 10 + len(second_order)
+
+        # Score all targets and select from top candidates
+        target_scores = [(t, score_target_connectivity(t)) for t in valid_targets]
+        target_scores.sort(key=lambda x: x[1], reverse=True)
+
+        # Select from top 50% to maintain some randomness but avoid worst cases
+        top_half = max(1, len(target_scores) // 2)
+        target_candidates = [t for t, score in target_scores[:top_half] if score > 0]
+
+        # Fallback to all targets if no good candidates (shouldn't happen often)
+        if not target_candidates:
+            target_candidates = valid_targets
+            if verbose:
+                print(f"  Warning: No well-connected targets found, using all {len(valid_targets)} candidates")
+
+        target_id = random.choice(target_candidates)
+        target_score = next((score for t, score in target_scores if t == target_id), 0)
+
+        if verbose and target_score > 0:
+            print(f"  Selected target {target_id} (connectivity score: {target_score})")
+
+        actual_target_id = target_id
+        params = cfg.get_failure_params()
 
     # Calculate A-B-A timeline (Healthy -> Fault -> Recovery):
     # - Warmup: 0 to start_time (healthy baseline)
@@ -475,7 +513,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     if verbose:
         print(f"\n[Fault Injection - A-B-A TIMELINE]")
-        print(f"  Target: {target_id}")
+        print(f"  Target: {actual_target_id}")
+        if cfg.fault_type == 'network_partition':
+            print(f"  Partitioned components: {source_id} <-> {target_id}")
         print(f"  Phase A (Healthy): 0s - {fault_start_time}s")
         print(f"  Phase B Ramp (Degradation): {fault_start_time}s - {fault_start_time + fault_ramp_duration}s")
         print(f"  Phase B Sustain (Full Fault): {fault_start_time + fault_ramp_duration}s - {recovery_start_time}s")
@@ -490,12 +530,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         simulation_start_timestamp_ns=sim.simulation_start_timestamp_ns
     )
 
-    # Configure failure parameters based on type
-    params = cfg.get_failure_params()
-
     # Schedule GRADUAL fault injection (Phase A -> B)
     injector.inject_gradual_failure(
-        target_id=target_id,
+        target_id=actual_target_id,
         failure_mode=cfg.fault_type,
         start_time=fault_start_time,
         duration=fault_ramp_duration,
@@ -512,7 +549,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
         # Apply gradual revert (which may or may not be a generator itself)
         revert_result = injector.revert_gradual_failure(
-            target_id=target_id,
+            target_id=actual_target_id,
             failure_mode=cfg.fault_type,
             params=params,
             duration=fault_ramp_duration  # Symmetric recovery duration
@@ -530,7 +567,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         'episode': episode_id,
         'level': level,
         'scenario': cfg.description,
-        'root_cause_node': target_id,
+        'root_cause_node': actual_target_id,
         'root_cause_role': cfg.fault_target_role,
         'fault_type': cfg.fault_type,
         'fault_start_time': fault_start_time,
@@ -565,6 +602,14 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             'frontends': [n for n, d in nx_graph.nodes(data=True) if d.get('is_frontend')]
         }
     }
+
+    # Add network partition specific information to label
+    if cfg.fault_type == 'network_partition':
+        label['network_partition'] = {
+            'source_component': source_id,
+            'target_component': target_id,
+            'bidirectional': params.get('bidirectional', True)
+        }
 
     label_path = os.path.join(episode_dir, 'label.json')
     with open(label_path, 'w') as f:
@@ -725,7 +770,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         'episode_id': episode_id,
         'level': level,
         'output_dir': episode_dir,
-        'root_cause': target_id,
+        'root_cause': actual_target_id,
         'fault_type': cfg.fault_type
     }
 
