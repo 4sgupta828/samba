@@ -20,6 +20,127 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.topology.llm_generator import LLMTopologyGenerator
+from src.failures.llm_target_selector import LLMFaultTargetSelector
+from src.failures.llm_propagation_predictor import LLMFaultPropagationPredictor
+from src.scenarios.library import ScenarioLibrary
+
+
+def precompute_fault_metadata(G: nx.DiGraph, topology_path: str, top_k: int = 3):
+    """
+    Pre-compute fault targets and propagation predictions for all fault types.
+
+    This is expensive (many LLM calls) but only needs to be done once per topology.
+    Results are cached and can be loaded during dataset generation.
+
+    Args:
+        G: NetworkX graph of the topology
+        topology_path: Path to save pre-computed metadata
+        top_k: Number of top targets to compute per fault type
+    """
+    print(f"      🔮 Pre-computing fault metadata...")
+
+    # Initialize LLM tools
+    target_selector = LLMFaultTargetSelector()
+    propagation_predictor = LLMFaultPropagationPredictor()
+
+    # Get all unique (fault_type, fault_target_role) pairs from scenario library
+    scenario_lib = ScenarioLibrary()
+    fault_type_role_pairs = set()
+    for level in [1, 2, 3, 4]:
+        for scenario in scenario_lib.levels[level]:
+            fault_type_role_pairs.add((scenario.fault_type, scenario.fault_target_role))
+
+    # Initialize storage
+    fault_targets = {}  # {fault_type:role -> [candidates]}
+    propagation_predictions = {}  # {fault_type:role:target_id -> prediction}
+
+    # Get available roles in this topology
+    available_roles = set(data.get('role') for _, data in G.nodes(data=True))
+
+    print(f"         Available roles: {available_roles}")
+    print(f"         Computing for {len(fault_type_role_pairs)} fault type-role combinations...")
+
+    computed_count = 0
+    skipped_count = 0
+
+    for fault_type, fault_target_role in sorted(fault_type_role_pairs):
+        fault_key = f"{fault_type}:{fault_target_role}"
+
+        # Skip if this topology doesn't have the required role
+        # Exception: network_partition works on any topology
+        if fault_type != 'network_partition' and fault_target_role not in available_roles:
+            skipped_count += 1
+            continue
+
+        try:
+            # 1. Select top-k fault targets
+            candidates = target_selector.select_candidates(
+                topology=G,
+                fault_type=fault_type,
+                fault_target_role=fault_target_role,
+                top_k=top_k
+            )
+
+            if not candidates:
+                skipped_count += 1
+                continue
+
+            fault_targets[fault_key] = candidates
+
+            # 2. For each candidate, predict propagation
+            for candidate in candidates:
+                target_id = candidate['node_id']
+                prediction_key = f"{fault_key}:{target_id}"
+
+                # Get default fault params for this fault type
+                from src.scenarios.library import EpisodeConfig
+                dummy_cfg = EpisodeConfig(
+                    level=1,
+                    topology_size=len(G.nodes),
+                    duration=300,
+                    fault_type=fault_type,
+                    fault_target_role=fault_target_role,
+                    export_interval=5,
+                    description="dummy"
+                )
+                fault_params = dummy_cfg.get_failure_params()
+
+                # Predict propagation
+                prediction = propagation_predictor.predict_propagation(
+                    topology=G,
+                    fault_node_id=target_id,
+                    fault_type=fault_type,
+                    fault_params=fault_params
+                )
+
+                propagation_predictions[prediction_key] = prediction
+
+            computed_count += 1
+            print(f"         ✓ {fault_key}: {len(candidates)} targets computed")
+
+        except Exception as e:
+            print(f"         ⚠ {fault_key}: Failed ({e})")
+            skipped_count += 1
+            continue
+
+    # Save to disk
+    fault_targets_path = os.path.join(topology_path, 'fault_targets.json')
+    with open(fault_targets_path, 'w') as f:
+        json.dump(fault_targets, f, indent=2)
+
+    propagation_dir = os.path.join(topology_path, 'propagation_predictions')
+    os.makedirs(propagation_dir, exist_ok=True)
+
+    # Save each prediction as a separate file for easier loading
+    for prediction_key, prediction in propagation_predictions.items():
+        prediction_path = os.path.join(propagation_dir, f'{prediction_key}.json')
+        with open(prediction_path, 'w') as f:
+            json.dump(prediction, f, indent=2)
+
+    print(f"      ✅ Pre-computed metadata saved:")
+    print(f"         - Fault targets: {computed_count} fault types")
+    print(f"         - Propagation predictions: {len(propagation_predictions)} predictions")
+    print(f"         - Skipped: {skipped_count} (role not available)")
 
 
 def main():
@@ -43,6 +164,18 @@ def main():
         type=str,
         default='claude-sonnet-4-20250514',
         help='Claude model to use (default: claude-sonnet-4-20250514)'
+    )
+    parser.add_argument(
+        '--precompute-faults',
+        action='store_true',
+        default=False,
+        help='Pre-compute fault targets and propagation predictions for all fault types (slow but enables fast dataset generation)'
+    )
+    parser.add_argument(
+        '--top-k-targets',
+        type=int,
+        default=3,
+        help='Number of top fault targets to compute per fault type (default: 3)'
     )
 
     args = parser.parse_args()
@@ -114,6 +247,14 @@ def main():
                 # Also save the raw LLM output for debugging
                 with open(f"{path}/raw_llm_output.json", 'w') as f:
                     json.dump(topo_data, f, indent=2)
+
+                # Pre-compute fault metadata if requested
+                if args.precompute_faults:
+                    try:
+                        precompute_fault_metadata(G, path, top_k=args.top_k_targets)
+                    except Exception as e:
+                        print(f"      ⚠ Fault pre-computation failed: {e}")
+                        print(f"      (Topology is still valid, but fault metadata not available)")
 
                 successful += 1
                 print(f"   ✅ Saved to {path}")

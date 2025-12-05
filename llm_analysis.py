@@ -83,6 +83,9 @@ class AnalysisResult:
     overall_summary: str
     key_findings: List[str]
 
+    # Expected vs Actual Propagation Comparison (optional)
+    propagation_comparison: Optional[Dict[str, Any]] = None
+
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers"""
@@ -288,10 +291,16 @@ class SimulationAnalyzer:
         root_cause_result = self._analyze_root_cause(context, impact_result, propagation_result)
         causal_chain = self._generate_causal_chain(context, impact_result, propagation_result, recovery_result)
 
+        # Compare expected vs actual propagation (if expected propagation is available)
+        propagation_comparison = None
+        if "expected_propagation" in context:
+            logger.info("Comparing expected vs actual fault propagation...")
+            propagation_comparison = self._compare_expected_vs_actual(context, propagation_result)
+
         # Combine results
         analysis = self._combine_results(
             impact_result, propagation_result, recovery_result,
-            root_cause_result, causal_chain
+            root_cause_result, causal_chain, propagation_comparison
         )
 
         return analysis
@@ -329,6 +338,12 @@ class SimulationAnalyzer:
         trace_file = episode_dir / "traces.jsonl"
         if trace_file.exists():
             context["traces"] = self._load_traces_jsonl(trace_file)
+
+        # Load expected propagation (if available from LLM prediction)
+        expected_propagation_file = episode_dir / "expected_propagation.json"
+        if expected_propagation_file.exists():
+            with open(expected_propagation_file, 'r') as f:
+                context["expected_propagation"] = json.load(f)
 
         return context
 
@@ -405,6 +420,80 @@ class SimulationAnalyzer:
 
         prompt = self._build_root_cause_prompt(context, impact_result, propagation_result)
         system_prompt = "You are an expert in distributed systems analysis. Provide deep root cause analysis."
+
+        result = self.llm.generate_json(prompt, system_prompt)
+        return result
+
+    def _compare_expected_vs_actual(self, context: Dict[str, Any],
+                                   propagation_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Compare expected propagation (from LLM prediction) vs actual propagation (from metrics)"""
+        logger.info("Comparing expected vs actual fault propagation...")
+
+        expected_propagation = context.get("expected_propagation", {})
+
+        prompt = f"""You are a distributed systems reliability engineer comparing predicted vs actual fault behavior.
+
+**Expected Propagation (Pre-Simulation Prediction):**
+{json.dumps(expected_propagation, indent=2)}
+
+**Actual Propagation (Post-Simulation Analysis):**
+{json.dumps(propagation_result, indent=2)}
+
+**Actual Metrics Summary:**
+{json.dumps(context.get("metrics", {}), indent=2)}
+
+**Your Task:**
+Compare the expected propagation pattern (predicted before simulation) with the actual observed behavior.
+
+Analyze:
+1. **Accuracy of Prediction:** Which parts of the prediction were accurate? Which were not?
+2. **Unexpected Behaviors:** What happened that was NOT predicted?
+3. **Missing Predictions:** What was predicted but did NOT happen?
+4. **Impact Radius Comparison:** Compare predicted vs actual impact radius (0-hop, 1-hop, 2-hop)
+5. **Mechanism Accuracy:** Were the predicted propagation mechanisms (latency buildup, backpressure, etc.) correct?
+6. **Hidden Dependencies:** Were hidden dependencies (shared compute nodes, async paths) correctly identified?
+7. **Severity Match:** Was the predicted severity accurate?
+
+**Output Format:**
+Return a JSON object:
+
+```json
+{{
+  "overall_accuracy": "HIGH|MEDIUM|LOW",
+  "accuracy_summary": "High-level summary of prediction accuracy (2-3 sentences)",
+  "accurate_predictions": [
+    {{"aspect": "Impact radius", "details": "Predicted 3 nodes in 1-hop, actual was 3 nodes"}},
+    {{"aspect": "Propagation mechanism", "details": "Correctly predicted latency buildup would cause upstream timeouts"}}
+  ],
+  "inaccurate_predictions": [
+    {{"aspect": "Severity", "details": "Predicted CRITICAL but actual was MAJOR"}},
+    {{"aspect": "Hidden impacts", "details": "Did not predict shared compute node contention would affect service_X"}}
+  ],
+  "unexpected_behaviors": [
+    {{"behavior": "Service Y failed unexpectedly", "reason": "Cascading failure through undocumented dependency"}},
+    {{"behavior": "Recovery took 2x longer than expected", "reason": "Connection pool exhaustion not considered"}}
+  ],
+  "missing_predictions": [
+    {{"predicted": "Service Z would be impacted", "actual": "Service Z remained healthy throughout fault period"}}
+  ],
+  "impact_radius_comparison": {{
+    "predicted_0_hop": ["node1"],
+    "actual_0_hop": ["node1"],
+    "predicted_1_hop": ["node2", "node3"],
+    "actual_1_hop": ["node2", "node3", "node4"],
+    "predicted_2_hop": ["node5"],
+    "actual_2_hop": ["node5", "node6"]
+  }},
+  "lessons_learned": [
+    "Shared compute node contention is difficult to predict from topology alone",
+    "Async consumer lag can amplify faults more than predicted"
+  ]
+}}
+```
+
+Be specific and technical. Output ONLY JSON."""
+
+        system_prompt = "You are an expert in distributed systems reliability engineering and fault analysis. Compare predicted vs actual fault behavior with precision."
 
         result = self.llm.generate_json(prompt, system_prompt)
         return result
@@ -633,7 +722,7 @@ Each event should show:
 
     def _combine_results(self, impact_result: Dict, propagation_result: Dict,
                         recovery_result: Dict, root_cause_result: Dict,
-                        causal_chain: Dict) -> AnalysisResult:
+                        causal_chain: Dict, propagation_comparison: Optional[Dict] = None) -> AnalysisResult:
         """Combine all analysis results into structured format"""
 
         # Parse impacted services
@@ -679,7 +768,8 @@ Each event should show:
             causal_timeline=causal_chain.get("causal_timeline", []),
             timeline_summary=causal_chain.get("timeline_summary", ""),
             overall_summary=overall_summary,
-            key_findings=key_findings
+            key_findings=key_findings,
+            propagation_comparison=propagation_comparison
         )
 
     def _generate_overall_summary(self, impact_result: Dict, propagation_result: Dict,

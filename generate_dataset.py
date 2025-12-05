@@ -28,6 +28,8 @@ from src.topology.semantic_mapper import SemanticMapper
 from src.scenarios.library import ScenarioLibrary, EpisodeConfig
 from src.simulation import Simulation
 from src.failures.training_injector import TrainingFailureInjector
+from src.failures.llm_target_selector import LLMFaultTargetSelector
+from src.failures.llm_propagation_predictor import LLMFaultPropagationPredictor
 from src.telemetry.topology_state_exporter import TopologyStateExporter
 from src.components.service import Service
 from src.components.pod import Pod
@@ -41,6 +43,53 @@ from src.core.capacity_planner import CapacityPlanner
 import networkx as nx
 
 
+def load_precomputed_fault_metadata(topo_path: str, fault_type: str, fault_target_role: str):
+    """
+    Load pre-computed fault targets and propagation predictions from topology bank.
+
+    Args:
+        topo_path: Path to topology directory
+        fault_type: Fault type (e.g., 'cpu_saturation')
+        fault_target_role: Target role (e.g., 'service')
+
+    Returns:
+        Tuple of (fault_targets, propagation_predictions_dict)
+        - fault_targets: List of candidate targets with scores and reasoning
+        - propagation_predictions_dict: {target_id -> prediction} mapping
+        Returns (None, None) if no pre-computed data available
+    """
+    fault_key = f"{fault_type}:{fault_target_role}"
+
+    # Load fault targets
+    fault_targets_file = os.path.join(topo_path, 'fault_targets.json')
+    if not os.path.exists(fault_targets_file):
+        return None, None
+
+    with open(fault_targets_file, 'r') as f:
+        all_fault_targets = json.load(f)
+
+    # Get targets for this specific fault type
+    fault_targets = all_fault_targets.get(fault_key, [])
+    if not fault_targets:
+        return None, None
+
+    # Load propagation predictions for each target
+    propagation_dir = os.path.join(topo_path, 'propagation_predictions')
+    propagation_predictions = {}
+
+    if os.path.exists(propagation_dir):
+        for target in fault_targets:
+            target_id = target['node_id']
+            prediction_key = f"{fault_key}:{target_id}"
+            prediction_file = os.path.join(propagation_dir, f"{prediction_key}.json")
+
+            if os.path.exists(prediction_file):
+                with open(prediction_file, 'r') as f:
+                    propagation_predictions[target_id] = json.load(f)
+
+    return fault_targets, propagation_predictions
+
+
 def load_random_template(bank_dir: str = "data/topology_bank", topology_name: str = None) -> tuple:
     """
     Load a random LLM-generated topology from the topology bank.
@@ -50,7 +99,10 @@ def load_random_template(bank_dir: str = "data/topology_bank", topology_name: st
         topology_name: Optional specific topology name to load (if None, picks randomly)
 
     Returns:
-        Tuple of (nx_graph, semantic_map)
+        Tuple of (nx_graph, semantic_map, topo_path)
+        - nx_graph: NetworkX graph
+        - semantic_map: Semantic overlay with flows and metadata
+        - topo_path: Path to topology directory (for loading pre-computed metadata)
     """
     if not os.path.exists(bank_dir):
         raise ValueError(f"Topology bank not found at {bank_dir}. Run generate_topology_bank.py first.")
@@ -83,7 +135,7 @@ def load_random_template(bank_dir: str = "data/topology_bank", topology_name: st
     with open(semantic_path, 'r') as f:
         semantic_map = json.load(f)
 
-    return nx_graph, semantic_map
+    return nx_graph, semantic_map, topo_path
 
 
 def create_dynamic_workload(nx_graph, base_rps: int = 80, peak_rps: int = 200):
@@ -190,7 +242,50 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None):
+def _select_target_heuristic(nx_graph, valid_targets, verbose=False):
+    """
+    Heuristic-based fault target selection.
+    Selects targets with good propagation potential based on connectivity.
+    """
+    def score_target_connectivity(target_node):
+        """Score a target based on propagation potential."""
+        # Count direct upstream callers (who will be impacted)
+        predecessors = list(nx_graph.predecessors(target_node))
+        num_callers = len(predecessors)
+
+        # Count second-order callers (propagation depth)
+        second_order = set()
+        for pred in predecessors:
+            second_order.update(nx_graph.predecessors(pred))
+
+        # Higher score = better propagation potential
+        # Prioritize: multiple direct callers + deep propagation potential
+        return num_callers * 10 + len(second_order)
+
+    # Score all targets and select from top candidates
+    target_scores = [(t, score_target_connectivity(t)) for t in valid_targets]
+    target_scores.sort(key=lambda x: x[1], reverse=True)
+
+    # Select from top 50% to maintain some randomness but avoid worst cases
+    top_half = max(1, len(target_scores) // 2)
+    target_candidates = [t for t, score in target_scores[:top_half] if score > 0]
+
+    # Fallback to all targets if no good candidates (shouldn't happen often)
+    if not target_candidates:
+        target_candidates = valid_targets
+        if verbose:
+            print(f"  Warning: No well-connected targets found, using all {len(valid_targets)} candidates")
+
+    target_id = random.choice(target_candidates)
+    target_score = next((score for t, score in target_scores if t == target_id), 0)
+
+    if verbose and target_score > 0:
+        print(f"  Selected target {target_id} (connectivity score: {target_score})")
+
+    return target_id
+
+
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, use_llm_target_selection: bool = False, use_llm_propagation_prediction: bool = False):
     """
     Generate a single training episode.
 
@@ -207,6 +302,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         skip_analysis: Skip LLM analysis to speed up generation
         llm_provider: LLM provider to use (openai, anthropic) - default: openai
         llm_model: Specific model to use (default: gpt-4 for openai, claude-opus-4-5 for anthropic)
+        use_llm_target_selection: Use LLM to intelligently select fault targets
+        use_llm_propagation_prediction: Generate LLM-based fault propagation prediction
 
     Returns:
         Dictionary with episode metadata
@@ -274,7 +371,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"  Loading from topology bank: {topology_bank_dir}")
 
         # Load random LLM-designed topology
-        nx_graph, semantic_overlay = load_random_template(topology_bank_dir, topology_name)
+        nx_graph, semantic_overlay, topo_path = load_random_template(topology_bank_dir, topology_name)
 
         # Get available node roles from the loaded topology
         available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
@@ -658,42 +755,85 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         if not valid_targets:
             raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
 
-        # Select target with good propagation potential
-        # Prefer targets with multiple upstream callers for better fault propagation
-        def score_target_connectivity(target_node):
-            """Score a target based on propagation potential."""
-            # Count direct upstream callers (who will be impacted)
-            predecessors = list(nx_graph.predecessors(target_node))
-            num_callers = len(predecessors)
+        # Try to load pre-computed fault targets first (if using LLM topologies)
+        precomputed_targets = None
+        if use_llm_topologies and 'topo_path' in locals():
+            precomputed_targets, _ = load_precomputed_fault_metadata(topo_path, cfg.fault_type, cfg.fault_target_role)
 
-            # Count second-order callers (propagation depth)
-            second_order = set()
-            for pred in predecessors:
-                second_order.update(nx_graph.predecessors(pred))
+        # Use pre-computed targets if available, otherwise fall back to LLM or heuristic
+        if precomputed_targets:
+            # Use pre-computed targets (fast path)
+            candidates = precomputed_targets
 
-            # Higher score = better propagation potential
-            # Prioritize: multiple direct callers + deep propagation potential
-            return num_callers * 10 + len(second_order)
-
-        # Score all targets and select from top candidates
-        target_scores = [(t, score_target_connectivity(t)) for t in valid_targets]
-        target_scores.sort(key=lambda x: x[1], reverse=True)
-
-        # Select from top 50% to maintain some randomness but avoid worst cases
-        top_half = max(1, len(target_scores) // 2)
-        target_candidates = [t for t, score in target_scores[:top_half] if score > 0]
-
-        # Fallback to all targets if no good candidates (shouldn't happen often)
-        if not target_candidates:
-            target_candidates = valid_targets
             if verbose:
-                print(f"  Warning: No well-connected targets found, using all {len(valid_targets)} candidates")
+                print(f"\n[Pre-computed Fault Targets]")
+                print(f"  ✓ Loaded {len(candidates)} pre-computed targets for {cfg.fault_type}:{cfg.fault_target_role}")
 
-        target_id = random.choice(target_candidates)
-        target_score = next((score for t, score in target_scores if t == target_id), 0)
+            # Select the best candidate (first one)
+            best_candidate = candidates[0]
+            target_id = best_candidate['node_id']
 
-        if verbose and target_score > 0:
-            print(f"  Selected target {target_id} (connectivity score: {target_score})")
+            if verbose:
+                print(f"  Selected: {target_id}")
+                print(f"    Score: {best_candidate['score']:.2f}")
+                print(f"    Reasoning: {best_candidate['reasoning'][:100]}...")
+
+                # Show impact radius
+                impact = best_candidate.get('impact_radius', {})
+                if impact:
+                    print(f"    Expected Impact:")
+                    print(f"      - Direct: {len(impact.get('direct', []))} nodes")
+                    print(f"      - 1-hop: {len(impact.get('one_hop', []))} nodes")
+                    print(f"      - 2-hop: {len(impact.get('two_hop', []))} nodes")
+
+        elif use_llm_target_selection:
+            # Fall back to on-demand LLM selection
+            if verbose:
+                print(f"\n[LLM-based Target Selection (on-demand)]")
+                print(f"  No pre-computed targets found, calling LLM...")
+
+            try:
+                # Initialize LLM target selector
+                llm_selector = LLMFaultTargetSelector()
+
+                # Get LLM recommendations (top-3 candidates)
+                candidates = llm_selector.select_candidates(
+                    topology=nx_graph,
+                    fault_type=cfg.fault_type,
+                    fault_target_role=cfg.fault_target_role,
+                    top_k=3
+                )
+
+                if candidates:
+                    # Select the best candidate (first one)
+                    best_candidate = candidates[0]
+                    target_id = best_candidate['node_id']
+
+                    if verbose:
+                        print(f"  ✓ LLM selected: {target_id}")
+                        print(f"    Score: {best_candidate['score']:.2f}")
+                        print(f"    Reasoning: {best_candidate['reasoning'][:100]}...")
+
+                        # Show impact radius
+                        impact = best_candidate.get('impact_radius', {})
+                        if impact:
+                            print(f"    Expected Impact:")
+                            print(f"      - Direct: {len(impact.get('direct', []))} nodes")
+                            print(f"      - 1-hop: {len(impact.get('one_hop', []))} nodes")
+                            print(f"      - 2-hop: {len(impact.get('two_hop', []))} nodes")
+                else:
+                    # Fallback to heuristic if LLM returns no candidates
+                    if verbose:
+                        print(f"  ⚠ LLM returned no candidates, falling back to heuristic selection")
+                    target_id = _select_target_heuristic(nx_graph, valid_targets, verbose)
+            except Exception as e:
+                # Fallback to heuristic on any error
+                if verbose:
+                    print(f"  ⚠ LLM selection failed ({e}), falling back to heuristic")
+                target_id = _select_target_heuristic(nx_graph, valid_targets, verbose)
+        else:
+            # Use heuristic target selection
+            target_id = _select_target_heuristic(nx_graph, valid_targets, verbose)
 
         actual_target_id = target_id
         params = cfg.get_failure_params()
@@ -887,6 +1027,66 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"\n[Initial Topology State]")
         print(f"  Exported initial snapshot at t=0")
 
+    # 9.5. Load/Generate Fault Propagation Prediction (if enabled)
+    if use_llm_propagation_prediction:
+        propagation_prediction = None
+
+        # Try to load pre-computed propagation prediction first
+        if use_llm_topologies and 'topo_path' in locals():
+            _, precomputed_predictions = load_precomputed_fault_metadata(topo_path, cfg.fault_type, cfg.fault_target_role)
+
+            if precomputed_predictions and actual_target_id in precomputed_predictions:
+                propagation_prediction = precomputed_predictions[actual_target_id]
+
+                if verbose:
+                    print(f"\n[Pre-computed Fault Propagation Prediction]")
+                    print(f"  ✓ Loaded pre-computed prediction for {cfg.fault_type}:{cfg.fault_target_role}:{actual_target_id}")
+                    print(f"    Summary: {propagation_prediction.get('fault_summary', 'N/A')[:100]}...")
+
+                    # Show predicted impact
+                    impact_by_hop = propagation_prediction.get('impact_by_hop', {})
+                    if impact_by_hop:
+                        for hop, hop_data in impact_by_hop.items():
+                            nodes = hop_data.get('nodes', [])
+                            severity = hop_data.get('severity', 'UNKNOWN')
+                            print(f"    {hop}: {len(nodes)} nodes ({severity})")
+
+        # Fall back to on-demand LLM prediction if not pre-computed
+        if not propagation_prediction:
+            if verbose:
+                print(f"\n[LLM-based Fault Propagation Prediction (on-demand)]")
+                print(f"  No pre-computed prediction found, calling LLM...")
+
+            try:
+                # Initialize LLM propagation predictor
+                llm_predictor = LLMFaultPropagationPredictor()
+
+                # Generate prediction
+                propagation_prediction = llm_predictor.predict_propagation(
+                    topology=nx_graph,
+                    fault_node_id=actual_target_id,
+                    fault_type=cfg.fault_type,
+                    fault_params=params
+                )
+
+                if verbose:
+                    print(f"  ✓ Generated on-demand prediction")
+                    print(f"    Summary: {propagation_prediction.get('fault_summary', 'N/A')[:100]}...")
+
+            except Exception as e:
+                if verbose:
+                    print(f"  ⚠ Propagation prediction failed: {e}")
+                # Continue without prediction - not a blocker
+
+        # Save prediction alongside label (whether pre-computed or on-demand)
+        if propagation_prediction:
+            prediction_path = os.path.join(episode_dir, 'expected_propagation.json')
+            with open(prediction_path, 'w') as f:
+                json.dump(propagation_prediction, f, indent=2)
+
+            if verbose:
+                print(f"  Saved to: {prediction_path}")
+
     phase_timings['simulation_setup'] = time.time() - phase_start
 
     # 10. Run Simulation
@@ -1071,16 +1271,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, use_llm_target_selection, use_llm_propagation_prediction):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model, use_llm_target_selection=use_llm_target_selection, use_llm_propagation_prediction=use_llm_propagation_prediction)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, use_llm_target_selection: bool = False, use_llm_propagation_prediction: bool = False):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -1097,6 +1297,8 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         skip_analysis: Skip LLM analysis to speed up generation
         llm_provider: LLM provider to use (openai, anthropic)
         llm_model: Specific model to use
+        use_llm_target_selection: Use LLM to intelligently select fault targets
+        use_llm_propagation_prediction: Generate LLM-based fault propagation prediction
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -1136,7 +1338,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, use_llm_target_selection, use_llm_propagation_prediction)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1281,6 +1483,18 @@ def main():
         default=None,
         help='Specific LLM model to use (default: gpt-4o for openai, claude-opus-4-5-20251101 for anthropic)'
     )
+    parser.add_argument(
+        '--llm-target-selection',
+        action='store_true',
+        default=False,
+        help='Use LLM-based intelligent fault target selection (considers impact radius and hidden dependencies)'
+    )
+    parser.add_argument(
+        '--llm-propagation-prediction',
+        action='store_true',
+        default=False,
+        help='Generate LLM-based fault propagation prediction before simulation (predicts expected impacts)'
+    )
 
     args = parser.parse_args()
 
@@ -1301,7 +1515,9 @@ def main():
         topology_name=args.topology_name,
         skip_analysis=not args.enable_llm_analysis,  # Invert the flag
         llm_provider=args.llm_provider,
-        llm_model=args.llm_model
+        llm_model=args.llm_model,
+        use_llm_target_selection=args.llm_target_selection,
+        use_llm_propagation_prediction=args.llm_propagation_prediction
     )
 
 
