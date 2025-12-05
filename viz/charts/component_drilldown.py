@@ -515,6 +515,104 @@ def create_service_aggregated_percentile_chart_filtered(metrics_df: pd.DataFrame
     return fig
 
 
+def create_pod_breakdown_chart(metrics_df: pd.DataFrame, pod_ids: List[str],
+                               metric_name: str, title: str, ylabel: str) -> go.Figure:
+    """Create a chart showing a metric for multiple pods (one line per pod).
+
+    This is useful for identifying outlier/hot pods by comparing their metrics side-by-side.
+
+    Args:
+        metrics_df: DataFrame with all metrics
+        pod_ids: List of pod IDs to include in the chart
+        metric_name: Metric name to display
+        title: Chart title
+        ylabel: Y-axis label
+    """
+    fig = go.Figure()
+
+    # Define colors for pods (cycle through if more pods than colors)
+    colors = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6',
+              '#1abc9c', '#e67e22', '#34495e', '#16a085', '#c0392b']
+
+    for idx, pod_id in enumerate(pod_ids):
+        pod_data = metrics_df[
+            (metrics_df['component_id'] == pod_id) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
+
+        if not pod_data.empty and 'value' in pod_data.columns:
+            color = colors[idx % len(colors)]
+            fig.add_trace(go.Scatter(
+                x=pod_data['sim_time'],
+                y=pod_data['value'],
+                mode='lines',
+                line=dict(color=color, width=2),
+                name=pod_id
+            ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time (s)",
+        yaxis_title=ylabel,
+        height=300,
+        margin=dict(l=50, r=20, t=40, b=30),
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
+def create_pod_breakdown_percentile_chart(metrics_df: pd.DataFrame, pod_ids: List[str],
+                                          metric_name: str, title: str, percentile: str = 'p50') -> go.Figure:
+    """Create a chart showing a specific percentile for multiple pods (one line per pod).
+
+    Args:
+        metrics_df: DataFrame with all metrics
+        pod_ids: List of pod IDs to include in the chart
+        metric_name: Metric name to display (should be a histogram metric with percentiles)
+        title: Chart title
+        percentile: Which percentile to show (p50, p90, or p99)
+    """
+    fig = go.Figure()
+
+    # Define colors for pods (cycle through if more pods than colors)
+    colors = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6',
+              '#1abc9c', '#e67e22', '#34495e', '#16a085', '#c0392b']
+
+    for idx, pod_id in enumerate(pod_ids):
+        pod_data = metrics_df[
+            (metrics_df['component_id'] == pod_id) &
+            (metrics_df['metric_name'] == metric_name)
+        ].copy()
+
+        if not pod_data.empty and percentile in pod_data.columns and not pod_data[percentile].isna().all():
+            color = colors[idx % len(colors)]
+            fig.add_trace(go.Scatter(
+                x=pod_data['sim_time'],
+                y=pod_data[percentile],
+                mode='lines',
+                line=dict(color=color, width=2),
+                name=pod_id
+            ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time (s)",
+        yaxis_title="Latency (ms)",
+        height=300,
+        margin=dict(l=50, r=20, t=40, b=30),
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb')
+    )
+
+    return fig
+
+
 def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
                         label_data: Dict) -> List[dcc.Graph]:
     """Create drill-down charts for individual Pod."""
@@ -956,6 +1054,88 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
             html.P(f"Pod metrics: {', '.join(list(pod_metrics_available)[:5]) if pod_metrics_available else 'None'}",
                    style={'fontSize': '0.8em', 'color': '#666'})
         ]))
+
+    # Pod Breakdown section - shows RPS and Duration for each pod to identify outliers/hot pods
+    request_metric = f'service.{component_id}.requests'
+    duration_metric = f'service.{component_id}.duration'
+
+    has_pod_breakdown_metrics = (pod_ids and len(pod_ids) > 1 and
+                                 (request_metric in pod_metrics_available or
+                                  duration_metric in pod_metrics_available))
+
+    if has_pod_breakdown_metrics:
+        # Add section header
+        charts.append(html.Hr(style={'marginTop': '40px', 'marginBottom': '20px', 'borderColor': '#555'}))
+        charts.append(html.H4("Pod Breakdown", style={'marginBottom': '15px'}))
+
+        # Create charts for pod breakdown
+        pod_breakdown_charts = []
+
+        # RPS per pod chart
+        if request_metric in pod_metrics_available:
+            pod_breakdown_charts.append(dcc.Graph(
+                figure=create_pod_breakdown_chart(
+                    metrics_df,
+                    pod_ids,
+                    request_metric,
+                    'Request Rate per Pod',
+                    'Requests/s'
+                ),
+                config={'displayModeBar': False}
+            ))
+
+        # Duration per pod chart
+        if duration_metric in pod_metrics_available:
+            # Check if it has percentile data
+            duration_data = pod_metrics[pod_metrics['metric_name'] == duration_metric]
+            if 'p50' in duration_data.columns and not duration_data['p50'].isna().all():
+                # Show P50 latency per pod
+                pod_breakdown_charts.append(dcc.Graph(
+                    figure=create_pod_breakdown_percentile_chart(
+                        metrics_df,
+                        pod_ids,
+                        duration_metric,
+                        'Request Duration (P50) per Pod',
+                        percentile='p50'
+                    ),
+                    config={'displayModeBar': False}
+                ))
+                # Optionally show P90 as well
+                pod_breakdown_charts.append(dcc.Graph(
+                    figure=create_pod_breakdown_percentile_chart(
+                        metrics_df,
+                        pod_ids,
+                        duration_metric,
+                        'Request Duration (P90) per Pod',
+                        percentile='p90'
+                    ),
+                    config={'displayModeBar': False}
+                ))
+            else:
+                # Show average duration per pod
+                pod_breakdown_charts.append(dcc.Graph(
+                    figure=create_pod_breakdown_chart(
+                        metrics_df,
+                        pod_ids,
+                        duration_metric,
+                        'Request Duration per Pod',
+                        'ms'
+                    ),
+                    config={'displayModeBar': False}
+                ))
+
+        # Add accordion for pod breakdown
+        if pod_breakdown_charts:
+            charts.append(dbc.Accordion(
+                [
+                    dbc.AccordionItem(
+                        pod_breakdown_charts,
+                        title="Pod Metrics (per-pod comparison)",
+                    )
+                ],
+                start_collapsed=True,
+                always_open=False,
+            ))
 
     # External dependency metrics (at the bottom, grouped in accordion)
     # Aggregate from Pod metrics using service.name tag
