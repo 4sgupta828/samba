@@ -1055,84 +1055,126 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                    style={'fontSize': '0.8em', 'color': '#666'})
         ]))
 
-    # Pod Breakdown section - shows RPS and Duration for each pod to identify outliers/hot pods
-    request_metric = f'service.{component_id}.requests'
-    duration_metric = f'service.{component_id}.duration'
-
-    has_pod_breakdown_metrics = (pod_ids and len(pod_ids) > 1 and
-                                 (request_metric in pod_metrics_available or
-                                  duration_metric in pod_metrics_available))
-
-    if has_pod_breakdown_metrics:
+    # Pod Breakdown section - allows drilling down into per-pod metrics for any service-level metric
+    if pod_ids and len(pod_ids) > 1 and pod_metrics_available:
         # Add section header
         charts.append(html.Hr(style={'marginTop': '40px', 'marginBottom': '20px', 'borderColor': '#555'}))
         charts.append(html.H4("Pod Breakdown", style={'marginBottom': '15px'}))
 
-        # Create charts for pod breakdown
-        pod_breakdown_charts = []
+        # Create a map of metric names to their display info
+        # These are metrics that are aggregated from pods to service level
+        metric_breakdown_map = {
+            f'service.{component_id}.requests': {
+                'title': 'Request Rate',
+                'ylabel': 'Requests/s',
+                'type': 'counter'
+            },
+            f'service.{component_id}.duration': {
+                'title': 'Request Duration (Latency)',
+                'ylabel': 'ms',
+                'type': 'histogram'
+            },
+            f'service.{component_id}.errors': {
+                'title': 'Error Rate',
+                'ylabel': 'Errors',
+                'type': 'counter'
+            },
+            'container.cpu.utilization': {
+                'title': 'CPU Utilization',
+                'ylabel': 'Percentage (%)',
+                'type': 'gauge'
+            },
+            'container.memory.usage_mb': {
+                'title': 'Memory Usage',
+                'ylabel': 'MB',
+                'type': 'gauge'
+            },
+            'connection_pool.connections.active': {
+                'title': 'Active Connections',
+                'ylabel': 'Count',
+                'type': 'gauge'
+            },
+            'connection_pool.queue_depth': {
+                'title': 'Connection Pool Queue Depth',
+                'ylabel': 'Count',
+                'type': 'gauge'
+            },
+            'thread_pool.threads.active': {
+                'title': 'Active Threads',
+                'ylabel': 'Count',
+                'type': 'gauge'
+            },
+            'thread_pool.queue.depth': {
+                'title': 'Thread Pool Queue Depth',
+                'ylabel': 'Count',
+                'type': 'gauge'
+            }
+        }
 
-        # RPS per pod chart
-        if request_metric in pod_metrics_available:
-            pod_breakdown_charts.append(dcc.Graph(
-                figure=create_pod_breakdown_chart(
-                    metrics_df,
-                    pod_ids,
-                    request_metric,
-                    'Request Rate per Pod',
-                    'Requests/s'
-                ),
-                config={'displayModeBar': False}
-            ))
+        # Create accordion items for each available metric
+        pod_breakdown_accordion_items = []
 
-        # Duration per pod chart
-        if duration_metric in pod_metrics_available:
-            # Check if it has percentile data
-            duration_data = pod_metrics[pod_metrics['metric_name'] == duration_metric]
-            if 'p50' in duration_data.columns and not duration_data['p50'].isna().all():
-                # Show P50 latency per pod
-                pod_breakdown_charts.append(dcc.Graph(
-                    figure=create_pod_breakdown_percentile_chart(
-                        metrics_df,
-                        pod_ids,
-                        duration_metric,
-                        'Request Duration (P50) per Pod',
-                        percentile='p50'
-                    ),
-                    config={'displayModeBar': False}
-                ))
-                # Optionally show P90 as well
-                pod_breakdown_charts.append(dcc.Graph(
-                    figure=create_pod_breakdown_percentile_chart(
-                        metrics_df,
-                        pod_ids,
-                        duration_metric,
-                        'Request Duration (P90) per Pod',
-                        percentile='p90'
-                    ),
-                    config={'displayModeBar': False}
-                ))
+        for metric_name, metric_info in metric_breakdown_map.items():
+            if metric_name not in pod_metrics_available:
+                continue
+
+            metric_charts = []
+
+            if metric_info['type'] == 'histogram':
+                # Check if it has percentile data
+                metric_data = pod_metrics[pod_metrics['metric_name'] == metric_name]
+                if 'p50' in metric_data.columns and not metric_data['p50'].isna().all():
+                    # Show each percentile in a separate chart
+                    for percentile in ['p50', 'p90', 'p99']:
+                        if percentile in metric_data.columns and not metric_data[percentile].isna().all():
+                            metric_charts.append(dcc.Graph(
+                                figure=create_pod_breakdown_percentile_chart(
+                                    metrics_df,
+                                    pod_ids,
+                                    metric_name,
+                                    f'{metric_info["title"]} ({percentile.upper()}) per Pod',
+                                    percentile=percentile
+                                ),
+                                config={'displayModeBar': False}
+                            ))
+                else:
+                    # Show average value per pod
+                    metric_charts.append(dcc.Graph(
+                        figure=create_pod_breakdown_chart(
+                            metrics_df,
+                            pod_ids,
+                            metric_name,
+                            f'{metric_info["title"]} per Pod',
+                            metric_info['ylabel']
+                        ),
+                        config={'displayModeBar': False}
+                    ))
             else:
-                # Show average duration per pod
-                pod_breakdown_charts.append(dcc.Graph(
+                # Counter or gauge - show value per pod
+                metric_charts.append(dcc.Graph(
                     figure=create_pod_breakdown_chart(
                         metrics_df,
                         pod_ids,
-                        duration_metric,
-                        'Request Duration per Pod',
-                        'ms'
+                        metric_name,
+                        f'{metric_info["title"]} per Pod',
+                        metric_info['ylabel']
                     ),
                     config={'displayModeBar': False}
                 ))
 
-        # Add accordion for pod breakdown
-        if pod_breakdown_charts:
-            charts.append(dbc.Accordion(
-                [
+            # Add accordion item for this metric
+            if metric_charts:
+                pod_breakdown_accordion_items.append(
                     dbc.AccordionItem(
-                        pod_breakdown_charts,
-                        title="Pod Metrics (per-pod comparison)",
+                        metric_charts,
+                        title=f"{metric_info['title']}",
                     )
-                ],
+                )
+
+        # Add accordion for pod breakdown with all metric items
+        if pod_breakdown_accordion_items:
+            charts.append(dbc.Accordion(
+                pod_breakdown_accordion_items,
                 start_collapsed=True,
                 always_open=False,
             ))
