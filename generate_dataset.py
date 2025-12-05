@@ -41,6 +41,44 @@ from src.core.capacity_planner import CapacityPlanner
 import networkx as nx
 
 
+def load_random_template(bank_dir: str = "data/topology_bank") -> tuple:
+    """
+    Load a random LLM-generated topology from the topology bank.
+
+    Args:
+        bank_dir: Directory containing topology bank
+
+    Returns:
+        Tuple of (nx_graph, semantic_map)
+    """
+    if not os.path.exists(bank_dir):
+        raise ValueError(f"Topology bank not found at {bank_dir}. Run generate_topology_bank.py first.")
+
+    # Get all topology directories
+    topology_dirs = [d for d in os.listdir(bank_dir)
+                    if os.path.isdir(os.path.join(bank_dir, d))]
+
+    if not topology_dirs:
+        raise ValueError(f"No topologies found in {bank_dir}")
+
+    # Pick random topology
+    chosen = random.choice(topology_dirs)
+    topo_path = os.path.join(bank_dir, chosen)
+
+    # Load graph
+    graph_path = os.path.join(topo_path, 'graph.json')
+    with open(graph_path, 'r') as f:
+        graph_data = json.load(f)
+    nx_graph = nx.node_link_graph(graph_data)
+
+    # Load semantic map
+    semantic_path = os.path.join(topo_path, 'semantic_map.json')
+    with open(semantic_path, 'r') as f:
+        semantic_map = json.load(f)
+
+    return nx_graph, semantic_map
+
+
 def create_dynamic_workload(nx_graph, base_rps: int = 80, peak_rps: int = 200):
     """
     Create a workload configuration that targets the specific frontend services
@@ -145,7 +183,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank"):
     """
     Generate a single training episode.
 
@@ -157,6 +195,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         topology_size: Optional override for topology size (number of nodes)
         force_fault_type: Force a specific fault type (e.g., 'queue_consumer_slowdown')
         force_fault_role: Force a specific fault role (e.g., 'queue')
+        use_llm_topologies: Use LLM-generated topologies from topology bank
+        topology_bank_dir: Directory containing LLM-generated topologies
 
     Returns:
         Dictionary with episode metadata
@@ -216,67 +256,31 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     # 1. Generate Topology first to see what node types are available
     phase_start = time.time()
-    # Override topology size if specified, otherwise use random size between 8-15
-    if topology_size is not None:
-        actual_topology_size = topology_size
-    else:
-        # Default: random number of nodes between 8-15
-        actual_topology_size = random.randint(8, 15)
 
-    # If force_fault_type and force_fault_role are specified, find matching scenario
-    if force_fault_type and force_fault_role:
-        # Find a scenario that matches the forced parameters by searching all levels directly
-        cfg = None
-        for level in [1, 2, 3, 4]:
-            scenarios = scenario_lib.levels[level]
-            for scenario in scenarios:
-                if scenario.fault_type == force_fault_type and scenario.fault_target_role == force_fault_role:
-                    # Found a match - create a copy with updated topology size
-                    cfg = EpisodeConfig(
-                        level=scenario.level,
-                        topology_size=actual_topology_size if actual_topology_size is not None else scenario.topology_size,
-                        duration=scenario.duration,
-                        fault_type=scenario.fault_type,
-                        fault_target_role=scenario.fault_target_role,
-                        export_interval=scenario.export_interval,
-                        description=scenario.description,
-                        progression=scenario.progression,
-                        fault_params=scenario.fault_params
-                    )
-                    break
-            if cfg:
-                break
+    # LLM Topology Mode: Load from pre-generated bank
+    if use_llm_topologies:
+        if verbose:
+            print(f"\n[LLM Topology Mode]")
+            print(f"  Loading from topology bank: {topology_bank_dir}")
 
-        if cfg is None:
-            print(f"Error: Could not find scenario with fault_type='{force_fault_type}' and role='{force_fault_role}'")
-            return None
+        # Load random LLM-designed topology
+        nx_graph, semantic_overlay = load_random_template(topology_bank_dir)
 
-        # Generate topology that includes the required role
-        topo_gen = TopologyGenerator(seed=episode_id)
-        nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
-
-        # Verify the topology has the required role (skip for network_partition)
-        if cfg.fault_type != 'network_partition':
-            available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
-            if cfg.fault_target_role not in available_roles:
-                print(f"Error: Generated topology doesn't have required role '{cfg.fault_target_role}'")
-                return None
-
-        level = cfg.topology_size  # Use topology size as level for display
-    # If topology_size is specified, generate topology first to determine available node types
-    elif actual_topology_size is not None:
-        topo_gen = TopologyGenerator(seed=episode_id)
-        nx_graph = topo_gen.generate_complex_graph(actual_topology_size)
-
-        # Get available node roles
+        # Get available node roles from the loaded topology
         available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
+
+        if verbose:
+            print(f"  Loaded: {semantic_overlay.get('architecture_name', 'Unknown')}")
+            print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
+            print(f"  Nodes: {len(nx_graph.nodes)}, Edges: {len(nx_graph.edges)}")
+            print(f"  Available roles: {', '.join(sorted(available_roles))}")
 
         # Try to find a compatible scenario (max 10 attempts)
         cfg = None
         for attempt in range(10):
             level = scenario_lib.sample_level(seed=episode_id + attempt)
             temp_cfg = scenario_lib.get_episode(level, seed=episode_id + attempt)
-            temp_cfg.topology_size = actual_topology_size
+            temp_cfg.topology_size = len(nx_graph.nodes)
 
             # Check if this scenario's target role exists in the topology
             # Skip role check for network_partition (it works with any topology)
@@ -285,64 +289,144 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                 break
 
         if cfg is None:
-            print(f"Warning: Could not find compatible scenario for topology with roles {available_roles}, skipping episode {episode_id}")
+            print(f"Warning: Could not find compatible scenario for LLM topology with roles {available_roles}, skipping episode {episode_id}")
             return None
-    else:
-        # Normal flow: select scenario first, then generate topology
-        level = scenario_lib.sample_level(seed=episode_id)
-        cfg = scenario_lib.get_episode(level, seed=episode_id)
 
-        # 2. Generate Topology
-        topo_gen = TopologyGenerator(seed=episode_id)
-        nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
+        level = cfg.level
+        phase_timings['topology_generation'] = time.time() - phase_start
+
+    # Procedural Topology Mode: Generate from scratch
+    else:
+        # Override topology size if specified, otherwise use random size between 8-15
+        if topology_size is not None:
+            actual_topology_size = topology_size
+        else:
+            # Default: random number of nodes between 8-15
+            actual_topology_size = random.randint(8, 15)
+
+        # If force_fault_type and force_fault_role are specified, find matching scenario
+        if force_fault_type and force_fault_role:
+            # Find a scenario that matches the forced parameters by searching all levels directly
+            cfg = None
+            for level in [1, 2, 3, 4]:
+                scenarios = scenario_lib.levels[level]
+                for scenario in scenarios:
+                    if scenario.fault_type == force_fault_type and scenario.fault_target_role == force_fault_role:
+                        # Found a match - create a copy with updated topology size
+                        cfg = EpisodeConfig(
+                            level=scenario.level,
+                            topology_size=actual_topology_size if actual_topology_size is not None else scenario.topology_size,
+                            duration=scenario.duration,
+                            fault_type=scenario.fault_type,
+                            fault_target_role=scenario.fault_target_role,
+                            export_interval=scenario.export_interval,
+                            description=scenario.description,
+                            progression=scenario.progression,
+                            fault_params=scenario.fault_params
+                        )
+                        break
+                if cfg:
+                    break
+
+            if cfg is None:
+                print(f"Error: Could not find scenario with fault_type='{force_fault_type}' and role='{force_fault_role}'")
+                return None
+
+            # Generate topology that includes the required role
+            topo_gen = TopologyGenerator(seed=episode_id)
+            nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
+
+            # Verify the topology has the required role (skip for network_partition)
+            if cfg.fault_type != 'network_partition':
+                available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
+                if cfg.fault_target_role not in available_roles:
+                    print(f"Error: Generated topology doesn't have required role '{cfg.fault_target_role}'")
+                    return None
+
+            level = cfg.topology_size  # Use topology size as level for display
+        # If topology_size is specified, generate topology first to determine available node types
+        elif actual_topology_size is not None:
+            topo_gen = TopologyGenerator(seed=episode_id)
+            nx_graph = topo_gen.generate_complex_graph(actual_topology_size)
+
+            # Get available node roles
+            available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
+
+            # Try to find a compatible scenario (max 10 attempts)
+            cfg = None
+            for attempt in range(10):
+                level = scenario_lib.sample_level(seed=episode_id + attempt)
+                temp_cfg = scenario_lib.get_episode(level, seed=episode_id + attempt)
+                temp_cfg.topology_size = actual_topology_size
+
+                # Check if this scenario's target role exists in the topology
+                # Skip role check for network_partition (it works with any topology)
+                if temp_cfg.fault_type == 'network_partition' or temp_cfg.fault_target_role in available_roles:
+                    cfg = temp_cfg
+                    break
+
+            if cfg is None:
+                print(f"Warning: Could not find compatible scenario for topology with roles {available_roles}, skipping episode {episode_id}")
+                return None
+        else:
+            # Normal flow: select scenario first, then generate topology
+            level = scenario_lib.sample_level(seed=episode_id)
+            cfg = scenario_lib.get_episode(level, seed=episode_id)
+
+            # 2. Generate Topology
+            topo_gen = TopologyGenerator(seed=episode_id)
+            nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
+
+        phase_timings['topology_generation'] = time.time() - phase_start
+        semantic_overlay = None  # Will be generated later
 
     if verbose:
         print(f"\n{'='*60}")
         print(f"Episode {episode_id} [Level {level}]")
         print(f"  Scenario: {cfg.description}")
-        print(f"  Topology: {cfg.topology_size} nodes")
+        print(f"  Topology: {len(nx_graph.nodes)} nodes")
         print(f"  Duration: {cfg.duration}s")
         print(f"  Fault: {cfg.fault_type} on {cfg.fault_target_role}")
         print(f"{'='*60}")
         print_topology_summary(nx_graph)
 
-    phase_timings['topology_generation'] = time.time() - phase_start
-
-    # 2.3. Generate Semantic Overlay using Claude (if enabled)
+    # 2.3. Generate Semantic Overlay using Claude (if enabled and not using LLM topologies)
     phase_start = time.time()
     from src.core.simulation_config import get_simulation_config
     sim_config_obj = get_simulation_config()
     semantic_config = getattr(sim_config_obj, 'semantic', None)
     semantic_enabled = semantic_config.get('enabled', True) if semantic_config and isinstance(semantic_config, dict) else True
 
-    semantic_overlay = None
-    if semantic_enabled:
-        if verbose:
-            print(f"\n[Semantic Mapping]")
-            print(f"  Analyzing topology with Claude AI...")
+    # Skip semantic overlay generation if using LLM topologies (already loaded)
+    if not use_llm_topologies:
+        if semantic_enabled:
+            if verbose:
+                print(f"\n[Semantic Mapping]")
+                print(f"  Analyzing topology with Claude AI...")
 
-        # Initialize SemanticMapper with Anthropic API key
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        mapper = SemanticMapper(api_key=api_key)
+            # Initialize SemanticMapper with Anthropic API key
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            mapper = SemanticMapper(api_key=api_key)
 
-        # Generate semantic overlay
-        semantic_overlay = mapper.generate_semantic_overlay(nx_graph)
+            # Generate semantic overlay
+            semantic_overlay = mapper.generate_semantic_overlay(nx_graph)
 
-        if verbose:
-            print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
-            print(f"  Request types: {', '.join(semantic_overlay.get('request_types', []))}")
-            print(f"  Services profiled: {len(semantic_overlay.get('services', {}))}")
+            if verbose:
+                print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
+                print(f"  Request types: {', '.join(semantic_overlay.get('request_types', []))}")
+                print(f"  Services profiled: {len(semantic_overlay.get('services', {}))}")
 
-            # Show a few example service profiles
-            services = semantic_overlay.get('services', {})
-            if services:
-                print(f"\n  Example service profiles:")
-                for i, (node_id, service_data) in enumerate(list(services.items())[:3]):
-                    print(f"    {node_id}: {service_data.get('name', 'Unknown')} ({service_data.get('profile', 'standard')})")
-    else:
-        if verbose:
-            print(f"\n[Semantic Mapping]")
-            print(f"  Semantic overlay DISABLED (using standard profiles and probabilistic routing)")
+                # Show a few example service profiles
+                services = semantic_overlay.get('services', {})
+                if services:
+                    print(f"\n  Example service profiles:")
+                    for i, (node_id, service_data) in enumerate(list(services.items())[:3]):
+                        print(f"    {node_id}: {service_data.get('name', 'Unknown')} ({service_data.get('profile', 'standard')})")
+        else:
+            if verbose:
+                print(f"\n[Semantic Mapping]")
+                print(f"  Semantic overlay DISABLED (using standard profiles and probabilistic routing)")
+            semantic_overlay = None
 
     phase_timings['semantic_overlay'] = time.time() - phase_start
 
@@ -874,16 +958,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank"):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -895,12 +979,18 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         topology_size: Optional override for topology size (number of nodes)
         force_fault_type: Force a specific fault type for all episodes
         force_fault_role: Force a specific fault role for all episodes
+        use_llm_topologies: Use LLM-generated topologies from topology bank
+        topology_bank_dir: Directory containing LLM-generated topologies
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
     print(f"{'='*60}")
     print(f"Generating {num_episodes} training episodes...")
     print(f"Base output directory: {output_dir}")
+    if use_llm_topologies:
+        print(f"Using LLM-generated topologies from: {topology_bank_dir}")
+    else:
+        print(f"Using procedural topology generation")
     print(f"Using multiprocessing for complete episode isolation")
     print(f"{'='*60}\n")
 
@@ -930,7 +1020,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1039,6 +1129,17 @@ def main():
         default=None,
         help='Force a specific fault target role (e.g., queue, service, database, external)'
     )
+    parser.add_argument(
+        '--llm-topologies',
+        action='store_true',
+        help='Use LLM-generated topologies from topology bank instead of procedural generation'
+    )
+    parser.add_argument(
+        '--topology-bank',
+        type=str,
+        default='data/topology_bank',
+        help='Directory containing LLM-generated topology bank (default: data/topology_bank)'
+    )
 
     args = parser.parse_args()
 
@@ -1053,7 +1154,9 @@ def main():
         verbose=args.verbose,
         topology_size=args.topology_size,
         force_fault_type=args.fault_type,
-        force_fault_role=args.fault_role
+        force_fault_role=args.fault_role,
+        use_llm_topologies=args.llm_topologies,
+        topology_bank_dir=args.topology_bank
     )
 
 
