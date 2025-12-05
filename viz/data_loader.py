@@ -12,7 +12,7 @@ import json
 import glob
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import pandas as pd
 import networkx as nx
 # Import new statistical impact analyzer
@@ -23,7 +23,12 @@ from analysis.impact_analyzer import detect_node_impacts
 
 def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
     """
-    List all available data runs (data_YYYYMMDD_HHMMSS directories) in reverse chronological order.
+    List all available data directories in reverse chronological order.
+
+    Recursively searches for directories containing episodes, supporting:
+    1. Direct structure: data/data_YYYYMMDD_HHMMSS/ep_0/
+    2. Nested structure: data/test_300s_episode/data_YYYYMMDD_HHMMSS/ep_0/
+    3. Custom directories: data/my_custom_run/ep_0/
 
     Args:
         base_dir: Base data directory (default: 'data')
@@ -38,30 +43,86 @@ def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
     if not os.path.exists(base_dir):
         return []
 
-    # Find all directories matching data_YYYYMMDD_HHMMSS pattern
+    # Pattern for timestamped directories
     pattern = re.compile(r'data_(\d{8})_(\d{6})$')
-    runs = []
+    timestamped_runs = []
+    other_runs = []
 
-    for item in os.listdir(base_dir):
-        item_path = os.path.join(base_dir, item)
-        if os.path.isdir(item_path):
-            match = pattern.match(item)
+    def process_directory(dir_path: str, dir_name: str, parent_name: str = None):
+        """Process a directory and add it to runs if it contains episodes"""
+        # Check if this directory directly contains episodes
+        episodes = list_episodes(dir_path)
+
+        if episodes:
+            # This directory contains episodes, add it to the list
+            match = pattern.match(dir_name)
+
+            # Create display name (include parent if nested)
+            display_name = f"{parent_name}/{dir_name}" if parent_name else dir_name
+
             if match:
+                # Timestamped directory
                 date_str, time_str = match.groups()
-                # Parse timestamp for sorting and display
                 try:
                     timestamp = datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
-                    runs.append({
-                        'id': item,
-                        'path': item_path,
+                    timestamped_runs.append({
+                        'id': display_name,
+                        'path': dir_path,
                         'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
                         'sort_key': timestamp
                     })
+                    return True
                 except ValueError:
+                    pass
+
+            # Non-timestamped or failed timestamp parse
+            other_runs.append({
+                'id': display_name,
+                'path': dir_path,
+                'timestamp': 'N/A',
+                'sort_key': display_name
+            })
+            return True
+
+        return False
+
+    # First pass: check direct children
+    for item in os.listdir(base_dir):
+        if item.startswith('.'):
+            continue
+
+        item_path = os.path.join(base_dir, item)
+        if not os.path.isdir(item_path):
+            continue
+
+        # Try to process this directory directly
+        if process_directory(item_path, item):
+            continue
+
+        # If no episodes found, look one level deeper for data_* subdirectories
+        try:
+            for subitem in os.listdir(item_path):
+                if subitem.startswith('.'):
                     continue
 
-    # Sort by timestamp in reverse chronological order (newest first)
-    runs.sort(key=lambda x: x['sort_key'], reverse=True)
+                subitem_path = os.path.join(item_path, subitem)
+                if not os.path.isdir(subitem_path):
+                    continue
+
+                # Check if this subdirectory contains episodes
+                process_directory(subitem_path, subitem, parent_name=item)
+        except (PermissionError, OSError):
+            # Skip directories we can't read
+            continue
+
+    # Sort timestamped runs by timestamp (newest first)
+    timestamped_runs.sort(key=lambda x: x['sort_key'], reverse=True)
+
+    # Sort other runs alphabetically
+    other_runs.sort(key=lambda x: x['sort_key'])
+
+    # Combine: timestamped runs first, then other runs
+    runs = timestamped_runs + other_runs
 
     # Remove sort_key from output
     for run in runs:

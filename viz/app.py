@@ -294,6 +294,16 @@ app.layout = dbc.Container([
                                 ),
                             ], width=2),
                             dbc.Col([
+                                dbc.Label("LLM Analysis:", html_for="enable-llm-analysis-checkbox"),
+                                dbc.Checklist(
+                                    id='enable-llm-analysis-checkbox',
+                                    options=[{'label': ' Enable LLM Analysis', 'value': 'enable'}],
+                                    value=[],
+                                    switch=True,
+                                    className="mt-2"
+                                ),
+                            ], width=2),
+                            dbc.Col([
                                 dbc.Label("Specific Topology:", html_for="topology-name-dropdown"),
                                 dcc.Dropdown(
                                     id='topology-name-dropdown',
@@ -302,7 +312,7 @@ app.layout = dbc.Container([
                                     placeholder="Random (leave empty)",
                                     clearable=True
                                 ),
-                            ], width=2),
+                            ], width=1),
                             dbc.Col([
                                 dbc.Button(
                                     "Generate Dataset",
@@ -1377,9 +1387,10 @@ def update_fault_dropdowns(fault_type, fault_role):
     State('verbose-checkbox', 'value'),
     State('llm-topology-checkbox', 'value'),
     State('topology-name-dropdown', 'value'),
+    State('enable-llm-analysis-checkbox', 'value'),
     prevent_initial_call=True
 )
-def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list, llm_topology_list, topology_name):
+def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list, llm_topology_list, topology_name, enable_llm_analysis_list):
     """Start dataset generation in background when button is clicked."""
     import subprocess
     import sys
@@ -1449,6 +1460,11 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
     verbose = 'verbose' in (verbose_list or [])
     if verbose:
         cmd.append('--verbose')
+
+    # LLM Analysis support
+    enable_llm_analysis = 'enable' in (enable_llm_analysis_list or [])
+    if enable_llm_analysis:
+        cmd.append('--enable-llm-analysis')
 
     # LLM Topology support
     use_llm_topologies = 'llm' in (llm_topology_list or [])

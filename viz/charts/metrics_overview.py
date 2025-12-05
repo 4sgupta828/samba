@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 from dash import dcc, html
 import dash_bootstrap_components as dbc
 from typing import Dict
+from .timing_utils import get_fault_times_adjusted
 
 
 def add_fault_markers(fig: go.Figure, label_data: Dict, annotation_position: str = "top"):
@@ -25,10 +26,10 @@ def add_fault_markers(fig: go.Figure, label_data: Dict, annotation_position: str
         label_data: Label data containing fault timing information
         annotation_position: Position for annotations ("top" or "bottom")
     """
-    # Add fault injection marker
-    fault_start = label_data.get('fault_start_time', 0)
+    times = get_fault_times_adjusted(label_data)
+
     fig.add_vline(
-        x=fault_start,
+        x=times['fault_start'],
         line_dash="dash",
         line_color="red",
         line_width=2,
@@ -36,11 +37,9 @@ def add_fault_markers(fig: go.Figure, label_data: Dict, annotation_position: str
         annotation_position=annotation_position
     )
 
-    # Add fault removal marker if recovery data exists
-    recovery_start = label_data.get('recovery_start_time')
-    if recovery_start is not None:
+    if times['recovery_start'] is not None:
         fig.add_vline(
-            x=recovery_start,
+            x=times['recovery_start'],
             line_dash="dash",
             line_color="green",
             line_width=2,

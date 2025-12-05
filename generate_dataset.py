@@ -190,7 +190,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = False, llm_provider: str = "openai", llm_model: str = None):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None):
     """
     Generate a single training episode.
 
@@ -542,11 +542,18 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     if verbose:
         print(f"  ✓ Capacity planning saved to: {episode_dir}/capacity_planning.json")
 
+    # IMPORTANT: Extend simulation duration to include warmup period
+    # For a 600s requested duration with 60s warmup:
+    #   - Total physical time: 660s (0-60s warmup + 60-660s simulation)
+    #   - Metrics collected: 600s (sim.time 0-600 in metrics)
+    warmup_period_sec = 60.0
+    total_physical_duration = cfg.duration + warmup_period_sec
+
     sim_config = {
         'simulation': {
-            'duration': cfg.duration,
+            'duration': total_physical_duration,  # Extended to include warmup
             'output_dir': episode_dir,
-            'warmup_period': 60.0
+            'warmup_period': warmup_period_sec
         },
         'telemetry': {
             'metric_export_interval': cfg.export_interval,
@@ -692,15 +699,22 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         params = cfg.get_failure_params()
 
     # Calculate A-B-A timeline (Healthy -> Fault -> Recovery):
-    # - Warmup: 0 to start_time (healthy baseline)
-    # - Fault Ramp: start_time to start_time + ramp_duration (degradation)
-    # - Fault Sustain: start_time + ramp_duration to recovery_start (full failure)
+    # - Warmup: 0 to warmup_period (no metrics collected)
+    # - Healthy Baseline: warmup_period to fault_start (healthy system with metrics)
+    # - Fault Ramp: fault_start to fault_start + ramp_duration (degradation)
+    # - Fault Sustain: fault_start + ramp_duration to recovery_start (full failure)
     # - Recovery: recovery_start to recovery_start + ramp_duration (healing)
     # - Post-Recovery: recovery_start + ramp_duration to end (recovered baseline)
 
-    fault_start_time = int(cfg.duration * 0.20)  # Start at 20%
-    fault_ramp_duration = int(cfg.duration * 0.10)  # Fast ramp (10%)
-    fault_sustain_duration = int(cfg.duration * 0.40)  # Sustain fault for 40%
+    # Use the warmup period defined earlier
+    warmup_period = warmup_period_sec
+
+    # Calculate fault timing relative to requested duration (cfg.duration)
+    # This ensures we have a healthy baseline period after warmup before fault injection
+    # The fault timing is based on the REQUESTED duration, not the extended physical duration
+    fault_start_time = int(warmup_period + cfg.duration * 0.20)  # Start at warmup + 20% of requested duration
+    fault_ramp_duration = int(cfg.duration * 0.10)  # Fast ramp (10% of requested duration)
+    fault_sustain_duration = int(cfg.duration * 0.40)  # Sustain fault for 40% of requested duration
     recovery_start_time = fault_start_time + fault_ramp_duration + fault_sustain_duration
 
     if verbose:
@@ -708,11 +722,13 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"  Target: {actual_target_id}")
         if cfg.fault_type == 'network_partition':
             print(f"  Partitioned components: {source_id} <-> {target_id}")
-        print(f"  Phase A (Healthy): 0s - {fault_start_time}s")
+        print(f"  Total Physical Duration: {total_physical_duration}s (requested: {cfg.duration}s + warmup: {int(warmup_period)}s)")
+        print(f"  Warmup (No Metrics): 0s - {int(warmup_period)}s")
+        print(f"  Phase A (Healthy Baseline): {int(warmup_period)}s - {fault_start_time}s")
         print(f"  Phase B Ramp (Degradation): {fault_start_time}s - {fault_start_time + fault_ramp_duration}s")
         print(f"  Phase B Sustain (Full Fault): {fault_start_time + fault_ramp_duration}s - {recovery_start_time}s")
         print(f"  Phase A Recovery: {recovery_start_time}s - {recovery_start_time + fault_ramp_duration}s")
-        print(f"  Phase A Post-Recovery: {recovery_start_time + fault_ramp_duration}s - {cfg.duration}s")
+        print(f"  Phase A Post-Recovery: {recovery_start_time + fault_ramp_duration}s - {total_physical_duration}s")
 
     # Initialize new training-focused injector
     injector = TrainingFailureInjector(
@@ -755,6 +771,17 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     sim.env.process(schedule_revert())
 
     # 8. Save Ground Truth Label (WITH A-B-A TIMELINE)
+    # IMPORTANT: All times in the label are in ADJUSTED sim.time (post-warmup)
+    # This matches the metrics, which restart from 0 after warmup
+    # To get physical time, add warmup_period to any time value
+
+    # Adjust all times to match metrics timeline (subtract warmup)
+    adjusted_fault_start = fault_start_time - int(warmup_period)
+    adjusted_fault_full_effect = (fault_start_time + fault_ramp_duration) - int(warmup_period)
+    adjusted_recovery_start = recovery_start_time - int(warmup_period)
+    adjusted_recovery_complete = (recovery_start_time + fault_ramp_duration) - int(warmup_period)
+    adjusted_episode_end = cfg.duration  # Full requested duration in metrics timeline
+
     label = {
         'episode': episode_id,
         'level': level,
@@ -762,29 +789,52 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         'root_cause_node': actual_target_id,
         'root_cause_role': cfg.fault_target_role,
         'fault_type': cfg.fault_type,
-        'fault_start_time': fault_start_time,
+        'warmup_period': int(warmup_period),
+        'fault_start_time': adjusted_fault_start,
         'fault_ramp_duration': fault_ramp_duration,
-        'fault_full_effect_time': fault_start_time + fault_ramp_duration,
-        'recovery_start_time': recovery_start_time,
-        'recovery_complete_time': recovery_start_time + fault_ramp_duration,
-        'fault_total_duration': cfg.duration - fault_start_time,
+        'fault_full_effect_time': adjusted_fault_full_effect,
+        'recovery_start_time': adjusted_recovery_start,
+        'recovery_complete_time': adjusted_recovery_complete,
+        'fault_total_duration': adjusted_episode_end - adjusted_fault_start,
         'timeline': {
-            'healthy_start': 0,
+            'warmup_period': int(warmup_period),
+            'healthy_baseline_start': 0,  # Metrics start at 0
+            'fault_injection_start': adjusted_fault_start,
+            'fault_full_effect': adjusted_fault_full_effect,
+            'recovery_start': adjusted_recovery_start,
+            'recovery_complete': adjusted_recovery_complete,
+            'episode_end': adjusted_episode_end
+        },
+        'physical_timeline': {
+            'note': 'Physical timeline with warmup included (for reference only)',
+            'warmup_period': int(warmup_period),
+            'warmup_end': int(warmup_period),
+            'healthy_baseline_start': int(warmup_period),
             'fault_injection_start': fault_start_time,
             'fault_full_effect': fault_start_time + fault_ramp_duration,
             'recovery_start': recovery_start_time,
             'recovery_complete': recovery_start_time + fault_ramp_duration,
-            'episode_end': cfg.duration
+            'episode_end': total_physical_duration
         },
+        'timing_note': 'All times in this label are in adjusted sim.time (metrics timeline) starting from 0 after warmup. To convert to physical time, add warmup_period.',
         'progression': {
             'type': cfg.progression,
-            'description': f'A-B-A timeline: Healthy -> Fault ({cfg.progression} over {fault_ramp_duration}s) -> Recovery ({fault_ramp_duration}s)',
+            'description': f'A-B-A timeline in adjusted sim.time: Healthy Baseline -> Fault ({cfg.progression} over {fault_ramp_duration}s) -> Recovery ({fault_ramp_duration}s)',
             'phases': {
-                'healthy_baseline': f'0s - {fault_start_time}s',
+                'healthy_baseline': f'0s - {adjusted_fault_start}s (metrics timeline)',
+                'degradation_ramp': f'{adjusted_fault_start}s - {adjusted_fault_full_effect}s',
+                'full_failure': f'{adjusted_fault_full_effect}s - {adjusted_recovery_start}s',
+                'recovery_ramp': f'{adjusted_recovery_start}s - {adjusted_recovery_complete}s',
+                'recovered_baseline': f'{adjusted_recovery_complete}s - {adjusted_episode_end}s'
+            },
+            'physical_phases': {
+                'note': 'Physical timeline with warmup (for reference only)',
+                'warmup': f'0s - {int(warmup_period)}s (no metrics collected)',
+                'healthy_baseline': f'{int(warmup_period)}s - {fault_start_time}s',
                 'degradation_ramp': f'{fault_start_time}s - {fault_start_time + fault_ramp_duration}s',
                 'full_failure': f'{fault_start_time + fault_ramp_duration}s - {recovery_start_time}s',
                 'recovery_ramp': f'{recovery_start_time}s - {recovery_start_time + fault_ramp_duration}s',
-                'recovered_baseline': f'{recovery_start_time + fault_ramp_duration}s - {cfg.duration}s'
+                'recovered_baseline': f'{recovery_start_time + fault_ramp_duration}s - {total_physical_duration}s'
             }
         },
         'fault_params': params,
@@ -1030,7 +1080,7 @@ def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force
     return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = False, llm_provider: str = "openai", llm_model: str = None):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -1213,9 +1263,10 @@ def main():
         help='Specific topology name to load from topology bank (if not specified, picks randomly)'
     )
     parser.add_argument(
-        '--skip-analysis',
+        '--enable-llm-analysis',
         action='store_true',
-        help='Skip LLM analysis to speed up dataset generation'
+        default=False,
+        help='Enable LLM analysis (disabled by default to speed up generation)'
     )
     parser.add_argument(
         '--llm-provider',
@@ -1248,7 +1299,7 @@ def main():
         use_llm_topologies=args.llm_topologies,
         topology_bank_dir=args.topology_bank,
         topology_name=args.topology_name,
-        skip_analysis=args.skip_analysis,
+        skip_analysis=not args.enable_llm_analysis,  # Invert the flag
         llm_provider=args.llm_provider,
         llm_model=args.llm_model
     )

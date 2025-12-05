@@ -440,18 +440,15 @@ class SummarizedJsonMetricExporter(MetricExporter):
         Create a summarized metric point in the optimal format.
 
         Returns a single JSON object representing one metric reading at one point in time.
-        Returns None if the point is within the warmup period and should be skipped.
+        Note: Warmup period filtering is handled by SimulationTimeMetricReader, not here.
         """
         # Convert simulation time to realistic timestamp
         # Use sim.time from attributes instead of time_unix_nano
         # because time_unix_nano is the same for all metrics when force_flush() is called
+        # NOTE: sim.time is already adjusted by SimulationTimeMetricReader to restart from 0 after warmup
         sim_time = None
         if hasattr(point, 'attributes') and point.attributes:
             sim_time = point.attributes.get('sim.time')
-
-        # Skip metrics within warmup period
-        if sim_time is not None and sim_time < self.warmup_period_seconds:
-            return None
 
         if sim_time is not None:
             # Convert simulation time to Unix nanoseconds

@@ -33,7 +33,8 @@ class SimulationTimeMetricReader(MetricReader):
         self,
         exporter: MetricExporter,
         export_interval_sim_seconds: float = 10.0,
-        use_delta_temporality: bool = True
+        use_delta_temporality: bool = True,
+        warmup_period_seconds: float = 0.0
     ):
         """
         Initialize the simulation-time-based metric reader.
@@ -43,6 +44,7 @@ class SimulationTimeMetricReader(MetricReader):
             export_interval_sim_seconds: Interval between exports (simulation seconds)
             use_delta_temporality: If True, use DELTA temporality (recommended for RCA).
                                    If False, use CUMULATIVE temporality.
+            warmup_period_seconds: Duration of warmup period to skip (default: 0.0)
         """
         # Configure preferred temporality
         # For DELTA temporality, we want counters and histograms to reset after each collection
@@ -74,6 +76,7 @@ class SimulationTimeMetricReader(MetricReader):
         self._exporter = exporter
         self._export_interval = export_interval_sim_seconds
         self._use_delta_temporality = use_delta_temporality
+        self._warmup_period = warmup_period_seconds
 
         # Track last export time
         self._last_export_sim_time = 0.0
@@ -96,6 +99,11 @@ class SimulationTimeMetricReader(MetricReader):
             bool: True if collection should happen, False otherwise
         """
         self._current_sim_time = sim_time
+
+        # Skip metrics during warmup period
+        if sim_time < self._warmup_period:
+            self._should_collect = False
+            return False
 
         # Check if we've passed the export interval
         if sim_time - self._last_export_sim_time >= self._export_interval:
@@ -129,6 +137,11 @@ class SimulationTimeMetricReader(MetricReader):
         # 1. SDK aggregates properly (sim.time not in labels)
         # 2. Exporter gets sim.time for timestamp conversion
         # 3. Dash UI gets sim.time for visualization
+        #
+        # IMPORTANT: Adjust sim.time to restart from 0 after warmup period
+        # This ensures that metrics timeline aligns with fault injection timeline
+        adjusted_sim_time = self._current_sim_time - self._warmup_period
+
         for resource_metric in metrics_data.resource_metrics:
             for scope_metric in resource_metric.scope_metrics:
                 for metric in scope_metric.metrics:
@@ -139,8 +152,8 @@ class SimulationTimeMetricReader(MetricReader):
                                 # Point attributes might be immutable, so create a new dict
                                 if point.attributes is None:
                                     point.attributes = {}
-                                # Add sim.time to the attributes
-                                point.attributes['sim.time'] = self._current_sim_time
+                                # Add adjusted sim.time to the attributes (restarts from 0 after warmup)
+                                point.attributes['sim.time'] = adjusted_sim_time
 
         # Export the aggregated metrics with sim.time attached
         result = self._exporter.export(metrics_data, timeout_millis=timeout_millis)

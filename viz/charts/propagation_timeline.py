@@ -13,6 +13,7 @@ import pandas as pd
 import networkx as nx
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from .timing_utils import get_fault_times_adjusted, adjust_time_for_warmup
 from dash import dcc, html
 import dash_bootstrap_components as dbc
 from typing import Dict, List, Tuple
@@ -151,8 +152,8 @@ def create_correlation_matrix(metrics_df: pd.DataFrame, graph: nx.DiGraph,
     ))
 
     # Add fault injection line
-    fault_start = label_data.get('fault_start_time', 0)
-    bucket_index = fault_start // bucket_size
+    times = get_fault_times_adjusted(label_data)
+    bucket_index = times['fault_start'] // bucket_size
     fig.add_vline(
         x=bucket_index,
         line_dash="dash",
@@ -163,9 +164,8 @@ def create_correlation_matrix(metrics_df: pd.DataFrame, graph: nx.DiGraph,
     )
 
     # Add fault removal line if recovery exists
-    recovery_start = label_data.get('recovery_start_time')
-    if recovery_start is not None:
-        recovery_bucket_index = recovery_start // bucket_size
+    if times['recovery_start'] is not None:
+        recovery_bucket_index = times['recovery_start'] // bucket_size
         fig.add_vline(
             x=recovery_bucket_index,
             line_dash="dash",
@@ -256,13 +256,12 @@ def create_metric_cascade(metrics_df: pd.DataFrame, graph: nx.DiGraph,
             )
 
     # Add fault injection and removal lines
-    fault_start = label_data.get('fault_start_time', 0)
-    recovery_start = label_data.get('recovery_start_time')
+    times = get_fault_times_adjusted(label_data)
 
     for idx in range(len(components)):
         # Fault injection line
         fig.add_vline(
-            x=fault_start,
+            x=times['fault_start'],
             line_dash="dash",
             line_color="red",
             line_width=1,
@@ -270,9 +269,9 @@ def create_metric_cascade(metrics_df: pd.DataFrame, graph: nx.DiGraph,
             col=1
         )
         # Fault removal line
-        if recovery_start is not None:
+        if times['recovery_start'] is not None:
             fig.add_vline(
-                x=recovery_start,
+                x=times['recovery_start'],
                 line_dash="dash",
                 line_color="green",
                 line_width=1,
@@ -307,7 +306,8 @@ def create_propagation_graph(metrics_df: pd.DataFrame, graph: nx.DiGraph,
         List of HTML components showing propagation path
     """
     root_cause = label_data.get('root_cause_node')
-    fault_start = label_data.get('fault_start_time', 0)
+    times = get_fault_times_adjusted(label_data)
+    fault_start = times['fault_start']
 
     # Find downstream components (BFS from root cause)
     if root_cause not in graph.nodes():

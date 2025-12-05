@@ -15,6 +15,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from typing import Dict
+from .timing_utils import get_fault_times_adjusted
 
 
 def add_fault_markers_with_shading(fig: go.Figure, label_data: Dict, row: int = None, col: int = 1):
@@ -27,14 +28,10 @@ def add_fault_markers_with_shading(fig: go.Figure, label_data: Dict, row: int = 
         row: Row number for subplot (None for single plot)
         col: Column number for subplot
     """
-    fault_start = label_data.get('fault_start_time', 0)
-    recovery_start = label_data.get('recovery_start_time')
-
-    # Calculate fault end time (either recovery start or fault_total_duration)
-    if recovery_start is not None:
-        fault_end = recovery_start
-    else:
-        fault_end = fault_start + label_data.get('fault_total_duration', 0)
+    times = get_fault_times_adjusted(label_data)
+    fault_start = times['fault_start']
+    fault_end = times['fault_end']
+    recovery_start = times['recovery_start']
 
     # Add shaded region for fault period
     fig.add_vrect(

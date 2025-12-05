@@ -216,11 +216,14 @@ def setup_telemetry(config: Dict, output_dir: str = None, simulation_id: str = N
         # Use custom SimulationTimeMetricReader for proper aggregation based on simulation time
         print(f"Telemetry: Using SimulationTimeMetricReader with {metric_export_interval}s interval")
         print(f"Telemetry: Temporality mode: {'DELTA' if use_delta_temporality else 'CUMULATIVE'}")
+        if warmup_period > 0:
+            print(f"Telemetry: Skipping first {warmup_period}s warmup period in metrics collection")
 
         simulation_metric_reader = SimulationTimeMetricReader(
             exporter=file_metric_exporter,
             export_interval_sim_seconds=metric_export_interval,
-            use_delta_temporality=use_delta_temporality
+            use_delta_temporality=use_delta_temporality,
+            warmup_period_seconds=warmup_period
         )
         metric_reader = simulation_metric_reader
     else:
