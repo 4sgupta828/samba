@@ -190,7 +190,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_forensics: bool = False):
     """
     Generate a single training episode.
 
@@ -204,6 +204,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         force_fault_role: Force a specific fault role (e.g., 'queue')
         use_llm_topologies: Use LLM-generated topologies from topology bank
         topology_bank_dir: Directory containing LLM-generated topologies
+        skip_forensics: Skip forensic analysis to speed up generation
 
     Returns:
         Dictionary with episode metadata
@@ -282,22 +283,60 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"  Nodes: {len(nx_graph.nodes)}, Edges: {len(nx_graph.edges)}")
             print(f"  Available roles: {', '.join(sorted(available_roles))}")
 
-        # Try to find a compatible scenario (max 10 attempts)
-        cfg = None
-        for attempt in range(10):
-            level = scenario_lib.sample_level(seed=episode_id + attempt)
-            temp_cfg = scenario_lib.get_episode(level, seed=episode_id + attempt)
-            temp_cfg.topology_size = len(nx_graph.nodes)
+        # If force_fault_type and force_fault_role are specified, find matching scenario
+        if force_fault_type and force_fault_role:
+            # Find a scenario that matches the forced parameters
+            cfg = None
+            for level in [1, 2, 3, 4]:
+                scenarios = scenario_lib.levels[level]
+                for scenario in scenarios:
+                    if scenario.fault_type == force_fault_type and scenario.fault_target_role == force_fault_role:
+                        # Found a match - create a copy with updated topology size
+                        cfg = EpisodeConfig(
+                            level=scenario.level,
+                            topology_size=len(nx_graph.nodes),
+                            duration=scenario.duration,
+                            fault_type=scenario.fault_type,
+                            fault_target_role=scenario.fault_target_role,
+                            export_interval=scenario.export_interval,
+                            description=scenario.description,
+                            progression=scenario.progression,
+                            fault_params=scenario.fault_params
+                        )
+                        break
+                if cfg:
+                    break
 
-            # Check if this scenario's target role exists in the topology
-            # Skip role check for network_partition (it works with any topology)
-            if temp_cfg.fault_type == 'network_partition' or temp_cfg.fault_target_role in available_roles:
-                cfg = temp_cfg
-                break
+            if cfg is None:
+                print(f"Error: Could not find scenario with fault_type='{force_fault_type}' and role='{force_fault_role}'")
+                return None
 
-        if cfg is None:
-            print(f"Warning: Could not find compatible scenario for LLM topology with roles {available_roles}, skipping episode {episode_id}")
-            return None
+            # Verify the topology has the required role (skip for network_partition)
+            if cfg.fault_type != 'network_partition' and cfg.fault_target_role not in available_roles:
+                print(f"Warning: LLM topology does not have required role '{cfg.fault_target_role}', skipping episode {episode_id}")
+                return None
+
+            if verbose:
+                print(f"  Forced scenario: {cfg.description}")
+                print(f"  Fault type: {cfg.fault_type}, Target role: {cfg.fault_target_role}")
+
+        else:
+            # Try to find a compatible scenario (max 10 attempts)
+            cfg = None
+            for attempt in range(10):
+                level = scenario_lib.sample_level(seed=episode_id + attempt)
+                temp_cfg = scenario_lib.get_episode(level, seed=episode_id + attempt)
+                temp_cfg.topology_size = len(nx_graph.nodes)
+
+                # Check if this scenario's target role exists in the topology
+                # Skip role check for network_partition (it works with any topology)
+                if temp_cfg.fault_type == 'network_partition' or temp_cfg.fault_target_role in available_roles:
+                    cfg = temp_cfg
+                    break
+
+            if cfg is None:
+                print(f"Warning: Could not find compatible scenario for LLM topology with roles {available_roles}, skipping episode {episode_id}")
+                return None
 
         level = cfg.level
         phase_timings['topology_generation'] = time.time() - phase_start
@@ -843,31 +882,35 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                 import traceback
                 traceback.print_exc()
 
-        # 11.5. Run Forensic Analysis
-        if verbose:
+        # 11.5. Run Forensic Analysis (unless skipped)
+        if not skip_forensics:
+            if verbose:
+                print(f"\n[Forensic Analysis]")
+                print(f"  Running comprehensive post-simulation forensic analysis...")
+
+            try:
+                forensic_report = forensic_analyze_episode(episode_dir)
+
+                if verbose:
+                    print(f"  Forensic analysis complete:")
+                    print(f"    - Bottlenecks detected: {forensic_report.summary['total_bottlenecks']}")
+                    print(f"    - Components crashed: {forensic_report.summary['total_crashes']}")
+                    print(f"    - Crashes recovered: {forensic_report.summary['crashes_recovered']}")
+                    print(f"    - Cascades detected: {forensic_report.summary['total_cascades']}")
+                    print(f"    - Circuit breaker events: {forensic_report.summary['total_circuit_breaker_events']}")
+                    print(f"    - System recovered: {forensic_report.summary['system_recovered']}")
+                    print(f"    - Recovery recommendations: {len(forensic_report.recovery_recommendations)}")
+                    print(f"  Report saved to: {os.path.join(episode_dir, 'forensic_analysis.json')}")
+
+            except Exception as e:
+                # Don't fail the entire episode if forensic analysis fails
+                print(f"  Warning: Forensic analysis failed: {e}")
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+        elif verbose:
             print(f"\n[Forensic Analysis]")
-            print(f"  Running comprehensive post-simulation forensic analysis...")
-
-        try:
-            forensic_report = forensic_analyze_episode(episode_dir)
-
-            if verbose:
-                print(f"  Forensic analysis complete:")
-                print(f"    - Bottlenecks detected: {forensic_report.summary['total_bottlenecks']}")
-                print(f"    - Components crashed: {forensic_report.summary['total_crashes']}")
-                print(f"    - Crashes recovered: {forensic_report.summary['crashes_recovered']}")
-                print(f"    - Cascades detected: {forensic_report.summary['total_cascades']}")
-                print(f"    - Circuit breaker events: {forensic_report.summary['total_circuit_breaker_events']}")
-                print(f"    - System recovered: {forensic_report.summary['system_recovered']}")
-                print(f"    - Recovery recommendations: {len(forensic_report.recovery_recommendations)}")
-                print(f"  Report saved to: {os.path.join(episode_dir, 'forensic_analysis.json')}")
-
-        except Exception as e:
-            # Don't fail the entire episode if forensic analysis fails
-            print(f"  Warning: Forensic analysis failed: {e}")
-            if verbose:
-                import traceback
-                traceback.print_exc()
+            print(f"  Skipped (--skip-forensics enabled)")
 
         # 12. Validate Baseline Health (Mathematical)
         if verbose:
@@ -965,16 +1008,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_forensics):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_forensics=skip_forensics)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_forensics: bool = False):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -988,6 +1031,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         force_fault_role: Force a specific fault role for all episodes
         use_llm_topologies: Use LLM-generated topologies from topology bank
         topology_bank_dir: Directory containing LLM-generated topologies
+        skip_forensics: Skip forensic analysis to speed up generation
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -1027,7 +1071,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_forensics)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1153,6 +1197,11 @@ def main():
         default=None,
         help='Specific topology name to load from topology bank (if not specified, picks randomly)'
     )
+    parser.add_argument(
+        '--skip-forensics',
+        action='store_true',
+        help='Skip forensic analysis to speed up dataset generation'
+    )
 
     args = parser.parse_args()
 
@@ -1170,7 +1219,8 @@ def main():
         force_fault_role=args.fault_role,
         use_llm_topologies=args.llm_topologies,
         topology_bank_dir=args.topology_bank,
-        topology_name=args.topology_name
+        topology_name=args.topology_name,
+        skip_forensics=args.skip_forensics
     )
 
 
