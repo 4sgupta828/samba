@@ -215,6 +215,7 @@ Output ONLY JSON."""
         G = nx.DiGraph()
 
         # 1. Add Nodes
+        services = []  # Track services for Pod generation
         for node in data['nodes']:
             attrs = {
                 'type': node['type'],
@@ -233,6 +234,7 @@ Output ONLY JSON."""
             if attrs['role'] == 'service':
                 attrs['supported_request_types'] = ['GET', 'POST', 'PUT', 'DELETE']
                 attrs['processing_pipeline'] = None  # Will be set during wiring
+                services.append(node['id'])
 
             G.add_node(node['id'], **attrs)
 
@@ -244,7 +246,47 @@ Output ONLY JSON."""
                       type=edge['type'],
                       base_latency=latency)
 
-        # 3. Attach Metadata & Flows
+        # 3. Add Service/Pod/Node Architecture (matching procedural generator)
+        # Calculate pods and nodes needed
+        total_pods = len(services) * 3  # 3 pods per service (default, will be overridden by capacity planner)
+        pods_per_node = 5  # Target 5 pods per node
+        num_nodes = max(1, (total_pods + pods_per_node - 1) // pods_per_node)  # Ceiling division
+
+        # Create Compute Nodes
+        nodes = [f'node_{i}' for i in range(num_nodes)]
+        for node_id in nodes:
+            G.add_node(node_id,
+                      type='ComputeNode',
+                      role='node',
+                      cpu_cores=8,
+                      memory_gb=32,
+                      network_bandwidth_gbps=10)
+
+        # Create Pods for each Service (round-robin placement across nodes)
+        node_idx = 0
+        for svc in services:
+            for pod_num in range(3):  # 3 pods per service (will be overridden by capacity planner)
+                pod_id = f'pod_{svc}_{pod_num}'
+                target_node = nodes[node_idx % num_nodes]
+
+                G.add_node(pod_id,
+                          type='Pod',
+                          role='pod',
+                          parent_service=svc,
+                          compute_node=target_node)
+
+                # Add edges: Service → Pod (pod_pool), Pod → Node (pod_placement)
+                G.add_edge(svc, pod_id, type='pod_pool', base_latency=0.0)
+                G.add_edge(pod_id, target_node, type='pod_placement', base_latency=0.0)
+
+                node_idx += 1
+
+        # Create DeploymentController
+        G.add_node('deployment_controller',
+                  type='DeploymentController',
+                  role='controller')
+
+        # 4. Attach Metadata & Flows
         G.graph['meta'] = data.get('meta', {})
         G.graph['request_flows'] = data.get('flows', {})
 
