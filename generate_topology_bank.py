@@ -54,12 +54,13 @@ def main():
     generator = LLMTopologyGenerator(model=args.model) # Ensure API key env var is set
 
     # Matrix of scenarios to generate
-    # This guarantees diversity of structure AND scale
+    # This guarantees diversity of structure
+    # Note: Only using medium scale as large topologies often fail validation
     scenarios = [
-        ("hierarchical", "medium"), ("hierarchical", "large"),
-        ("mesh", "medium"),         ("mesh", "large"),
-        ("pipeline", "medium"),     ("pipeline", "large"),
-        ("hub_spoke", "medium"),    ("hub_spoke", "large")
+        ("hierarchical", "medium"),
+        ("mesh", "medium"),
+        ("pipeline", "medium"),
+        ("hub_spoke", "medium")
     ]
 
     # Generate multiple samples per scenario

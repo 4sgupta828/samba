@@ -41,12 +41,13 @@ from src.core.capacity_planner import CapacityPlanner
 import networkx as nx
 
 
-def load_random_template(bank_dir: str = "data/topology_bank") -> tuple:
+def load_random_template(bank_dir: str = "data/topology_bank", topology_name: str = None) -> tuple:
     """
     Load a random LLM-generated topology from the topology bank.
 
     Args:
         bank_dir: Directory containing topology bank
+        topology_name: Optional specific topology name to load (if None, picks randomly)
 
     Returns:
         Tuple of (nx_graph, semantic_map)
@@ -61,8 +62,14 @@ def load_random_template(bank_dir: str = "data/topology_bank") -> tuple:
     if not topology_dirs:
         raise ValueError(f"No topologies found in {bank_dir}")
 
-    # Pick random topology
-    chosen = random.choice(topology_dirs)
+    # Pick topology
+    if topology_name:
+        if topology_name not in topology_dirs:
+            raise ValueError(f"Topology '{topology_name}' not found in {bank_dir}. Available: {', '.join(topology_dirs)}")
+        chosen = topology_name
+    else:
+        chosen = random.choice(topology_dirs)
+
     topo_path = os.path.join(bank_dir, chosen)
 
     # Load graph
@@ -183,7 +190,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank"):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None):
     """
     Generate a single training episode.
 
@@ -264,7 +271,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"  Loading from topology bank: {topology_bank_dir}")
 
         # Load random LLM-designed topology
-        nx_graph, semantic_overlay = load_random_template(topology_bank_dir)
+        nx_graph, semantic_overlay = load_random_template(topology_bank_dir, topology_name)
 
         # Get available node roles from the loaded topology
         available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
@@ -958,16 +965,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank"):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -1020,7 +1027,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1140,6 +1147,12 @@ def main():
         default='data/topology_bank',
         help='Directory containing LLM-generated topology bank (default: data/topology_bank)'
     )
+    parser.add_argument(
+        '--topology-name',
+        type=str,
+        default=None,
+        help='Specific topology name to load from topology bank (if not specified, picks randomly)'
+    )
 
     args = parser.parse_args()
 
@@ -1156,7 +1169,8 @@ def main():
         force_fault_type=args.fault_type,
         force_fault_role=args.fault_role,
         use_llm_topologies=args.llm_topologies,
-        topology_bank_dir=args.topology_bank
+        topology_bank_dir=args.topology_bank,
+        topology_name=args.topology_name
     )
 
 

@@ -284,6 +284,26 @@ app.layout = dbc.Container([
                                 ),
                             ], width=2),
                             dbc.Col([
+                                dbc.Label("Topology Source:", html_for="llm-topology-checkbox"),
+                                dbc.Checklist(
+                                    id='llm-topology-checkbox',
+                                    options=[{'label': ' LLM Topologies (uncheck for custom)', 'value': 'llm'}],
+                                    value=['llm'],
+                                    switch=True,
+                                    className="mt-2"
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Label("Specific Topology:", html_for="topology-name-dropdown"),
+                                dcc.Dropdown(
+                                    id='topology-name-dropdown',
+                                    options=[],
+                                    value='',
+                                    placeholder="Random (leave empty)",
+                                    clearable=True
+                                ),
+                            ], width=2),
+                            dbc.Col([
                                 dbc.Button(
                                     "Generate Dataset",
                                     id="generate-button",
@@ -1229,6 +1249,42 @@ def toggle_generator_collapse(n_clicks, is_open):
 
 
 @app.callback(
+    Output('topology-size-input', 'disabled'),
+    Output('topology-name-dropdown', 'disabled'),
+    Output('topology-name-dropdown', 'options'),
+    Input('llm-topology-checkbox', 'value')
+)
+def update_topology_controls(llm_topology_list):
+    """Update topology controls based on LLM topology selection."""
+    use_llm = 'llm' in (llm_topology_list or [])
+
+    # When using LLM topologies:
+    # - Disable topology size (LLM determines size)
+    # - Enable topology name dropdown and populate it
+    # When using custom topology:
+    # - Enable topology size
+    # - Disable topology name dropdown
+
+    if use_llm:
+        # Try to load available topologies from the topology bank
+        from pathlib import Path
+        project_root = Path(__file__).parent.parent
+        topology_bank_path = project_root / 'data' / 'topology_bank'
+
+        options = []
+        if topology_bank_path.exists():
+            try:
+                subdirs = sorted([d.name for d in topology_bank_path.iterdir() if d.is_dir()])
+                options = [{'label': name, 'value': name} for name in subdirs]
+            except Exception:
+                pass  # If we can't read the directory, just leave options empty
+
+        return True, False, options  # size disabled, dropdown enabled, with options
+    else:
+        return False, True, []  # size enabled, dropdown disabled, no options
+
+
+@app.callback(
     Output('fault-role-dropdown', 'options'),
     Output('fault-type-dropdown', 'options'),
     Input('fault-type-dropdown', 'value'),
@@ -1319,9 +1375,11 @@ def update_fault_dropdowns(fault_type, fault_role):
     State('output-dir-input', 'value'),
     State('seed-input', 'value'),
     State('verbose-checkbox', 'value'),
+    State('llm-topology-checkbox', 'value'),
+    State('topology-name-dropdown', 'value'),
     prevent_initial_call=True
 )
-def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list):
+def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list, llm_topology_list, topology_name):
     """Start dataset generation in background when button is clicked."""
     import subprocess
     import sys
@@ -1391,6 +1449,50 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
     verbose = 'verbose' in (verbose_list or [])
     if verbose:
         cmd.append('--verbose')
+
+    # LLM Topology support
+    use_llm_topologies = 'llm' in (llm_topology_list or [])
+    if use_llm_topologies:
+        # Convert topology bank to absolute path
+        topology_bank_path = 'data/topology_bank'
+        if not os.path.isabs(topology_bank_path):
+            project_root = Path(__file__).parent.parent
+            topology_bank_path = str(project_root / topology_bank_path)
+
+        # Validate that topology bank exists
+        if not os.path.exists(topology_bank_path):
+            return dbc.Alert([
+                html.H6("❌ Topology Bank Not Found", className="alert-heading"),
+                html.P(f"The topology bank directory does not exist: {topology_bank_path}"),
+                html.P("Please generate the topology bank first by running:"),
+                html.Pre("python3 generate_topology_bank.py --samples 2 --output data/topology_bank",
+                        className="small bg-light p-2"),
+                html.P("This will generate LLM-based topologies that can be reused for multiple dataset generations.", className="small")
+            ], color="danger"), True, False, True
+
+        # Check if topology bank has any topologies
+        try:
+            subdirs = [d for d in os.listdir(topology_bank_path) if os.path.isdir(os.path.join(topology_bank_path, d))]
+            if len(subdirs) == 0:
+                return dbc.Alert([
+                    html.H6("❌ Empty Topology Bank", className="alert-heading"),
+                    html.P(f"The topology bank directory exists but contains no topologies: {topology_bank_path}"),
+                    html.P("Please generate topologies first by running:"),
+                    html.Pre("python3 generate_topology_bank.py --samples 2 --output data/topology_bank",
+                            className="small bg-light p-2")
+                ], color="danger"), True, False, True
+        except Exception as e:
+            return dbc.Alert([
+                html.H6("❌ Error Checking Topology Bank", className="alert-heading"),
+                html.P(f"Could not read topology bank directory: {str(e)}")
+            ], color="danger"), True, False, True
+
+        cmd.append('--llm-topologies')
+        cmd.extend(['--topology-bank', topology_bank_path])
+
+        # Add specific topology name if selected
+        if topology_name:
+            cmd.extend(['--topology-name', topology_name])
 
     try:
         # Start the generation script in background
