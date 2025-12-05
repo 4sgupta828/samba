@@ -34,7 +34,7 @@ from src.components.pod import Pod
 from src.components.compute_node import ComputeNode
 from src.components.deployment_controller import DeploymentController
 from analysis.propagation_analyzer import analyze_episode
-from analysis.forensic_analyzer import analyze_episode as forensic_analyze_episode
+from llm_analysis import create_llm_provider, SimulationAnalyzer, save_analysis_results
 from validate_baseline_health import validate_episode_health
 from src.validation.health_validator import validate_system_health
 from src.core.capacity_planner import CapacityPlanner
@@ -190,7 +190,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_forensics: bool = False):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = False, llm_provider: str = "openai", llm_model: str = None):
     """
     Generate a single training episode.
 
@@ -204,7 +204,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         force_fault_role: Force a specific fault role (e.g., 'queue')
         use_llm_topologies: Use LLM-generated topologies from topology bank
         topology_bank_dir: Directory containing LLM-generated topologies
-        skip_forensics: Skip forensic analysis to speed up generation
+        skip_analysis: Skip LLM analysis to speed up generation
+        llm_provider: LLM provider to use (openai, anthropic) - default: openai
+        llm_model: Specific model to use (default: gpt-4 for openai, claude-opus-4-5 for anthropic)
 
     Returns:
         Dictionary with episode metadata
@@ -882,35 +884,46 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                 import traceback
                 traceback.print_exc()
 
-        # 11.5. Run Forensic Analysis (unless skipped)
-        if not skip_forensics:
+        # 11.5. Run LLM-based Analysis (unless skipped)
+        if not skip_analysis:
             if verbose:
-                print(f"\n[Forensic Analysis]")
-                print(f"  Running comprehensive post-simulation forensic analysis...")
+                print(f"\n[LLM Analysis]")
+                print(f"  Running comprehensive LLM-based simulation analysis...")
+                print(f"  Provider: {llm_provider}, Model: {llm_model or 'default'}")
 
             try:
-                forensic_report = forensic_analyze_episode(episode_dir)
+                # Create LLM provider
+                llm = create_llm_provider(llm_provider, llm_model)
+
+                # Create analyzer
+                analyzer = SimulationAnalyzer(llm)
+
+                # Analyze episode
+                analysis_result = analyzer.analyze_episode(Path(episode_dir))
+
+                # Save results (JSON + Markdown)
+                save_analysis_results(analysis_result, Path(episode_dir))
 
                 if verbose:
-                    print(f"  Forensic analysis complete:")
-                    print(f"    - Bottlenecks detected: {forensic_report.summary['total_bottlenecks']}")
-                    print(f"    - Components crashed: {forensic_report.summary['total_crashes']}")
-                    print(f"    - Crashes recovered: {forensic_report.summary['crashes_recovered']}")
-                    print(f"    - Cascades detected: {forensic_report.summary['total_cascades']}")
-                    print(f"    - Circuit breaker events: {forensic_report.summary['total_circuit_breaker_events']}")
-                    print(f"    - System recovered: {forensic_report.summary['system_recovered']}")
-                    print(f"    - Recovery recommendations: {len(forensic_report.recovery_recommendations)}")
-                    print(f"  Report saved to: {os.path.join(episode_dir, 'forensic_analysis.json')}")
+                    print(f"  LLM analysis complete:")
+                    print(f"    - Fault succeeded: {analysis_result.fault_succeeded}")
+                    print(f"    - Services impacted: {len(analysis_result.impacted_services)}")
+                    print(f"    - Propagation steps: {len(analysis_result.propagation_chain)}")
+                    print(f"    - Services recovered: {len(analysis_result.fully_recovered)}")
+                    print(f"    - Key findings: {len(analysis_result.key_findings)}")
+                    print(f"  Reports saved to:")
+                    print(f"    - {os.path.join(episode_dir, 'llm_analysis.json')}")
+                    print(f"    - {os.path.join(episode_dir, 'llm_analysis.md')}")
 
             except Exception as e:
-                # Don't fail the entire episode if forensic analysis fails
-                print(f"  Warning: Forensic analysis failed: {e}")
+                # Don't fail the entire episode if LLM analysis fails
+                print(f"  Warning: LLM analysis failed: {e}")
                 if verbose:
                     import traceback
                     traceback.print_exc()
         elif verbose:
-            print(f"\n[Forensic Analysis]")
-            print(f"  Skipped (--skip-forensics enabled)")
+            print(f"\n[LLM Analysis]")
+            print(f"  Skipped (--skip-analysis enabled)")
 
         # 12. Validate Baseline Health (Mathematical)
         if verbose:
@@ -1008,16 +1021,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_forensics):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_forensics=skip_forensics)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_forensics: bool = False):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = False, llm_provider: str = "openai", llm_model: str = None):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -1031,7 +1044,9 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         force_fault_role: Force a specific fault role for all episodes
         use_llm_topologies: Use LLM-generated topologies from topology bank
         topology_bank_dir: Directory containing LLM-generated topologies
-        skip_forensics: Skip forensic analysis to speed up generation
+        skip_analysis: Skip LLM analysis to speed up generation
+        llm_provider: LLM provider to use (openai, anthropic)
+        llm_model: Specific model to use
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -1071,7 +1086,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_forensics)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1198,9 +1213,22 @@ def main():
         help='Specific topology name to load from topology bank (if not specified, picks randomly)'
     )
     parser.add_argument(
-        '--skip-forensics',
+        '--skip-analysis',
         action='store_true',
-        help='Skip forensic analysis to speed up dataset generation'
+        help='Skip LLM analysis to speed up dataset generation'
+    )
+    parser.add_argument(
+        '--llm-provider',
+        type=str,
+        default='openai',
+        choices=['openai', 'anthropic'],
+        help='LLM provider to use for analysis (default: openai)'
+    )
+    parser.add_argument(
+        '--llm-model',
+        type=str,
+        default=None,
+        help='Specific LLM model to use (default: gpt-4o for openai, claude-opus-4-5-20251101 for anthropic)'
     )
 
     args = parser.parse_args()
@@ -1220,7 +1248,9 @@ def main():
         use_llm_topologies=args.llm_topologies,
         topology_bank_dir=args.topology_bank,
         topology_name=args.topology_name,
-        skip_forensics=args.skip_forensics
+        skip_analysis=args.skip_analysis,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model
     )
 
 
