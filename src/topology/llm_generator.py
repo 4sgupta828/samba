@@ -87,7 +87,7 @@ You must output STRICT JSON matching the schema provided.
 
     def _build_prompt(self, archetype: str, scale: str) -> str:
         # Define node counts based on scale
-        target_nodes = {"small": "5-8", "medium": "12-18", "large": "25-35"}.get(scale, "12-18")
+        target_nodes = {"small": "8-12", "medium": "12-18", "large": "25-35"}.get(scale, "12-18")
 
         # Archetype-specific guidance
         archetype_guidance = {

@@ -25,7 +25,7 @@ from src.failures.llm_propagation_predictor import LLMFaultPropagationPredictor
 from src.scenarios.library import ScenarioLibrary
 
 
-def precompute_fault_metadata(G: nx.DiGraph, topology_path: str, top_k: int = 3):
+def precompute_fault_metadata(G: nx.DiGraph, topology_path: str, top_k: int = 3, skip_propagation: bool = False):
     """
     Pre-compute fault targets and propagation predictions for all fault types.
 
@@ -36,12 +36,13 @@ def precompute_fault_metadata(G: nx.DiGraph, topology_path: str, top_k: int = 3)
         G: NetworkX graph of the topology
         topology_path: Path to save pre-computed metadata
         top_k: Number of top targets to compute per fault type
+        skip_propagation: If True, only compute targets, skip propagation predictions
     """
     print(f"      🔮 Pre-computing fault metadata...")
 
     # Initialize LLM tools
     target_selector = LLMFaultTargetSelector()
-    propagation_predictor = LLMFaultPropagationPredictor()
+    propagation_predictor = None if skip_propagation else LLMFaultPropagationPredictor()
 
     # Get all unique (fault_type, fault_target_role) pairs from scenario library
     scenario_lib = ScenarioLibrary()
@@ -87,33 +88,34 @@ def precompute_fault_metadata(G: nx.DiGraph, topology_path: str, top_k: int = 3)
 
             fault_targets[fault_key] = candidates
 
-            # 2. For each candidate, predict propagation
-            for candidate in candidates:
-                target_id = candidate['node_id']
-                prediction_key = f"{fault_key}:{target_id}"
+            # 2. For each candidate, predict propagation (if not skipped)
+            if not skip_propagation:
+                for candidate in candidates:
+                    target_id = candidate['node_id']
+                    prediction_key = f"{fault_key}:{target_id}"
 
-                # Get default fault params for this fault type
-                from src.scenarios.library import EpisodeConfig
-                dummy_cfg = EpisodeConfig(
-                    level=1,
-                    topology_size=len(G.nodes),
-                    duration=300,
-                    fault_type=fault_type,
-                    fault_target_role=fault_target_role,
-                    export_interval=5,
-                    description="dummy"
-                )
-                fault_params = dummy_cfg.get_failure_params()
+                    # Get default fault params for this fault type
+                    from src.scenarios.library import EpisodeConfig
+                    dummy_cfg = EpisodeConfig(
+                        level=1,
+                        topology_size=len(G.nodes),
+                        duration=300,
+                        fault_type=fault_type,
+                        fault_target_role=fault_target_role,
+                        export_interval=5,
+                        description="dummy"
+                    )
+                    fault_params = dummy_cfg.get_failure_params()
 
-                # Predict propagation
-                prediction = propagation_predictor.predict_propagation(
-                    topology=G,
-                    fault_node_id=target_id,
-                    fault_type=fault_type,
-                    fault_params=fault_params
-                )
+                    # Predict propagation
+                    prediction = propagation_predictor.predict_propagation(
+                        topology=G,
+                        fault_node_id=target_id,
+                        fault_type=fault_type,
+                        fault_params=fault_params
+                    )
 
-                propagation_predictions[prediction_key] = prediction
+                    propagation_predictions[prediction_key] = prediction
 
             computed_count += 1
             print(f"         ✓ {fault_key}: {len(candidates)} targets computed")
@@ -128,18 +130,22 @@ def precompute_fault_metadata(G: nx.DiGraph, topology_path: str, top_k: int = 3)
     with open(fault_targets_path, 'w') as f:
         json.dump(fault_targets, f, indent=2)
 
-    propagation_dir = os.path.join(topology_path, 'propagation_predictions')
-    os.makedirs(propagation_dir, exist_ok=True)
+    if not skip_propagation:
+        propagation_dir = os.path.join(topology_path, 'propagation_predictions')
+        os.makedirs(propagation_dir, exist_ok=True)
 
-    # Save each prediction as a separate file for easier loading
-    for prediction_key, prediction in propagation_predictions.items():
-        prediction_path = os.path.join(propagation_dir, f'{prediction_key}.json')
-        with open(prediction_path, 'w') as f:
-            json.dump(prediction, f, indent=2)
+        # Save each prediction as a separate file for easier loading
+        for prediction_key, prediction in propagation_predictions.items():
+            prediction_path = os.path.join(propagation_dir, f'{prediction_key}.json')
+            with open(prediction_path, 'w') as f:
+                json.dump(prediction, f, indent=2)
 
     print(f"      ✅ Pre-computed metadata saved:")
     print(f"         - Fault targets: {computed_count} fault types")
-    print(f"         - Propagation predictions: {len(propagation_predictions)} predictions")
+    if not skip_propagation:
+        print(f"         - Propagation predictions: {len(propagation_predictions)} predictions")
+    else:
+        print(f"         - Propagation predictions: SKIPPED")
     print(f"         - Skipped: {skipped_count} (role not available)")
 
 
@@ -177,6 +183,12 @@ def main():
         default=3,
         help='Number of top fault targets to compute per fault type (default: 3)'
     )
+    parser.add_argument(
+        '--skip-propagation',
+        action='store_true',
+        default=False,
+        help='Skip propagation prediction (only compute fault targets, much faster)'
+    )
 
     args = parser.parse_args()
 
@@ -188,12 +200,12 @@ def main():
 
     # Matrix of scenarios to generate
     # This guarantees diversity of structure
-    # Note: Only using medium scale as large topologies often fail validation
+    # Note: Using small scale for faster generation and simpler topologies
     scenarios = [
-        ("hierarchical", "medium"),
-        ("mesh", "medium"),
-        ("pipeline", "medium"),
-        ("hub_spoke", "medium")
+        ("hierarchical", "small"),
+        ("mesh", "small"),
+        ("pipeline", "small"),
+        ("hub_spoke", "small")
     ]
 
     # Generate multiple samples per scenario
@@ -251,7 +263,7 @@ def main():
                 # Pre-compute fault metadata if requested
                 if args.precompute_faults:
                     try:
-                        precompute_fault_metadata(G, path, top_k=args.top_k_targets)
+                        precompute_fault_metadata(G, path, top_k=args.top_k_targets, skip_propagation=args.skip_propagation)
                     except Exception as e:
                         print(f"      ⚠ Fault pre-computation failed: {e}")
                         print(f"      (Topology is still valid, but fault metadata not available)")
