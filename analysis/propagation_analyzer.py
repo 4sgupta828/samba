@@ -120,15 +120,34 @@ class FaultPropagationAnalyzer:
 
         Uses BFS to find shortest path distances (following dependency edges).
 
+        For fault propagation:
+        - async_consume edges: follow in normal direction (queue -> consumer)
+        - sync_http, database, cache edges: follow in reverse (consumer -> provider)
+
         Returns:
             Dictionary mapping node_id -> distance
         """
         if self.root_cause_node not in self.graph:
             return {}
 
-        # BFS from root cause (reverse graph to follow dependents)
-        reverse_graph = self.graph.reverse()
+        # Build propagation graph based on edge types
+        # For most edges, reverse them (impact flows upstream from dependencies)
+        # For async_consume, keep original direction (impact flows downstream to consumers)
+        propagation_graph = nx.DiGraph()
 
+        for source, target, data in self.graph.edges(data=True):
+            edge_type = data.get('type', '')
+
+            if edge_type == 'async_consume':
+                # Keep original direction: queue -> consumer
+                # Queue faults impact consumers downstream
+                propagation_graph.add_edge(source, target, **data)
+            else:
+                # Reverse for all other edge types (sync_http, database, cache, etc)
+                # Impact flows from provider to consumers
+                propagation_graph.add_edge(target, source, **data)
+
+        # BFS from root cause following propagation edges
         distances = {self.root_cause_node: 0}
         queue = deque([(self.root_cause_node, 0)])
         visited = {self.root_cause_node}
@@ -136,7 +155,7 @@ class FaultPropagationAnalyzer:
         while queue:
             node, dist = queue.popleft()
 
-            for neighbor in reverse_graph.neighbors(node):
+            for neighbor in propagation_graph.neighbors(node):
                 if neighbor not in visited:
                     visited.add(neighbor)
                     distances[neighbor] = dist + 1
@@ -314,6 +333,9 @@ class FaultPropagationAnalyzer:
             for node_id in nodes:
                 report = self.analyze_node(node_id, distance)
                 node_reports.append(report)
+
+        # Sort node_reports by severity score (descending) so most impacted nodes appear first
+        node_reports.sort(key=lambda r: r.overall_severity_score, reverse=True)
 
         # Compute propagation statistics
         total_nodes = len(node_reports)
