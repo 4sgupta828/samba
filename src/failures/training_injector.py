@@ -448,15 +448,10 @@ class TrainingFailureInjector:
                 print(f"   Connection pool capacity restored (instant)")
 
         elif failure_mode == 'queue_consumer_slowdown':
-            # Gradually remove consumer slowdown latency
-            target.apply_infrastructure_change(
-                parameter='latency_ms',
-                delta=-params.get('latency_ms', 500),  # Negative delta removes slowdown
-                duration=duration,
-                progression='linear',
-                start_time=self.env.now
-            )
-            print(f"   Gradual consumer speedup scheduled")
+            # Remove consumer slowdown immediately (MessageQueue doesn't support gradual changes)
+            from src.failures.modes import revert_queue_consumer_slowdown
+            revert_queue_consumer_slowdown(target, params)
+            print(f"   Consumer slowdown removed (instant)")
 
         elif failure_mode == 'enable_background_job':
             # Stop background job

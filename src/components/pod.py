@@ -1237,19 +1237,24 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     raise
 
     def _execute_queue_publish(self, step, span):
-        """Execute queue message publishing."""
-        queue = self.parent_service.connections.get('queue_out')
-        if not queue:
+        """Execute queue message publishing to all connected queues."""
+        queue_out = self.parent_service.connections.get('queue_out')
+        if not queue_out:
             return
 
-        try:
-            message_data = f"message_from_{self.parent_service.service_name}_{self.env.now}"
-            yield queue.send_message(message_data)  # send_message returns an event, not a generator
+        # Support both single queue (backward compat) and multiple queues
+        queues = queue_out if isinstance(queue_out, list) else [queue_out]
 
-            if span:
-                span.add_event("message_published", {"queue": "queue_out"})
-        except Exception as e:
-            self._emit_log("WARN", f"Queue publish failed: {e}")
+        # Publish to all connected queues
+        for queue in queues:
+            try:
+                message_data = f"message_from_{self.parent_service.service_name}_{self.env.now}"
+                yield queue.send_message(message_data)  # send_message returns an event, not a generator
+
+                if span:
+                    span.add_event("message_published", {"queue": queue.id})
+            except Exception as e:
+                self._emit_log("WARN", f"Queue publish failed to {queue.id}: {e}")
 
     def _execute_legacy_request_logic(self, request_type: str, span):
         """

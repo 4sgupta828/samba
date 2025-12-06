@@ -280,7 +280,14 @@ class TopologyAdapter:
             elif isinstance(tgt, MessageQueue):
                 # Service → Queue
                 if edge_type == 'async_produce':
-                    src.connections['queue_out'] = tgt
+                    # Support multiple outgoing queues
+                    if 'queue_out' not in src.connections:
+                        src.connections['queue_out'] = []
+                    if isinstance(src.connections['queue_out'], list):
+                        src.connections['queue_out'].append(tgt)
+                    else:
+                        # Convert single queue to list for backward compatibility
+                        src.connections['queue_out'] = [src.connections['queue_out'], tgt]
                 elif edge_type == 'async_consume':
                     src.connections['queue_in'] = tgt
                 else:
@@ -307,7 +314,14 @@ class TopologyAdapter:
             elif isinstance(tgt, MessageQueue):
                 # Service → Queue
                 if edge_type == 'async_produce':
-                    src.connections['queue_out'] = tgt
+                    # Support multiple outgoing queues
+                    if 'queue_out' not in src.connections:
+                        src.connections['queue_out'] = []
+                    if isinstance(src.connections['queue_out'], list):
+                        src.connections['queue_out'].append(tgt)
+                    else:
+                        # Convert single queue to list for backward compatibility
+                        src.connections['queue_out'] = [src.connections['queue_out'], tgt]
                 else:
                     src.connections['queue'] = tgt
 
