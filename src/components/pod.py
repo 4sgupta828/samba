@@ -418,6 +418,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         else:
             request_type = "PROCESS"
 
+        # Track total message processing time (including consumer slowdown)
+        start_time = self.env.now
+
         try:
             # Apply consumer processing slowdown if injected on the queue
             if hasattr(queue, 'consumer_processing_latency_ms') and queue.consumer_processing_latency_ms > 0:
@@ -432,9 +435,52 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             queue.delete_message(msg)
             self._emit_log("DEBUG", f"Successfully processed message {msg.id}")
 
+            # Record total message processing duration (including consumer slowdown)
+            latency_ms = (self.env.now - start_time) * 1000
+            if self.request_counter and self.request_duration and self.parent_service:
+                self.request_counter.add(1, {
+                    "status": "success",
+                    "request_type": request_type,
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+                self.request_duration.record(latency_ms, {
+                    "status": "success",
+                    "request_type": request_type,
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+
         except Exception as e:
             # Processing failed - message will become visible again after timeout
             self._emit_log("ERROR", f"Failed to process message {msg.id}: {e}")
+
+            # Record error metrics with total processing time
+            latency_ms = (self.env.now - start_time) * 1000
+            if self.request_counter and self.request_duration and self.request_errors and self.parent_service:
+                self.request_counter.add(1, {
+                    "status": "error",
+                    "request_type": request_type,
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+                self.request_duration.record(latency_ms, {
+                    "status": "error",
+                    "request_type": request_type,
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+                self.request_errors.add(1, {
+                    "error_type": str(type(e).__name__),
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+
             # Don't delete - let visibility timeout return it to queue for retry
 
     def _monitor_oom(self):
