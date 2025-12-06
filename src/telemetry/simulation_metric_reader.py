@@ -85,6 +85,9 @@ class SimulationTimeMetricReader(MetricReader):
         # Flag to control whether we should actually collect/export
         self._should_collect = False
 
+        # Flag to track if we've cleared warmup metrics
+        self._warmup_cleared = False
+
     def notify_sim_time(self, sim_time: float) -> bool:
         """
         Notify the reader of current simulation time.
@@ -104,6 +107,14 @@ class SimulationTimeMetricReader(MetricReader):
         if sim_time < self._warmup_period:
             self._should_collect = False
             return False
+
+        # If we just finished warmup, clear accumulated warmup metrics without exporting
+        if not self._warmup_cleared:
+            self._warmup_cleared = True
+            self._should_collect = True  # Trigger collection to clear warmup data
+            self._last_export_sim_time = sim_time  # Set baseline for future exports
+            # Note: _receive_metrics will detect this is the warmup clear and skip export
+            return True
 
         # Check if we've passed the export interval
         if sim_time - self._last_export_sim_time >= self._export_interval:
@@ -132,16 +143,22 @@ class SimulationTimeMetricReader(MetricReader):
             # Skip export - we're still within the aggregation window
             return
 
+        # Calculate adjusted sim time
+        adjusted_sim_time = self._current_sim_time - self._warmup_period
+
+        # If this is the first collection right after warmup (adjusted_sim_time == 0),
+        # skip exporting to discard accumulated warmup metrics
+        # Note: For DELTA temporality, this collection clears the SDK's internal state
+        if adjusted_sim_time == 0.0:
+            # Discard warmup metrics - they've been collected but won't be exported
+            # This clears the SDK's internal counters/histograms (for DELTA mode)
+            return
+
         # Inject current simulation time into all data points AFTER SDK aggregation
         # This ensures:
         # 1. SDK aggregates properly (sim.time not in labels)
         # 2. Exporter gets sim.time for timestamp conversion
         # 3. Dash UI gets sim.time for visualization
-        #
-        # IMPORTANT: Adjust sim.time to restart from 0 after warmup period
-        # This ensures that metrics timeline aligns with fault injection timeline
-        adjusted_sim_time = self._current_sim_time - self._warmup_period
-
         for resource_metric in metrics_data.resource_metrics:
             for scope_metric in resource_metric.scope_metrics:
                 for metric in scope_metric.metrics:
