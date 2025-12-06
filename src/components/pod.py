@@ -596,11 +596,11 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # FIX: Wrap the entire with block in try/finally to ensure cleanup happens
         # AFTER the with block's __exit__, preventing SimPy resource conflicts
         try:
+            # Add to tracking set BEFORE acquiring thread so it gets interrupted even while queued
+            self.active_request_processes.add(current_proc)
+
             with self.thread_pool.request() as req:
                 yield req  # Wait for available thread
-
-                # Add to tracking set now that we hold the thread
-                self.active_request_processes.add(current_proc)
 
                 queue_wait_time = (self.env.now - queue_start) * 1000  # Convert to ms
 
