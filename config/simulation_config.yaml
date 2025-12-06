@@ -466,7 +466,7 @@ storage:
 # =============================================================================
 messaging:
   message_queue:
-    visibility_timeout_seconds: 5  # Message visibility timeout - shorter than typical consumer slowdown (can be overridden by IaC)
+    visibility_timeout_seconds: 30  # Message visibility timeout - must be longer than max consumer processing latency
     metrics_sampling_interval_seconds: 1.0  # How often to sample queue metrics
 
 # =============================================================================
