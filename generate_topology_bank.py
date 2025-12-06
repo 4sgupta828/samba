@@ -35,14 +35,32 @@ def main():
     parser.add_argument(
         '--samples',
         type=int,
-        default=3,
-        help='Number of samples per scenario (default: 3)'
+        default=1,
+        help='Number of samples per scenario (default: 1)'
     )
     parser.add_argument(
         '--model',
         type=str,
         default='claude-sonnet-4-20250514',
         help='Claude model to use (default: claude-sonnet-4-20250514)'
+    )
+    parser.add_argument(
+        '--precompute-faults',
+        action='store_true',
+        default=False,
+        help='Pre-compute fault targets and propagation predictions for all fault types (slow but enables fast dataset generation)'
+    )
+    parser.add_argument(
+        '--top-k-targets',
+        type=int,
+        default=1,
+        help='Number of top fault targets to compute per fault type (default: 1)'
+    )
+    parser.add_argument(
+        '--skip-propagation',
+        action='store_true',
+        default=True,
+        help='Skip propagation prediction (only compute fault targets, much faster)'
     )
 
     args = parser.parse_args()
