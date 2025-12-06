@@ -441,7 +441,7 @@ app.layout = dbc.Container([
                                     {'label': 'Hierarchical', 'value': 'hierarchical'},
                                     {'label': 'Circular', 'value': 'circular'}
                                 ],
-                                value='hierarchical',
+                                value='circular',
                                 clearable=False,
                                 className="d-inline-block me-3",
                                 style={'width': '200px', 'display': 'inline-block', 'verticalAlign': 'middle'}
