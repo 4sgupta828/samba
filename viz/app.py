@@ -1103,6 +1103,8 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
     if semantic_map and 'description' in semantic_map:
         domain = semantic_map.get('domain', 'Unknown')
         description = semantic_map.get('description', '')
+        pros = semantic_map.get('pros', [])
+        cons = semantic_map.get('cons', [])
 
         # Split description into paragraphs for better formatting
         paragraphs = [p.strip() for p in description.split('.') if p.strip()]
@@ -1122,6 +1124,57 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
         if current_para:
             formatted_paragraphs.append(' '.join(current_para))
 
+        # Build the content sections
+        content_sections = [
+            html.Div([
+                html.P(para, className="mb-3", style={
+                    'lineHeight': '1.8',
+                    'fontSize': '0.95rem',
+                    'textAlign': 'justify'
+                }) for para in formatted_paragraphs
+            ])
+        ]
+
+        # Add pros and cons if available
+        if pros or cons:
+            content_sections.append(html.Hr(className="my-4"))
+
+            pros_cons_row = []
+
+            if pros:
+                pros_cons_row.append(
+                    dbc.Col([
+                        html.H6([
+                            html.Span("✓ ", style={'color': '#28a745', 'fontSize': '1.2rem'}),
+                            "Advantages"
+                        ], className="mb-3 text-success"),
+                        html.Ul([
+                            html.Li(pro, className="mb-2", style={
+                                'lineHeight': '1.6',
+                                'fontSize': '0.9rem'
+                            }) for pro in pros
+                        ], style={'listStyleType': 'none', 'paddingLeft': '1.5rem'})
+                    ], width=6 if cons else 12)
+                )
+
+            if cons:
+                pros_cons_row.append(
+                    dbc.Col([
+                        html.H6([
+                            html.Span("⚠ ", style={'color': '#dc3545', 'fontSize': '1.2rem'}),
+                            "Trade-offs"
+                        ], className="mb-3 text-danger"),
+                        html.Ul([
+                            html.Li(con, className="mb-2", style={
+                                'lineHeight': '1.6',
+                                'fontSize': '0.9rem'
+                            }) for con in cons
+                        ], style={'listStyleType': 'none', 'paddingLeft': '1.5rem'})
+                    ], width=6 if pros else 12)
+                )
+
+            content_sections.append(dbc.Row(pros_cons_row))
+
         semantic_content = dbc.Card([
             dbc.CardHeader([
                 html.Div([
@@ -1140,15 +1193,7 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
                 ], className="clearfix")
             ]),
             dbc.Collapse([
-                dbc.CardBody([
-                    html.Div([
-                        html.P(para, className="mb-3", style={
-                            'lineHeight': '1.8',
-                            'fontSize': '0.95rem',
-                            'textAlign': 'justify'
-                        }) for para in formatted_paragraphs
-                    ])
-                ], style={'backgroundColor': '#f8f9fa'})
+                dbc.CardBody(content_sections, style={'backgroundColor': '#f8f9fa'})
             ], id="semantic-description-collapse", is_open=False)
         ], className="border-secondary mt-3")
     else:
