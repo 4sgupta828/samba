@@ -162,8 +162,8 @@ def main():
     parser.add_argument(
         '--samples',
         type=int,
-        default=3,
-        help='Number of samples per scenario (default: 3)'
+        default=1,
+        help='Number of samples per scenario (default: 1)'
     )
     parser.add_argument(
         '--model',
@@ -180,13 +180,13 @@ def main():
     parser.add_argument(
         '--top-k-targets',
         type=int,
-        default=3,
-        help='Number of top fault targets to compute per fault type (default: 3)'
+        default=1,
+        help='Number of top fault targets to compute per fault type (default: 1)'
     )
     parser.add_argument(
         '--skip-propagation',
         action='store_true',
-        default=False,
+        default=True,
         help='Skip propagation prediction (only compute fault targets, much faster)'
     )
 
