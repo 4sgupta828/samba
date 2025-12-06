@@ -197,3 +197,128 @@ These fixes resolve all three issues identified in `MoreFixes.md` plus one criti
 4. ✅ **Database connections sufficient** - Two-pass sizing prevents deadlock
 
 The system can now handle high-load, high-latency service chains without artificial bottlenecks or deadlocks.
+
+---
+
+# NEW FIXES - December 6, 2025
+
+## Summary
+Implemented 4 critical fixes for noisy neighbor and fault system issues:
+
+1. ✓ **Uniform Target Selection** - Removed bias toward consumer nodes
+2. ✓ **Fault Propagation All Nodes** - Now analyzes ALL nodes including unreachable ones  
+3. ✓ **Noisy Neighbor Co-location** - Aggressor pod impacts co-located pods with steal time
+4. ✓ **Fault Revert Registry** - All faults now revert correctly
+
+---
+
+## Fix 5: Uniform Target Selection ✓
+
+**Problem**: Target selection favored consumer nodes (nodes with many predecessors), systematically over-representing queue consumers.
+
+**File**: `generate_dataset.py:664`
+
+**Before**:
+```python
+def score_target_connectivity(target_node):
+    predecessors = list(nx_graph.predecessors(target_node))  # WRONG
+    return num_callers * 10 + len(second_order)
+target_id = random.choice(top_half_by_score)
+```
+
+**After**:
+```python
+# UNIFORM SELECTION: simple random to avoid bias
+target_id = random.choice(valid_targets)
+```
+
+---
+
+## Fix 6: Fault Propagation All Nodes ✓
+
+**Problem**: Only analyzed reachable nodes, missing upstream impact (e.g., queue backpressure).
+
+**File**: `analysis/propagation_analyzer.py:323`
+
+**Before**:
+```python
+distances = self.compute_node_distances()  # Only reachable nodes
+for distance in sorted(distances.keys()):
+    for node_id in nodes_by_distance[distance]:
+        analyze_node(node_id, distance)
+```
+
+**After**:
+```python
+all_nodes = set(self.graph.nodes())
+unreachable_nodes = all_nodes - set(distances.keys())
+nodes_by_distance[-1] = list(unreachable_nodes)
+# Analyze both reachable AND unreachable nodes
+```
+
+---
+
+## Fix 7: Noisy Neighbor Co-location Impact ✓
+
+**Problem**: Only aggressor pod affected, co-located pods not impacted.
+
+**File**: `src/failures/modes.py:479`
+
+**After**:
+```python
+# EFFECT 1: Pin aggressor CPU
+target_pod.dynamics.fault_cpu_floor_percent = cpu_target
+
+# EFFECT 2: Apply steal time to co-located pods
+if target_pod.compute_node:
+    for victim_pod in node.pods:
+        if victim_pod.id != target_pod.id:
+            victim_pod.dynamics.fault_latency_additive_ms += steal_time_ms
+```
+
+---
+
+## Fix 8: Fault Revert Registry ✓
+
+**Problem**: Revert functions existed but weren't called.
+
+**File**: `src/failures/modes.py:874`
+
+**Added**:
+```python
+REVERT_MODES = {
+    "inject_latency": revert_latency,
+    "cpu_saturation": revert_cpu_saturation,
+    "noisy_neighbor": revert_noisy_neighbor,
+    # ... all fault types
+}
+```
+
+**File**: `src/failures/training_injector.py:313`
+
+**Updated**:
+```python
+from src.failures.modes import REVERT_MODES
+revert_func = REVERT_MODES.get(failure_mode)
+if revert_func:
+    revert_func(target, params)
+```
+
+---
+
+## Testing
+
+Run: `python test_fixes.py`
+
+Expected: All 4 tests PASS
+
+---
+
+## Files Changed
+
+- `generate_dataset.py` - Uniform selection (~30 lines)
+- `analysis/propagation_analyzer.py` - All nodes (~20 lines)
+- `src/failures/modes.py` - Noisy neighbor + registry (~120 lines)
+- `src/failures/training_injector.py` - Use registry (~20 lines)
+
+Total: ~190 lines across 4 files

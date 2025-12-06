@@ -658,42 +658,32 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         if not valid_targets:
             raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
 
-        # Select target with good propagation potential
-        # Prefer targets with multiple upstream callers for better fault propagation
-        def score_target_connectivity(target_node):
-            """Score a target based on propagation potential."""
-            # Count direct upstream callers (who will be impacted)
+        # UNIFORM SELECTION: Use simple random selection to avoid bias
+        # Previous approach favored nodes with many predecessors (consumers)
+        # Now we want uniform distribution across all valid targets
+        target_id = random.choice(valid_targets)
+
+        # Calculate connectivity for logging only (not for selection)
+        def get_connectivity_info(target_node):
+            """Get connectivity information for logging."""
             predecessors = list(nx_graph.predecessors(target_node))
-            num_callers = len(predecessors)
+            successors = list(nx_graph.successors(target_node))
 
-            # Count second-order callers (propagation depth)
-            second_order = set()
-            for pred in predecessors:
-                second_order.update(nx_graph.predecessors(pred))
+            # Second-order downstream (potential propagation)
+            second_order_downstream = set()
+            for succ in successors:
+                second_order_downstream.update(nx_graph.successors(succ))
 
-            # Higher score = better propagation potential
-            # Prioritize: multiple direct callers + deep propagation potential
-            return num_callers * 10 + len(second_order)
+            return {
+                'predecessors': len(predecessors),
+                'successors': len(successors),
+                'downstream_reach': len(second_order_downstream)
+            }
 
-        # Score all targets and select from top candidates
-        target_scores = [(t, score_target_connectivity(t)) for t in valid_targets]
-        target_scores.sort(key=lambda x: x[1], reverse=True)
-
-        # Select from top 50% to maintain some randomness but avoid worst cases
-        top_half = max(1, len(target_scores) // 2)
-        target_candidates = [t for t, score in target_scores[:top_half] if score > 0]
-
-        # Fallback to all targets if no good candidates (shouldn't happen often)
-        if not target_candidates:
-            target_candidates = valid_targets
-            if verbose:
-                print(f"  Warning: No well-connected targets found, using all {len(valid_targets)} candidates")
-
-        target_id = random.choice(target_candidates)
-        target_score = next((score for t, score in target_scores if t == target_id), 0)
-
-        if verbose and target_score > 0:
-            print(f"  Selected target {target_id} (connectivity score: {target_score})")
+        if verbose:
+            conn_info = get_connectivity_info(target_id)
+            print(f"  Selected target {target_id} (uniform random)")
+            print(f"    Connectivity: {conn_info['predecessors']} upstream, {conn_info['successors']} downstream, {conn_info['downstream_reach']} 2nd-order downstream")
 
         actual_target_id = target_id
         params = cfg.get_failure_params()

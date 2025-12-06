@@ -482,9 +482,13 @@ def noisy_neighbor(component, params: Dict[str, Any]):
     This causes resource contention on the shared node, affecting other pods
     on the same node through CPU steal time.
 
+    The fault has TWO effects:
+    1. Aggressor pod: CPU pinned to target percentage (e.g., 100%)
+    2. Co-located pods: Experience CPU steal time due to node contention
+
     Args:
         component: The aggressor Pod or Service (if Service, picks a random pod)
-        params: cpu_percent (default: 100.0)
+        params: cpu_percent (default: 100.0), steal_time_multiplier (default: 1.5)
     """
     # If component is a Service, pick a random pod
     if isinstance(component, Service):
@@ -508,13 +512,50 @@ def noisy_neighbor(component, params: Dict[str, Any]):
         return
 
     cpu_target = params.get("cpu_percent", 100.0)
+    steal_time_multiplier = params.get("steal_time_multiplier", 1.5)
 
-    # Set CPU floor to pin the CPU
+    # EFFECT 1: Set CPU floor to pin the aggressor pod's CPU
     target_pod.dynamics.fault_cpu_floor_percent = cpu_target
     target_pod._emit_log("WARN", f"Noisy neighbor: CPU pinned to {cpu_target}% (aggressor pod)")
 
+    # EFFECT 2: Apply steal time to co-located pods (if on a compute node)
+    if target_pod.compute_node is not None:
+        node = target_pod.compute_node
+        co_located_pods = [p for p in node.pods if p.id != target_pod.id]
+
+        if co_located_pods:
+            component._emit_log("INFO", f"noisy_neighbor: Applying steal time to {len(co_located_pods)} co-located pods on node {node.id}")
+
+            # Store original latency adders for revert
+            if not hasattr(component, '_noisy_neighbor_victims'):
+                component._noisy_neighbor_victims = {}
+
+            for victim_pod in co_located_pods:
+                if hasattr(victim_pod, 'dynamics') and victim_pod.dynamics is not None:
+                    # Store original value
+                    original_latency = victim_pod.dynamics.fault_latency_additive_ms or 0.0
+
+                    # Calculate steal time based on node contention
+                    # Use a modest steal time penalty that won't cause cascading failures
+                    # The impact should be noticeable but not catastrophic
+                    # Typical services have 100-500ms latency, so 20-30ms penalty is ~5-10% increase
+                    base_steal_time_ms = 20.0  # Modest base steal time penalty
+                    steal_time_ms = base_steal_time_ms * steal_time_multiplier
+
+                    # Add steal time to victim pods
+                    victim_pod.dynamics.fault_latency_additive_ms = original_latency + steal_time_ms
+
+                    component._noisy_neighbor_victims[victim_pod.id] = {
+                        'original_latency': original_latency,
+                        'added_steal_time': steal_time_ms
+                    }
+
+                    victim_pod._emit_log("WARN", f"noisy_neighbor: Experiencing CPU steal time (+{steal_time_ms:.1f}ms latency penalty)")
+        else:
+            component._emit_log("INFO", f"noisy_neighbor: No co-located pods on node {node.id if node else 'unknown'}")
+
 def revert_noisy_neighbor(component, params: Dict[str, Any]):
-    """Revert noisy neighbor by removing CPU floor from the originally affected pod."""
+    """Revert noisy neighbor by removing CPU floor from aggressor and steal time from victims."""
     # Get the originally affected pod ID
     if not hasattr(component, '_noisy_neighbor_pod_id'):
         component._emit_log("WARN", "No noisy_neighbor pod ID tracked - cannot revert")
@@ -522,7 +563,7 @@ def revert_noisy_neighbor(component, params: Dict[str, Any]):
 
     affected_pod_id = component._noisy_neighbor_pod_id
 
-    # Find the pod by ID
+    # Find the aggressor pod by ID
     if isinstance(component, Service):
         # Look up pod in service's current pod list
         target_pod = None
@@ -535,21 +576,49 @@ def revert_noisy_neighbor(component, params: Dict[str, Any]):
             component._emit_log("WARN", f"noisy_neighbor: Original pod {affected_pod_id} no longer exists (may have been replaced)")
             # Clean up tracking
             del component._noisy_neighbor_pod_id
+            if hasattr(component, '_noisy_neighbor_victims'):
+                del component._noisy_neighbor_victims
             return
 
-        component._emit_log("INFO", f"noisy_neighbor: Reverting on pod {target_pod.id}")
+        component._emit_log("INFO", f"noisy_neighbor: Reverting on aggressor pod {target_pod.id}")
     elif isinstance(component, Pod):
         target_pod = component
     else:
         return
 
+    # REVERT EFFECT 1: Remove CPU floor from aggressor pod
     if hasattr(target_pod, 'dynamics') and target_pod.dynamics is not None:
         target_pod.dynamics.fault_cpu_floor_percent = None
-        target_pod._emit_log("INFO", "Noisy neighbor reverted")
+        target_pod._emit_log("INFO", "Noisy neighbor: CPU floor removed (aggressor)")
     else:
         target_pod._emit_log("WARN", "Component does not have dynamics engine")
 
-    # Clean up tracking
+    # REVERT EFFECT 2: Remove steal time from victim pods
+    if hasattr(component, '_noisy_neighbor_victims'):
+        victims_info = component._noisy_neighbor_victims
+
+        # Get the compute node to find victim pods
+        # First try to get it from the aggressor pod
+        compute_node = None
+        if hasattr(target_pod, 'compute_node'):
+            compute_node = target_pod.compute_node
+
+        if compute_node is not None:
+            # Look up victim pods via compute node
+            for victim_pod in compute_node.pods:
+                if victim_pod.id in victims_info:
+                    info = victims_info[victim_pod.id]
+                    if hasattr(victim_pod, 'dynamics') and victim_pod.dynamics is not None:
+                        # Restore original latency (remove the steal time we added)
+                        victim_pod.dynamics.fault_latency_additive_ms = info['original_latency']
+                        victim_pod._emit_log("INFO", f"Noisy neighbor: CPU steal time removed (-{info['added_steal_time']:.1f}ms)")
+        else:
+            component._emit_log("WARN", f"noisy_neighbor: Cannot access compute node to revert victim pods")
+
+        # Clean up victims tracking
+        del component._noisy_neighbor_victims
+
+    # Clean up aggressor tracking
     del component._noisy_neighbor_pod_id
 
 def hot_shard(component: Service, params: Dict[str, Any]):
@@ -805,4 +874,40 @@ FAILURE_MODES = {
     "revert_network_partition": revert_network_partition,
     "force_deadlock": force_deadlock,
     "revert_force_deadlock": revert_force_deadlock,
+}
+
+# Registry mapping fault injection modes to their revert functions
+# Used by the training injector for automatic fault recovery
+REVERT_MODES = {
+    # Generic faults
+    "inject_latency": revert_latency,
+    "inject_errors": revert_errors,
+
+    # Compute/Service faults
+    "cpu_saturation": revert_cpu_saturation,
+    "memory_leak": stop_memory_leak,
+    "start_memory_leak": stop_memory_leak,
+    "memory_pressure": revert_memory_pressure,
+
+    # Database faults
+    "slow_queries": revert_slow_queries,
+    "connection_exhaustion": revert_connection_exhaustion,
+    "enable_background_job": stop_db_background_job,
+    "start_db_background_job": stop_db_background_job,
+    "inject_db_wear": reset_db_wear,
+
+    # Cache faults
+    "cache_failure": revert_cache_failure,
+
+    # Queue faults
+    "queue_consumer_slowdown": revert_queue_consumer_slowdown,
+
+    # Structural faults
+    "noisy_neighbor": revert_noisy_neighbor,
+    "hot_shard": revert_hot_shard,
+    "network_partition": revert_network_partition,
+    "force_deadlock": revert_force_deadlock,
+
+    # State changes (no revert needed - handled by deployment controller)
+    "set_state": None,
 }

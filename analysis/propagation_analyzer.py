@@ -310,28 +310,45 @@ class FaultPropagationAnalyzer:
         """
         Perform complete fault propagation analysis.
 
-        Analyzes all nodes in the topology, starting from root cause
-        and moving outward by graph distance.
+        Analyzes ALL nodes in the topology, including those not directly reachable
+        from the root cause. This ensures we detect upstream impacts (e.g., queue
+        backpressure when consumers slow down).
 
         Returns:
             PropagationSummary with complete results
         """
-        # Compute distances from root cause
+        # Compute distances from root cause (for reachable nodes)
         distances = self.compute_node_distances()
+
+        # Get ALL nodes in the topology
+        all_nodes = set(self.graph.nodes())
 
         # Group nodes by distance
         nodes_by_distance = defaultdict(list)
         for node_id, dist in distances.items():
             nodes_by_distance[dist].append(node_id)
 
+        # Add unreachable nodes with distance = -1 (analyzed last)
+        unreachable_nodes = all_nodes - set(distances.keys())
+        if unreachable_nodes:
+            nodes_by_distance[-1] = list(unreachable_nodes)
+
         # Analyze each node
         node_reports = []
 
-        for distance in sorted(nodes_by_distance.keys()):
+        # First analyze reachable nodes (distance 0, 1, 2, ...)
+        for distance in sorted([d for d in nodes_by_distance.keys() if d >= 0]):
             nodes = nodes_by_distance[distance]
 
             for node_id in nodes:
                 report = self.analyze_node(node_id, distance)
+                node_reports.append(report)
+
+        # Then analyze unreachable nodes (distance -1)
+        # These may show "upstream" impact (e.g., queues backing up)
+        if -1 in nodes_by_distance:
+            for node_id in nodes_by_distance[-1]:
+                report = self.analyze_node(node_id, -1)
                 node_reports.append(report)
 
         # Sort node_reports by severity score (descending) so most impacted nodes appear first

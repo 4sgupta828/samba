@@ -309,12 +309,14 @@ class TrainingFailureInjector:
         if duration:
             yield self.env.timeout(duration)
 
-            # Auto-revert if revert mode exists
-            revert_mode = f"revert_{failure_mode}"
-            revert_func = FAILURE_MODES.get(revert_mode)
+            # Auto-revert using REVERT_MODES registry
+            from src.failures.modes import REVERT_MODES
+            revert_func = REVERT_MODES.get(failure_mode)
             if revert_func:
                 print(f"[{self.env.now:.2f}s] <<< REVERTING: '{failure_mode}' on {target_id}")
                 revert_func(target, params)
+            else:
+                print(f"WARNING: No revert function registered for '{failure_mode}'")
 
             # End incident
             if self.tracker.active_incident:
@@ -348,6 +350,23 @@ class TrainingFailureInjector:
 
         # Log the revert event
         print(f"[{self.env.now:.2f}s] <<< REVERTING GRADUAL FAILURE: '{failure_mode}' on {target_id} over {duration:.1f}s")
+
+        # For most faults, use the REVERT_MODES registry (simple instant revert)
+        # Only use gradual revert for specific faults that support it
+        from src.failures.modes import REVERT_MODES
+
+        # Check if this is a gradual-revert-capable fault
+        gradual_faults = ['inject_latency', 'cpu_saturation', 'inject_errors', 'memory_pressure', 'cache_failure']
+
+        if failure_mode not in gradual_faults:
+            # Use instant revert from registry
+            revert_func = REVERT_MODES.get(failure_mode)
+            if revert_func:
+                print(f"   Using instant revert for '{failure_mode}'")
+                revert_func(target, params)
+            else:
+                print(f"   WARNING: No revert function registered for '{failure_mode}'")
+            return
 
         # Apply GRADUAL revert using infrastructure change mechanism
         # Use negative deltas to reverse the fault
