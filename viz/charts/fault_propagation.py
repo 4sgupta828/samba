@@ -58,54 +58,95 @@ def run_enhanced_analysis(episode_dir):
 
 def create_fault_propagation_analysis(episode_dir):
     """
-    Create enhanced fault propagation analysis view.
+    Create fault propagation analysis view from pre-computed analysis.
 
-    Simple, focused display of comprehensive statistical analysis.
+    Loads and displays the existing fault_propagation.json file.
     """
+    import json
+
     try:
-        print(f"Starting enhanced fault propagation analysis for {episode_dir}")
+        print(f"Loading fault propagation analysis from {episode_dir}")
 
-        # Run enhanced analysis
-        print("  Running SOTA analysis...")
-        text_output, json_output, error = run_enhanced_analysis(episode_dir)
+        # Load the pre-computed fault propagation analysis
+        fault_propagation_path = os.path.join(episode_dir, 'fault_propagation.json')
 
-        if error:
-            print(f"  ✗ Error: {error}")
+        if not os.path.exists(fault_propagation_path):
             return html.Div([
                 dbc.Alert([
-                    html.H4("Analysis Failed", className="alert-heading"),
-                    html.P(error),
+                    html.H4("No Analysis Found", className="alert-heading"),
+                    html.P(f"No fault_propagation.json found in {episode_dir}"),
                     html.Hr(),
-                    html.P("Check that the episode directory contains label.json, topology.json, and metrics.jsonl",
+                    html.P("This episode may have been generated without analysis enabled.",
                            className="mb-0")
-                ], color="danger")
+                ], color="warning")
             ])
 
-        print("  ✓ Analysis complete!")
-        output = text_output  # For backward compatibility with existing code
+        with open(fault_propagation_path, 'r') as f:
+            analysis_data = json.load(f)
 
-        # Parse output to extract key summary info
-        lines = output.split('\n')
+        print("  ✓ Analysis data loaded!")
+
+        # Extract key information
+        root_cause = analysis_data.get('root_cause', {})
+        root_cause_node = root_cause.get('node_id', 'Unknown')
+        fault_type = root_cause.get('fault_type', 'Unknown')
+
+        # Load label for scenario info
+        label_path = os.path.join(episode_dir, 'label.json')
         scenario = "Unknown"
-        fault_type = "Unknown"
-        root_cause = "Unknown"
+        if os.path.exists(label_path):
+            with open(label_path, 'r') as f:
+                label_data = json.load(f)
+                scenario = label_data.get('scenario', 'Unknown')
 
-        for line in lines:
-            if "Root Cause:" in line:
-                root_cause = line.split("Root Cause:")[1].strip()
-            elif "Fault Type:" in line:
-                fault_type = line.split("Fault Type:")[1].strip()
-            elif "Scenario:" in line:
-                scenario = line.split("Scenario:")[1].strip()
+        # Get propagation statistics
+        prop_stats = analysis_data.get('propagation_statistics', {})
+        total_impacted = prop_stats.get('total_impacted_nodes', 0)
 
-        # Create layout with header and raw output
+        # Get node reports
+        node_reports = analysis_data.get('node_reports', [])
+
+        # Create summary of impacted nodes
+        impacted_nodes_summary = []
+        # Sort by severity score
+        sorted_reports = sorted(node_reports,
+                               key=lambda x: x.get('overall_severity_score', 0),
+                               reverse=True)[:10]  # Top 10
+
+        for report in sorted_reports:
+            node_id = report.get('node_id', 'Unknown')
+            severity_score = report.get('overall_severity_score', 0)
+            severity = report.get('overall_severity', 'UNKNOWN')
+            is_root = node_id == root_cause_node
+
+            # Color based on severity
+            severity_colors = {
+                'CRITICAL': '#dc3545',
+                'HIGH': '#fd7e14',
+                'MEDIUM': '#ffc107',
+                'LOW': '#17a2b8'
+            }
+            color = severity_colors.get(severity, '#6c757d')
+
+            impacted_nodes_summary.append(
+                html.Li([
+                    html.Strong(node_id, style={'color': color}),
+                    html.Span(f" - {severity} (score: {severity_score:.2f})", className="text-muted small"),
+                    html.Span(" 🎯 ROOT CAUSE", className="badge bg-danger ms-2") if is_root else ""
+                ])
+            )
+
+        # Format the full JSON for display
+        json_output = json.dumps(analysis_data, indent=2)
+
+        # Create layout
         layout = html.Div([
             # Header card
             dbc.Card([
                 dbc.CardBody([
                     html.H3([
                         html.Span("🔍 ", style={'fontSize': '1.2em'}),
-                        "Enhanced Fault Propagation Analysis"
+                        "Fault Propagation Analysis"
                     ], className="mb-3"),
 
                     dbc.Row([
@@ -115,7 +156,7 @@ def create_fault_propagation_analysis(episode_dir):
                         ], width=12, className="mb-2"),
                         dbc.Col([
                             html.Strong("Root Cause: ", className="text-muted"),
-                            html.Span(root_cause, className="text-info")
+                            html.Span(root_cause_node, className="text-danger", style={'fontWeight': 'bold'})
                         ], width=6, className="mb-2"),
                         dbc.Col([
                             html.Strong("Fault Type: ", className="text-muted"),
@@ -127,49 +168,33 @@ def create_fault_propagation_analysis(episode_dir):
 
                     dbc.Row([
                         dbc.Col([
-                            dbc.Badge("✓ Statistical Rigor", color="success", className="me-2"),
-                            dbc.Badge("✓ Effect Sizes", color="success", className="me-2"),
-                            dbc.Badge("✓ Pattern Analysis", color="success", className="me-2"),
-                            dbc.Badge("✓ Changepoint Detection", color="success", className="me-2"),
-                        ])
+                            html.Strong("Total Impacted Nodes: ", className="text-muted"),
+                            html.Span(str(total_impacted), className="text-info", style={'fontSize': '1.2em', 'fontWeight': 'bold'})
+                        ], width=12, className="mb-3"),
                     ]),
 
-                    html.P([
-                        "Comprehensive analysis using SOTA statistical methods: ",
-                        "Mann-Whitney U, Cohen's d, KL divergence, ACF, PELT changepoint detection, and more."
-                    ], className="text-muted small mt-2 mb-0")
+                    # Top impacted nodes
+                    html.Div([
+                        html.H6("Top Impacted Nodes:", className="mb-2"),
+                        html.Ul(impacted_nodes_summary, className="small")
+                    ]) if impacted_nodes_summary else html.Div()
                 ])
             ], className="mb-3 shadow-sm"),
 
-            # Enhanced JSON Data Section (collapsible)
+            # Full JSON Data Section (collapsible)
             dbc.Card([
                 dbc.CardHeader([
-                    html.Div([
-                        html.H5("📄 Complete Enhanced Analysis (JSON)", className="mb-0 d-inline-block"),
-                        dbc.Badge("Enhanced with Latency, Config, Saturation & Causal Analysis",
-                                 color="success", className="ms-2"),
-                    ])
+                    html.H5("📄 Complete Analysis Data (JSON)", className="mb-0")
                 ]),
                 dbc.CardBody([
-                    dbc.Alert([
-                        html.Strong("Enhanced Analysis includes:"),
-                        html.Ul([
-                            html.Li("Latency Analysis: Actual latencies from traces (baseline vs fault, p50/p95/p99)"),
-                            html.Li("Configuration Context: Retry policies, connection pools, timeouts"),
-                            html.Li("Resource Saturation: When pools/CPU hit capacity limits"),
-                            html.Li("Causal Chains: Mechanistic explanations of HOW and WHY faults propagated")
-                        ], className="mb-0 small")
-                    ], color="info", className="mb-3"),
-
-                    # JSON output display
                     html.Details([
                         html.Summary([
                             html.Strong("Click to expand full JSON data"),
-                            html.Span(" (includes all enhanced analysis fields)", className="text-muted small ms-2")
+                            html.Span(" (includes all analysis fields and node reports)", className="text-muted small ms-2")
                         ], style={'cursor': 'pointer', 'padding': '10px', 'backgroundColor': '#f8f9fa',
                                  'borderRadius': '5px', 'fontWeight': 'bold'}),
                         html.Pre(
-                            json_output if json_output else "JSON data not available",
+                            json_output,
                             style={
                                 'backgroundColor': '#1e1e1e',
                                 'color': '#d4d4d4',
@@ -198,7 +223,7 @@ def create_fault_propagation_analysis(episode_dir):
         traceback.print_exc()
         return html.Div([
             dbc.Alert([
-                html.H4("Unexpected Error", className="alert-heading"),
+                html.H4("Error Loading Analysis", className="alert-heading"),
                 html.P(str(e)),
                 html.Hr(),
                 html.Pre(traceback.format_exc(), style={'fontSize': '0.8em'})

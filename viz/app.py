@@ -650,39 +650,43 @@ def enable_analysis_buttons(episode_data):
     prevent_initial_call=True
 )
 def run_fault_analysis(n_clicks, datarun, episode):
-    """Run fault propagation analysis and display results"""
+    """Display fault propagation analysis (loads existing pre-computed analysis)"""
     if not n_clicks or not datarun or not episode:
         return [], {'display': 'none'}
 
     try:
         # Construct episode directory path
         episode_dir = os.path.join(datarun, episode)
+        fault_analysis_path = os.path.join(episode_dir, 'fault_propagation.json')
+
+        # Check if pre-computed fault propagation analysis exists
+        if not os.path.exists(fault_analysis_path):
+            # No pre-computed analysis available
+            no_analysis_alert = dbc.Alert([
+                html.H5("⚠️ No Analysis Available", className="alert-heading"),
+                html.P("No pre-computed fault propagation analysis found for this episode."),
+                html.P("The analysis is generated during dataset creation. This episode may have been created without analysis enabled.", className="small")
+            ],
+                color="warning",
+                className="mt-3"
+            )
+            return no_analysis_alert, {'display': 'block'}
 
         # Debug: Print path for troubleshooting
-        print(f"Running fault propagation analysis on: {episode_dir}")
+        print(f"Loading fault propagation analysis from: {fault_analysis_path}")
 
-        # Run analysis and save results
-        print("  Analyzing episode and saving results...")
-        output_path = os.path.join(episode_dir, 'fault_propagation.json')
-        analyze_episode(
-            episode_dir=episode_dir,
-            sample_interval=5,
-            output_file=output_path
-        )
-        print(f"  ✅ Fault propagation analysis saved to: {output_path}")
-
-        # Create visualization
+        # Load and display the existing analysis
         analysis_view = create_fault_propagation_analysis(episode_dir)
 
         return analysis_view, {'display': 'block'}
 
     except Exception as e:
         import traceback
-        print(f"Error in fault analysis: {str(e)}")
+        print(f"Error loading fault analysis: {str(e)}")
         traceback.print_exc()
 
         error_alert = dbc.Alert([
-            html.H5("Error running analysis", className="alert-heading"),
+            html.H5("Error loading analysis", className="alert-heading"),
             html.P(f"Error: {str(e)}"),
             html.Hr(),
             html.Pre(traceback.format_exc(), style={'fontSize': '0.8em'})
@@ -716,35 +720,13 @@ app.clientside_callback(
     [Output('fault-analysis-container', 'children', allow_duplicate=True),
      Output('fault-analysis-container', 'style', allow_duplicate=True)],
     [Input('episode-data-store', 'data')],
-    [State('datarun-dropdown', 'value'),
-     State('episode-dropdown', 'value')],
     prevent_initial_call=True
 )
-def auto_load_fault_analysis(episode_id, datarun, episode):
-    """Automatically load existing fault propagation analysis when episode is loaded."""
-    if not episode_id or not datarun or not episode:
-        return [], {'display': 'none'}
-
-    try:
-        # Construct episode directory path
-        episode_dir = os.path.join(datarun, episode)
-        fault_analysis_path = os.path.join(episode_dir, 'fault_propagation.json')
-
-        # Check if pre-existing fault propagation analysis exists
-        if os.path.exists(fault_analysis_path):
-            print(f"Loading existing fault propagation analysis from: {fault_analysis_path}")
-
-            # Load and display the existing analysis
-            analysis_view = create_fault_propagation_analysis(episode_dir)
-            return analysis_view, {'display': 'block'}
-        else:
-            # No existing analysis, hide container
-            return [], {'display': 'none'}
-
-    except Exception as e:
-        print(f"Error loading existing fault analysis: {str(e)}")
-        # Don't show error, just hide container
-        return [], {'display': 'none'}
+def reset_fault_analysis_on_load(episode_id):
+    """Reset/hide fault analysis when a new episode is loaded."""
+    # Hide the analysis container when switching episodes
+    # User must click the button to show it
+    return [], {'display': 'none'}
 
 
 @app.callback(
