@@ -233,7 +233,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
     # Create a file handler for this episode
     file_handler = logging.FileHandler(simulation_log_path, mode='w')
-    file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+    file_handler.setLevel(logging.ERROR)  # Only log ERROR level and above
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
 
