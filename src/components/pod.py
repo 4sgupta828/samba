@@ -410,13 +410,11 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         """
         Process a single queue message concurrently.
         This allows multiple messages to be in-flight simultaneously.
+
+        This method handles the full lifecycle including consumer slowdown and metrics recording.
         """
-        # Process the message by calling handle_request
-        # Use a random request type from parent service's supported types
-        if hasattr(self.parent_service, 'supported_request_types') and self.parent_service.supported_request_types:
-            request_type = random.choice(self.parent_service.supported_request_types)
-        else:
-            request_type = "PROCESS"
+        # Queue consumers should always use PROCESS request type to distinguish from HTTP requests
+        request_type = "PROCESS"
 
         # Track total message processing time (including consumer slowdown)
         start_time = self.env.now
@@ -428,8 +426,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 self._emit_log("DEBUG", f"Applying consumer slowdown: +{slowdown_ms}ms for message {msg.id}")
                 yield self.env.timeout(slowdown_ms / 1000.0)
 
-            # Process the message (executes pipeline)
-            yield self.env.process(self.handle_request(request_type, should_trace=False))
+            # Process the message by executing the processing pipeline directly
+            # We don't use handle_request() because that's designed for HTTP requests
+            # and would record metrics with its own timing that excludes consumer slowdown
+            yield from self._handle_request_internal(request_type, span=None, skip_metrics=True)
 
             # Successfully processed - delete the message
             queue.delete_message(msg)
@@ -596,10 +596,12 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
     def handle_request(self, request_type: str, should_trace: bool = False, parent_span_context=None):
         """
-        Handle incoming request by executing parent service's processing pipeline.
+        Handle incoming HTTP request by executing parent service's processing pipeline.
+
+        This is for HTTP requests only. Queue message processing uses _process_queue_message.
 
         Args:
-            request_type: Type of request to handle
+            request_type: Type of request to handle (GET, POST, PUT, DELETE, etc.)
             should_trace: Whether to create tracing spans for this request
             parent_span_context: Parent span context for distributed tracing
         """
@@ -612,15 +614,20 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     span.set_attribute("service.name", self.parent_service.service_name)
                 if self.compute_node:
                     span.set_attribute("node.id", self.compute_node.id)
-                yield from self._handle_request_internal(request_type, span)
+                yield from self._handle_request_internal(request_type, span, skip_metrics=False)
         else:
-            yield from self._handle_request_internal(request_type, None)
+            yield from self._handle_request_internal(request_type, None, skip_metrics=False)
 
-    def _handle_request_internal(self, request_type: str, span):
+    def _handle_request_internal(self, request_type: str, span, skip_metrics: bool = False):
         """
         Internal request handling - executes parent service's processing pipeline.
 
         This is the core of the new architecture where all computation happens in the Pod.
+
+        Args:
+            request_type: Type of request to handle
+            span: OpenTelemetry span for tracing (can be None)
+            skip_metrics: If True, skip recording metrics (used when caller will record metrics)
         """
         # Track start time for latency measurement
         start_time = self.env.now
@@ -697,9 +704,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         # Fallback to legacy behavior if no pipeline defined
                         yield from self._execute_legacy_request_logic(request_type, span)
 
-                    # Record success metrics (only if metrics are initialized)
+                    # Record success metrics (only if metrics are initialized and not skipped)
                     latency_ms = (self.env.now - start_time) * 1000
-                    if self.request_counter and self.request_duration and self.parent_service:
+                    if not skip_metrics and self.request_counter and self.request_duration and self.parent_service:
                         self.request_counter.add(1, {
                             "status": "success",
                             "request_type": request_type,
@@ -716,9 +723,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         })
 
                 except Exception as e:
-                    # Record error metrics (only if metrics are initialized)
+                    # Record error metrics (only if metrics are initialized and not skipped)
                     latency_ms = (self.env.now - start_time) * 1000
-                    if self.request_counter and self.request_duration and self.request_errors and self.parent_service:
+                    if not skip_metrics and self.request_counter and self.request_duration and self.request_errors and self.parent_service:
                         self.request_counter.add(1, {
                             "status": "error",
                             "request_type": request_type,
