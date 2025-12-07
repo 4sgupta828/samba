@@ -190,7 +190,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False):
     """
     Generate a single training episode.
 
@@ -207,6 +207,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         skip_analysis: Skip LLM analysis to speed up generation
         llm_provider: LLM provider to use (openai, anthropic) - default: openai
         llm_model: Specific model to use (default: gpt-4 for openai, claude-opus-4-5 for anthropic)
+        enable_enhanced_analysis: Enable enhanced fault propagation analysis (latency, config, causal chains)
 
     Returns:
         Dictionary with episode metadata
@@ -929,7 +930,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                 episode_dir=episode_dir,
                 sample_interval=5,
                 output_file=output_path,
-                enable_enhanced_analysis=False  # Disable to speed up generation
+                enable_enhanced_analysis=enable_enhanced_analysis
             )
 
             if verbose:
@@ -1081,16 +1082,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model, enable_enhanced_analysis=enable_enhanced_analysis)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -1107,6 +1108,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         skip_analysis: Skip LLM analysis to speed up generation
         llm_provider: LLM provider to use (openai, anthropic)
         llm_model: Specific model to use
+        enable_enhanced_analysis: Enable enhanced fault propagation analysis (latency, config, causal chains)
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -1146,7 +1148,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1273,6 +1275,12 @@ def main():
         help='Specific topology name to load from topology bank (if not specified, picks randomly)'
     )
     parser.add_argument(
+        '--enable-enhanced-analysis',
+        action='store_true',
+        default=False,
+        help='Enable enhanced fault propagation analysis (latency, config, causal chains) - adds ~6-8s per episode'
+    )
+    parser.add_argument(
         '--enable-llm-analysis',
         action='store_true',
         default=False,
@@ -1311,7 +1319,8 @@ def main():
         topology_name=args.topology_name,
         skip_analysis=not args.enable_llm_analysis,  # Invert the flag
         llm_provider=args.llm_provider,
-        llm_model=args.llm_model
+        llm_model=args.llm_model,
+        enable_enhanced_analysis=args.enable_enhanced_analysis
     )
 
 

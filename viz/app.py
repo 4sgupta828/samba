@@ -294,6 +294,16 @@ app.layout = dbc.Container([
                                 ),
                             ], width=2),
                             dbc.Col([
+                                dbc.Label("Enhanced Analysis:", html_for="enable-enhanced-analysis-checkbox"),
+                                dbc.Checklist(
+                                    id='enable-enhanced-analysis-checkbox',
+                                    options=[{'label': ' Enable Enhanced Analysis', 'value': 'enable'}],
+                                    value=[],
+                                    switch=True,
+                                    className="mt-2"
+                                ),
+                            ], width=2),
+                            dbc.Col([
                                 dbc.Label("LLM Analysis:", html_for="enable-llm-analysis-checkbox"),
                                 dbc.Checklist(
                                     id='enable-llm-analysis-checkbox',
@@ -1414,10 +1424,11 @@ def update_fault_dropdowns(fault_type, fault_role):
     State('verbose-checkbox', 'value'),
     State('llm-topology-checkbox', 'value'),
     State('topology-name-dropdown', 'value'),
+    State('enable-enhanced-analysis-checkbox', 'value'),
     State('enable-llm-analysis-checkbox', 'value'),
     prevent_initial_call=True
 )
-def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list, llm_topology_list, topology_name, enable_llm_analysis_list):
+def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list, llm_topology_list, topology_name, enable_enhanced_analysis_list, enable_llm_analysis_list):
     """Start dataset generation in background when button is clicked."""
     import subprocess
     import sys
@@ -1487,6 +1498,11 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
     verbose = 'verbose' in (verbose_list or [])
     if verbose:
         cmd.append('--verbose')
+
+    # Enhanced Analysis support
+    enable_enhanced_analysis = 'enable' in (enable_enhanced_analysis_list or [])
+    if enable_enhanced_analysis:
+        cmd.append('--enable-enhanced-analysis')
 
     # LLM Analysis support
     enable_llm_analysis = 'enable' in (enable_llm_analysis_list or [])
