@@ -654,6 +654,25 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             if data.get('role') == cfg.fault_target_role
         ]
 
+        # ADDITIONAL CONSTRAINT for hot_shard: only select services with sync HTTP ingress
+        # hot_shard works by skewing traffic at the load balancer level, which only applies
+        # to synchronous request routing, not queue-based async consumers
+        if cfg.fault_type == 'hot_shard':
+            # Filter to only services that have incoming sync_http edges
+            valid_targets = [
+                nid for nid in valid_targets
+                if any(
+                    edge_data.get('type') == 'sync_http'
+                    for pred in nx_graph.predecessors(nid)
+                    for edge_data in [nx_graph.get_edge_data(pred, nid)]
+                )
+            ]
+            if verbose and valid_targets:
+                print(f"\n[hot_shard constraint] Filtered to {len(valid_targets)} services with sync HTTP ingress")
+            if not valid_targets:
+                print(f"Warning: No services with sync HTTP ingress for hot_shard, skipping episode {episode_id}")
+                return None
+
         # This should never happen now since we pre-validate scenarios
         if not valid_targets:
             raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
@@ -909,7 +928,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             summary = analyze_episode(
                 episode_dir=episode_dir,
                 sample_interval=5,
-                output_file=output_path
+                output_file=output_path,
+                enable_enhanced_analysis=False  # Disable to speed up generation
             )
 
             if verbose:
