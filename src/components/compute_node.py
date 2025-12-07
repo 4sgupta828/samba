@@ -252,11 +252,8 @@ class ComputeNode(EnrichedComponent):
 
             victim.state.operational = "TERMINATED"
 
-            # Interrupt the pod process
+            # Interrupt the pod process - the pod will remove itself from the node's pod list
             if hasattr(victim, 'running_process') and victim.running_process:
                 victim.running_process.interrupt("TERMINATED_BY_OOMKILLER")
-
-            # Remove from node's pod list
-            self.pods.remove(victim)
 
             # DeploymentController will detect missing pod and reschedule

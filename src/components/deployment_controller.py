@@ -236,16 +236,13 @@ class DeploymentController(EnrichedComponent):
             self._emit_log("INFO", f"Terminating pod {pod.id} (scale down)")
             pod.state.operational = "TERMINATED"
 
+            # Interrupt the pod process - the pod will remove itself from the node's pod list
             if hasattr(pod, 'running_process') and pod.running_process:
                 pod.running_process.interrupt("TERMINATED_BY_SCALE_DOWN")
 
             # Track termination event
             if self.topology_exporter and hasattr(self, 'event_tracker'):
                 self.event_tracker.track_pod_terminated(pod, "SCALE_DOWN")
-
-            # Remove from node
-            if pod.compute_node and pod in pod.compute_node.pods:
-                pod.compute_node.pods.remove(pod)
 
             # Remove from service
             service.pods.remove(pod)
