@@ -544,7 +544,75 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     for node_id, config in tuned_configs.items():
         nx_graph.nodes[node_id]['iac_config_overrides'] = config
 
-    # 5. Propagate Configs to Pods (Infrastructure level)
+    # 5. Adjust Pod Counts to Match Capacity Planning
+    # When using LLM topologies, pods are pre-created. We need to add or remove pods
+    # to match the capacity planner's desired_replicas.
+    for node_id, config in tuned_configs.items():
+        if 'desired_replicas' not in config:
+            continue  # Skip non-service nodes (databases, caches, etc.)
+
+        desired_replicas = config['desired_replicas']
+
+        # Find all existing pods for this service
+        existing_pods = [
+            pod_id for pod_id, attrs in nx_graph.nodes(data=True)
+            if attrs.get('type') == 'Pod' and attrs.get('parent_service') == node_id
+        ]
+        current_replica_count = len(existing_pods)
+
+        if current_replica_count == desired_replicas:
+            continue  # Already correct
+
+        if verbose:
+            print(f"  Adjusting {node_id}: {current_replica_count} -> {desired_replicas} pods")
+
+        if current_replica_count < desired_replicas:
+            # Need to ADD pods
+            pods_to_add = desired_replicas - current_replica_count
+
+            # Find the compute nodes and pod_pool edges for this service
+            compute_nodes = []
+            for pod_id in existing_pods:
+                for neighbor in nx_graph.neighbors(pod_id):
+                    if nx_graph.nodes[neighbor].get('type') == 'ComputeNode':
+                        compute_nodes.append(neighbor)
+
+            # If no compute nodes found, try to find them from the service
+            if not compute_nodes:
+                # Find compute nodes connected to existing pods of other services
+                all_compute_nodes = [
+                    n for n, attrs in nx_graph.nodes(data=True)
+                    if attrs.get('type') == 'ComputeNode'
+                ]
+                compute_nodes = all_compute_nodes
+
+            # Create new pods
+            for i in range(pods_to_add):
+                new_pod_id = f"pod_{node_id}_{current_replica_count + i}"
+
+                # Add pod node
+                nx_graph.add_node(new_pod_id, type='Pod', parent_service=node_id)
+
+                # Add pod_pool edge from service to pod
+                nx_graph.add_edge(node_id, new_pod_id, type='pod_pool')
+
+                # Add pod_placement edge to a compute node (round-robin)
+                if compute_nodes:
+                    target_compute_node = compute_nodes[(current_replica_count + i) % len(compute_nodes)]
+                    nx_graph.add_edge(new_pod_id, target_compute_node, type='pod_placement')
+
+        elif current_replica_count > desired_replicas:
+            # Need to REMOVE pods
+            pods_to_remove = current_replica_count - desired_replicas
+
+            # Remove the last N pods (highest indices)
+            pods_to_delete = sorted(existing_pods)[-pods_to_remove:]
+
+            for pod_id in pods_to_delete:
+                # Remove all edges connected to this pod
+                nx_graph.remove_node(pod_id)
+
+    # 6. Propagate Configs to Pods (Infrastructure level)
     # Since Pods are separate nodes in the graph, we need to copy the parent service's
     # thread/connection pool settings to the pod nodes so Adapter picks them up.
     for node_id, attrs in nx_graph.nodes(data=True):
@@ -560,7 +628,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                 }
                 nx_graph.nodes[node_id]['iac_config_overrides'] = pod_override
 
-    # 6. Create Workload Config matching the target RPS
+    # 7. Create Workload Config matching the target RPS
     workload_path = create_dynamic_workload(nx_graph, base_rps=int(target_rps*0.8), peak_rps=target_rps)
 
     # --- End Capacity Planning ---
