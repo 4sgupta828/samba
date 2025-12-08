@@ -1,0 +1,417 @@
+{
+  "meta": {
+    "architecture_name": "Smart Home Hub Platform",
+    "archetype": "hub_spoke",
+    "domain": "IoT Smart Home Management",
+    "description": "Centralized smart home platform that orchestrates device control, automation, and monitoring across multiple IoT device types and protocols",
+    "pros": [
+      "Centralized device orchestration",
+      "Protocol abstraction",
+      "Simplified automation rules",
+      "Unified device management",
+      "Easy integration of new device types"
+    ],
+    "cons": [
+      "Single point of failure at hub",
+      "Hub can become performance bottleneck",
+      "Complex hub logic",
+      "Limited direct device-to-device communication"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "gateway",
+      "type": "RequestGateway"
+    },
+    {
+      "id": "hub_orchestrator",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 4
+    },
+    {
+      "id": "lighting_service",
+      "type": "Service",
+      "profile": "latency_sensitive",
+      "replicas": 3
+    },
+    {
+      "id": "climate_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 2
+    },
+    {
+      "id": "security_service",
+      "type": "Service",
+      "profile": "latency_sensitive",
+      "replicas": 4
+    },
+    {
+      "id": "entertainment_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3
+    },
+    {
+      "id": "automation_engine",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 3,
+      "async_consumer_capacity": 240
+    },
+    {
+      "id": "device_state_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 2
+    },
+    {
+      "id": "analytics_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 4,
+      "async_consumer_capacity": 160
+    },
+    {
+      "id": "notification_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2,
+      "async_consumer_capacity": 120
+    },
+    {
+      "id": "devices_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    {
+      "id": "automation_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    {
+      "id": "device_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    {
+      "id": "session_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    {
+      "id": "device_events_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "automation_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "notification_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "cloud_iot_platform",
+      "type": "ExternalService"
+    }
+  ],
+  "edges": [
+    {
+      "source": "gateway",
+      "target": "hub_orchestrator",
+      "type": "sync_http"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "lighting_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "climate_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "security_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "entertainment_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "device_state_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "session_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "device_events_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "hub_orchestrator",
+      "target": "automation_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "lighting_service",
+      "target": "devices_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "lighting_service",
+      "target": "device_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "lighting_service",
+      "target": "cloud_iot_platform",
+      "type": "sync_external"
+    },
+    {
+      "source": "climate_service",
+      "target": "devices_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "climate_service",
+      "target": "device_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "climate_service",
+      "target": "cloud_iot_platform",
+      "type": "sync_external"
+    },
+    {
+      "source": "security_service",
+      "target": "devices_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "security_service",
+      "target": "device_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "security_service",
+      "target": "notification_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "entertainment_service",
+      "target": "devices_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "entertainment_service",
+      "target": "device_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "device_state_service",
+      "target": "devices_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "device_state_service",
+      "target": "device_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "automation_queue",
+      "target": "automation_engine",
+      "type": "async_consume"
+    },
+    {
+      "source": "automation_engine",
+      "target": "automation_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "automation_engine",
+      "target": "device_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "device_events_queue",
+      "target": "analytics_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "analytics_service",
+      "target": "automation_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "notification_queue",
+      "target": "notification_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "notification_service",
+      "target": "devices_db",
+      "type": "sync_db"
+    }
+  ],
+  "flows": {
+    "GET": {
+      "gateway": [
+        "hub_orchestrator"
+      ],
+      "hub_orchestrator": [
+        "lighting_service",
+        "climate_service",
+        "security_service",
+        "entertainment_service",
+        "device_state_service",
+        "session_cache"
+      ],
+      "lighting_service": [
+        "device_cache",
+        "devices_db"
+      ],
+      "climate_service": [
+        "device_cache",
+        "devices_db"
+      ],
+      "security_service": [
+        "device_cache",
+        "devices_db"
+      ],
+      "entertainment_service": [
+        "device_cache",
+        "devices_db"
+      ],
+      "device_state_service": [
+        "device_cache",
+        "devices_db"
+      ]
+    },
+    "POST": {
+      "gateway": [
+        "hub_orchestrator"
+      ],
+      "hub_orchestrator": [
+        "lighting_service",
+        "climate_service",
+        "security_service",
+        "entertainment_service",
+        "device_events_queue",
+        "automation_queue"
+      ],
+      "lighting_service": [
+        "devices_db",
+        "cloud_iot_platform"
+      ],
+      "climate_service": [
+        "devices_db",
+        "cloud_iot_platform"
+      ],
+      "security_service": [
+        "devices_db",
+        "notification_queue"
+      ],
+      "entertainment_service": [
+        "devices_db"
+      ],
+      "device_events_queue": [
+        "analytics_service"
+      ],
+      "automation_queue": [
+        "automation_engine"
+      ],
+      "automation_engine": [
+        "automation_db"
+      ],
+      "analytics_service": [
+        "automation_db"
+      ],
+      "notification_queue": [
+        "notification_service"
+      ],
+      "notification_service": [
+        "devices_db"
+      ]
+    },
+    "PUT": {
+      "gateway": [
+        "hub_orchestrator"
+      ],
+      "hub_orchestrator": [
+        "lighting_service",
+        "climate_service",
+        "security_service",
+        "entertainment_service",
+        "device_state_service"
+      ],
+      "lighting_service": [
+        "devices_db",
+        "device_cache",
+        "cloud_iot_platform"
+      ],
+      "climate_service": [
+        "devices_db",
+        "device_cache",
+        "cloud_iot_platform"
+      ],
+      "security_service": [
+        "devices_db",
+        "device_cache"
+      ],
+      "entertainment_service": [
+        "devices_db",
+        "device_cache"
+      ],
+      "device_state_service": [
+        "devices_db",
+        "device_cache"
+      ]
+    },
+    "DELETE": {
+      "gateway": [
+        "hub_orchestrator"
+      ],
+      "hub_orchestrator": [
+        "lighting_service",
+        "climate_service",
+        "security_service",
+        "entertainment_service",
+        "device_state_service"
+      ],
+      "lighting_service": [
+        "devices_db",
+        "device_cache"
+      ],
+      "climate_service": [
+        "devices_db",
+        "device_cache"
+      ],
+      "security_service": [
+        "devices_db",
+        "device_cache"
+      ],
+      "entertainment_service": [
+        "devices_db",
+        "device_cache"
+      ],
+      "device_state_service": [
+        "devices_db",
+        "device_cache"
+      ]
+    }
+  }
+}

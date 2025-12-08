@@ -1,0 +1,948 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": {
+    "meta": {
+      "architecture_name": "Enterprise SaaS Platform",
+      "archetype": "hierarchical",
+      "domain": "SaaS Platform",
+      "description": "Multi-tenant SaaS platform with strict hierarchical layers for user management, subscription billing, analytics, and tenant isolation",
+      "pros": [
+        "Clear separation of concerns with strict layering",
+        "Easy to understand and maintain hierarchical structure",
+        "Excellent scalability through layer-based load distribution",
+        "Strong security boundaries between layers",
+        "Simplified debugging and monitoring per layer"
+      ],
+      "cons": [
+        "Rigid structure limits cross-cutting functionality",
+        "Potential performance overhead from layer traversal",
+        "Difficult to implement features spanning multiple layers",
+        "May require more network hops for complex operations"
+      ]
+    },
+    "request_flows": {
+      "GET": {
+        "gateway": [
+          "auth_service",
+          "tenant_service"
+        ],
+        "auth_service": [
+          "auth_cache",
+          "session_cache",
+          "user_management_service"
+        ],
+        "tenant_service": [
+          "tenant_db",
+          "user_management_service"
+        ],
+        "user_management_service": [
+          "user_db",
+          "auth_cache"
+        ]
+      },
+      "POST": {
+        "gateway": [
+          "auth_service",
+          "subscription_service"
+        ],
+        "auth_service": [
+          "user_management_service"
+        ],
+        "subscription_service": [
+          "billing_service"
+        ],
+        "user_management_service": [
+          "user_db",
+          "events_queue"
+        ],
+        "billing_service": [
+          "tenant_db",
+          "payment_gateway",
+          "billing_queue"
+        ]
+      },
+      "PUT": {
+        "gateway": [
+          "tenant_service",
+          "subscription_service"
+        ],
+        "tenant_service": [
+          "user_management_service"
+        ],
+        "subscription_service": [
+          "billing_service"
+        ],
+        "user_management_service": [
+          "user_db",
+          "auth_cache",
+          "events_queue"
+        ],
+        "billing_service": [
+          "tenant_db",
+          "session_cache",
+          "billing_queue"
+        ]
+      },
+      "DELETE": {
+        "gateway": [
+          "auth_service",
+          "tenant_service"
+        ],
+        "auth_service": [
+          "user_management_service"
+        ],
+        "tenant_service": [
+          "user_management_service"
+        ],
+        "user_management_service": [
+          "user_db",
+          "events_queue"
+        ]
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "RequestGateway",
+      "role": "gateway",
+      "service_name": "gateway",
+      "semantic_name": "gateway",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "is_frontend": true,
+      "id": "gateway"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "auth_service",
+      "semantic_name": "auth_service",
+      "resource_profile": "latency_sensitive",
+      "desired_replicas": 3,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "auth_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "tenant_service",
+      "semantic_name": "tenant_service",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "tenant_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "subscription_service",
+      "semantic_name": "subscription_service",
+      "resource_profile": "standard",
+      "desired_replicas": 2,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "subscription_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "user_management_service",
+      "semantic_name": "user_management_service",
+      "resource_profile": "io_intensive",
+      "desired_replicas": 3,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "user_management_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "billing_service",
+      "semantic_name": "billing_service",
+      "resource_profile": "io_intensive",
+      "desired_replicas": 3,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "billing_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "analytics_service",
+      "semantic_name": "analytics_service",
+      "resource_profile": "cpu_intensive",
+      "desired_replicas": 4,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "analytics_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "notification_service",
+      "semantic_name": "notification_service",
+      "resource_profile": "standard",
+      "desired_replicas": 2,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "notification_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "reporting_service",
+      "semantic_name": "reporting_service",
+      "resource_profile": "cpu_intensive",
+      "desired_replicas": 3,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "reporting_service"
+    },
+    {
+      "type": "SqlDatabase",
+      "role": "database",
+      "service_name": "user_db",
+      "semantic_name": "user_db",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "user_db"
+    },
+    {
+      "type": "SqlDatabase",
+      "role": "database",
+      "service_name": "tenant_db",
+      "semantic_name": "tenant_db",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "tenant_db"
+    },
+    {
+      "type": "SqlDatabase",
+      "role": "database",
+      "service_name": "analytics_db",
+      "semantic_name": "analytics_db",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "analytics_db"
+    },
+    {
+      "type": "ExternalCache",
+      "role": "cache",
+      "service_name": "auth_cache",
+      "semantic_name": "auth_cache",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "auth_cache"
+    },
+    {
+      "type": "ExternalCache",
+      "role": "cache",
+      "service_name": "session_cache",
+      "semantic_name": "session_cache",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "session_cache"
+    },
+    {
+      "type": "MessageQueue",
+      "role": "queue",
+      "service_name": "events_queue",
+      "semantic_name": "events_queue",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "events_queue"
+    },
+    {
+      "type": "MessageQueue",
+      "role": "queue",
+      "service_name": "billing_queue",
+      "semantic_name": "billing_queue",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "billing_queue"
+    },
+    {
+      "type": "ExternalService",
+      "role": "external",
+      "service_name": "payment_gateway",
+      "semantic_name": "payment_gateway",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "payment_gateway"
+    },
+    {
+      "type": "ExternalService",
+      "role": "external",
+      "service_name": "email_service",
+      "semantic_name": "email_service",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "email_service"
+    },
+    {
+      "type": "ComputeNode",
+      "role": "node",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "network_bandwidth_gbps": 10,
+      "id": "node_0"
+    },
+    {
+      "type": "ComputeNode",
+      "role": "node",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "network_bandwidth_gbps": 10,
+      "id": "node_1"
+    },
+    {
+      "type": "ComputeNode",
+      "role": "node",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "network_bandwidth_gbps": 10,
+      "id": "node_2"
+    },
+    {
+      "type": "ComputeNode",
+      "role": "node",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "network_bandwidth_gbps": 10,
+      "id": "node_3"
+    },
+    {
+      "type": "ComputeNode",
+      "role": "node",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "network_bandwidth_gbps": 10,
+      "id": "node_4"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "auth_service",
+      "compute_node": "node_0",
+      "id": "pod_auth_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "auth_service",
+      "compute_node": "node_1",
+      "id": "pod_auth_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "auth_service",
+      "compute_node": "node_2",
+      "id": "pod_auth_service_2"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "tenant_service",
+      "compute_node": "node_3",
+      "id": "pod_tenant_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "tenant_service",
+      "compute_node": "node_4",
+      "id": "pod_tenant_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "tenant_service",
+      "compute_node": "node_0",
+      "id": "pod_tenant_service_2"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "subscription_service",
+      "compute_node": "node_1",
+      "id": "pod_subscription_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "subscription_service",
+      "compute_node": "node_2",
+      "id": "pod_subscription_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "user_management_service",
+      "compute_node": "node_3",
+      "id": "pod_user_management_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "user_management_service",
+      "compute_node": "node_4",
+      "id": "pod_user_management_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "user_management_service",
+      "compute_node": "node_0",
+      "id": "pod_user_management_service_2"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "billing_service",
+      "compute_node": "node_1",
+      "id": "pod_billing_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "billing_service",
+      "compute_node": "node_2",
+      "id": "pod_billing_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "billing_service",
+      "compute_node": "node_3",
+      "id": "pod_billing_service_2"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "analytics_service",
+      "compute_node": "node_4",
+      "id": "pod_analytics_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "analytics_service",
+      "compute_node": "node_0",
+      "id": "pod_analytics_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "analytics_service",
+      "compute_node": "node_1",
+      "id": "pod_analytics_service_2"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "analytics_service",
+      "compute_node": "node_2",
+      "id": "pod_analytics_service_3"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "notification_service",
+      "compute_node": "node_3",
+      "id": "pod_notification_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "notification_service",
+      "compute_node": "node_4",
+      "id": "pod_notification_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "reporting_service",
+      "compute_node": "node_0",
+      "id": "pod_reporting_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "reporting_service",
+      "compute_node": "node_1",
+      "id": "pod_reporting_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "reporting_service",
+      "compute_node": "node_2",
+      "id": "pod_reporting_service_2"
+    },
+    {
+      "type": "DeploymentController",
+      "role": "controller",
+      "id": "deployment_controller"
+    }
+  ],
+  "links": [
+    {
+      "type": "sync_http",
+      "base_latency": 5.0,
+      "source": "gateway",
+      "target": "auth_service"
+    },
+    {
+      "type": "sync_http",
+      "base_latency": 5.0,
+      "source": "gateway",
+      "target": "tenant_service"
+    },
+    {
+      "type": "sync_http",
+      "base_latency": 5.0,
+      "source": "gateway",
+      "target": "subscription_service"
+    },
+    {
+      "type": "sync_http",
+      "base_latency": 5.0,
+      "source": "auth_service",
+      "target": "user_management_service"
+    },
+    {
+      "type": "sync_cache",
+      "base_latency": 5.0,
+      "source": "auth_service",
+      "target": "auth_cache"
+    },
+    {
+      "type": "sync_cache",
+      "base_latency": 5.0,
+      "source": "auth_service",
+      "target": "session_cache"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "auth_service",
+      "target": "pod_auth_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "auth_service",
+      "target": "pod_auth_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "auth_service",
+      "target": "pod_auth_service_2"
+    },
+    {
+      "type": "sync_http",
+      "base_latency": 5.0,
+      "source": "tenant_service",
+      "target": "user_management_service"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "tenant_service",
+      "target": "tenant_db"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "tenant_service",
+      "target": "pod_tenant_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "tenant_service",
+      "target": "pod_tenant_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "tenant_service",
+      "target": "pod_tenant_service_2"
+    },
+    {
+      "type": "sync_http",
+      "base_latency": 5.0,
+      "source": "subscription_service",
+      "target": "billing_service"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "subscription_service",
+      "target": "tenant_db"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "subscription_service",
+      "target": "pod_subscription_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "subscription_service",
+      "target": "pod_subscription_service_1"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "user_management_service",
+      "target": "user_db"
+    },
+    {
+      "type": "sync_cache",
+      "base_latency": 5.0,
+      "source": "user_management_service",
+      "target": "auth_cache"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "user_management_service",
+      "target": "events_queue"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "user_management_service",
+      "target": "pod_user_management_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "user_management_service",
+      "target": "pod_user_management_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "user_management_service",
+      "target": "pod_user_management_service_2"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "billing_service",
+      "target": "tenant_db"
+    },
+    {
+      "type": "sync_cache",
+      "base_latency": 5.0,
+      "source": "billing_service",
+      "target": "session_cache"
+    },
+    {
+      "type": "sync_external",
+      "base_latency": 50.0,
+      "source": "billing_service",
+      "target": "payment_gateway"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "billing_service",
+      "target": "billing_queue"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "billing_service",
+      "target": "pod_billing_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "billing_service",
+      "target": "pod_billing_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "billing_service",
+      "target": "pod_billing_service_2"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "analytics_service",
+      "target": "analytics_db"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "analytics_service",
+      "target": "pod_analytics_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "analytics_service",
+      "target": "pod_analytics_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "analytics_service",
+      "target": "pod_analytics_service_2"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "analytics_service",
+      "target": "pod_analytics_service_3"
+    },
+    {
+      "type": "sync_external",
+      "base_latency": 50.0,
+      "source": "notification_service",
+      "target": "email_service"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "notification_service",
+      "target": "pod_notification_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "notification_service",
+      "target": "pod_notification_service_1"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "reporting_service",
+      "target": "analytics_db"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "reporting_service",
+      "target": "pod_reporting_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "reporting_service",
+      "target": "pod_reporting_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "reporting_service",
+      "target": "pod_reporting_service_2"
+    },
+    {
+      "type": "async_consume",
+      "base_latency": 5.0,
+      "source": "events_queue",
+      "target": "analytics_service"
+    },
+    {
+      "type": "async_consume",
+      "base_latency": 5.0,
+      "source": "events_queue",
+      "target": "notification_service"
+    },
+    {
+      "type": "async_consume",
+      "base_latency": 5.0,
+      "source": "billing_queue",
+      "target": "reporting_service"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_auth_service_0",
+      "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_auth_service_1",
+      "target": "node_1"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_auth_service_2",
+      "target": "node_2"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_tenant_service_0",
+      "target": "node_3"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_tenant_service_1",
+      "target": "node_4"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_tenant_service_2",
+      "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_subscription_service_0",
+      "target": "node_1"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_subscription_service_1",
+      "target": "node_2"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_user_management_service_0",
+      "target": "node_3"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_user_management_service_1",
+      "target": "node_4"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_user_management_service_2",
+      "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_billing_service_0",
+      "target": "node_1"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_billing_service_1",
+      "target": "node_2"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_billing_service_2",
+      "target": "node_3"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_analytics_service_0",
+      "target": "node_4"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_analytics_service_1",
+      "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_analytics_service_2",
+      "target": "node_1"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_analytics_service_3",
+      "target": "node_2"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_notification_service_0",
+      "target": "node_3"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_notification_service_1",
+      "target": "node_4"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_reporting_service_0",
+      "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_reporting_service_1",
+      "target": "node_1"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_reporting_service_2",
+      "target": "node_2"
+    }
+  ]
+}

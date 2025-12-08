@@ -1,0 +1,199 @@
+{
+  "domain": "SaaS Platform",
+  "description": "Multi-tenant SaaS platform with strict hierarchical layers for user management, subscription billing, analytics, and tenant isolation",
+  "architecture_name": "Enterprise SaaS Platform",
+  "archetype": "hierarchical",
+  "pros": [
+    "Clear separation of concerns with strict layering",
+    "Easy to understand and maintain hierarchical structure",
+    "Excellent scalability through layer-based load distribution",
+    "Strong security boundaries between layers",
+    "Simplified debugging and monitoring per layer"
+  ],
+  "cons": [
+    "Rigid structure limits cross-cutting functionality",
+    "Potential performance overhead from layer traversal",
+    "Difficult to implement features spanning multiple layers",
+    "May require more network hops for complex operations"
+  ],
+  "request_flows": {
+    "GET": {
+      "gateway": [
+        "auth_service",
+        "tenant_service"
+      ],
+      "auth_service": [
+        "auth_cache",
+        "session_cache",
+        "user_management_service"
+      ],
+      "tenant_service": [
+        "tenant_db",
+        "user_management_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "auth_cache"
+      ]
+    },
+    "POST": {
+      "gateway": [
+        "auth_service",
+        "subscription_service"
+      ],
+      "auth_service": [
+        "user_management_service"
+      ],
+      "subscription_service": [
+        "billing_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "events_queue"
+      ],
+      "billing_service": [
+        "tenant_db",
+        "payment_gateway",
+        "billing_queue"
+      ]
+    },
+    "PUT": {
+      "gateway": [
+        "tenant_service",
+        "subscription_service"
+      ],
+      "tenant_service": [
+        "user_management_service"
+      ],
+      "subscription_service": [
+        "billing_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "auth_cache",
+        "events_queue"
+      ],
+      "billing_service": [
+        "tenant_db",
+        "session_cache",
+        "billing_queue"
+      ]
+    },
+    "DELETE": {
+      "gateway": [
+        "auth_service",
+        "tenant_service"
+      ],
+      "auth_service": [
+        "user_management_service"
+      ],
+      "tenant_service": [
+        "user_management_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "events_queue"
+      ]
+    }
+  },
+  "services": {
+    "gateway": {
+      "id": "gateway",
+      "type": "RequestGateway"
+    },
+    "auth_service": {
+      "id": "auth_service",
+      "type": "Service",
+      "profile": "latency_sensitive",
+      "replicas": 3
+    },
+    "tenant_service": {
+      "id": "tenant_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 3
+    },
+    "subscription_service": {
+      "id": "subscription_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2
+    },
+    "user_management_service": {
+      "id": "user_management_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
+    },
+    "billing_service": {
+      "id": "billing_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
+    },
+    "analytics_service": {
+      "id": "analytics_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 4,
+      "async_consumer_capacity": 120
+    },
+    "notification_service": {
+      "id": "notification_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2,
+      "async_consumer_capacity": 200
+    },
+    "reporting_service": {
+      "id": "reporting_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 90
+    },
+    "user_db": {
+      "id": "user_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    "tenant_db": {
+      "id": "tenant_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    "analytics_db": {
+      "id": "analytics_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    "auth_cache": {
+      "id": "auth_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    "session_cache": {
+      "id": "session_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    "events_queue": {
+      "id": "events_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "billing_queue": {
+      "id": "billing_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "payment_gateway": {
+      "id": "payment_gateway",
+      "type": "ExternalService"
+    },
+    "email_service": {
+      "id": "email_service",
+      "type": "ExternalService"
+    }
+  }
+}

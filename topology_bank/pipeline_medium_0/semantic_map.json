@@ -1,0 +1,172 @@
+{
+  "domain": "IoT Telemetry Processing",
+  "description": "Real-time IoT data processing pipeline that ingests telemetry from devices, validates and enriches data, performs anomaly detection, stores metrics, and triggers alerts. Sequential processing stages ensure data quality and proper transformation at each step.",
+  "architecture_name": "IoT Telemetry Processing Pipeline",
+  "archetype": "pipeline",
+  "pros": [
+    "Scalable processing stages can be tuned independently",
+    "Fault isolation between pipeline stages",
+    "Easy to add new processing stages",
+    "Built-in backpressure handling with queues",
+    "Real-time anomaly detection and alerting"
+  ],
+  "cons": [
+    "Higher latency due to multi-stage processing",
+    "Complex monitoring across pipeline stages",
+    "Queue management overhead",
+    "Potential data loss if queues overflow"
+  ],
+  "request_flows": {
+    "GET": {
+      "gateway": [
+        "query_service"
+      ],
+      "query_service": [
+        "query_cache",
+        "timeseries_db"
+      ]
+    },
+    "POST": {
+      "gateway": [
+        "ingestion_service"
+      ],
+      "ingestion_service": [
+        "metadata_cache",
+        "device_registry_db",
+        "raw_data_queue"
+      ]
+    },
+    "PUT": {
+      "gateway": [
+        "query_service"
+      ],
+      "query_service": [
+        "query_cache",
+        "timeseries_db"
+      ]
+    },
+    "DELETE": {
+      "gateway": [
+        "query_service"
+      ],
+      "query_service": [
+        "query_cache",
+        "timeseries_db"
+      ]
+    }
+  },
+  "services": {
+    "gateway": {
+      "id": "gateway",
+      "type": "RequestGateway"
+    },
+    "ingestion_service": {
+      "id": "ingestion_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 4
+    },
+    "validation_service": {
+      "id": "validation_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 120
+    },
+    "enrichment_service": {
+      "id": "enrichment_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 180
+    },
+    "anomaly_detection_service": {
+      "id": "anomaly_detection_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 4,
+      "async_consumer_capacity": 160
+    },
+    "storage_service": {
+      "id": "storage_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 2,
+      "async_consumer_capacity": 120
+    },
+    "notification_service": {
+      "id": "notification_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2,
+      "async_consumer_capacity": 200
+    },
+    "query_service": {
+      "id": "query_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
+    },
+    "analytics_service": {
+      "id": "analytics_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 90
+    },
+    "device_registry_db": {
+      "id": "device_registry_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    "timeseries_db": {
+      "id": "timeseries_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    "metadata_cache": {
+      "id": "metadata_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    "query_cache": {
+      "id": "query_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    "raw_data_queue": {
+      "id": "raw_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "validated_data_queue": {
+      "id": "validated_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "enriched_data_queue": {
+      "id": "enriched_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "processed_data_queue": {
+      "id": "processed_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "alerts_queue": {
+      "id": "alerts_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "analytics_queue": {
+      "id": "analytics_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    "notification_service_ext": {
+      "id": "notification_service_ext",
+      "type": "ExternalService"
+    }
+  }
+}

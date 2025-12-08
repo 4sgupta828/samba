@@ -1,0 +1,296 @@
+{
+  "meta": {
+    "architecture_name": "IoT Telemetry Processing Pipeline",
+    "archetype": "pipeline",
+    "domain": "IoT Telemetry Processing",
+    "description": "Real-time IoT data processing pipeline that ingests telemetry from devices, validates and enriches data, performs anomaly detection, stores metrics, and triggers alerts. Sequential processing stages ensure data quality and proper transformation at each step.",
+    "pros": [
+      "Scalable processing stages can be tuned independently",
+      "Fault isolation between pipeline stages",
+      "Easy to add new processing stages",
+      "Built-in backpressure handling with queues",
+      "Real-time anomaly detection and alerting"
+    ],
+    "cons": [
+      "Higher latency due to multi-stage processing",
+      "Complex monitoring across pipeline stages",
+      "Queue management overhead",
+      "Potential data loss if queues overflow"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "gateway",
+      "type": "RequestGateway"
+    },
+    {
+      "id": "ingestion_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 4
+    },
+    {
+      "id": "validation_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 120
+    },
+    {
+      "id": "enrichment_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 180
+    },
+    {
+      "id": "anomaly_detection_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 4,
+      "async_consumer_capacity": 160
+    },
+    {
+      "id": "storage_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 2,
+      "async_consumer_capacity": 120
+    },
+    {
+      "id": "notification_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2,
+      "async_consumer_capacity": 200
+    },
+    {
+      "id": "query_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
+    },
+    {
+      "id": "analytics_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 90
+    },
+    {
+      "id": "device_registry_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    {
+      "id": "timeseries_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    {
+      "id": "metadata_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    {
+      "id": "query_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    {
+      "id": "raw_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "validated_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "enriched_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "processed_data_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "alerts_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "analytics_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "notification_service_ext",
+      "type": "ExternalService"
+    }
+  ],
+  "edges": [
+    {
+      "source": "gateway",
+      "target": "ingestion_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "gateway",
+      "target": "query_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "ingestion_service",
+      "target": "device_registry_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "ingestion_service",
+      "target": "metadata_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "ingestion_service",
+      "target": "raw_data_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "raw_data_queue",
+      "target": "validation_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "validation_service",
+      "target": "device_registry_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "validation_service",
+      "target": "validated_data_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "validated_data_queue",
+      "target": "enrichment_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "enrichment_service",
+      "target": "device_registry_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "enrichment_service",
+      "target": "metadata_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "enrichment_service",
+      "target": "enriched_data_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "enriched_data_queue",
+      "target": "anomaly_detection_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "anomaly_detection_service",
+      "target": "processed_data_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "anomaly_detection_service",
+      "target": "alerts_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "anomaly_detection_service",
+      "target": "analytics_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "processed_data_queue",
+      "target": "storage_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "storage_service",
+      "target": "timeseries_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "alerts_queue",
+      "target": "notification_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "notification_service",
+      "target": "notification_service_ext",
+      "type": "sync_external"
+    },
+    {
+      "source": "analytics_queue",
+      "target": "analytics_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "analytics_service",
+      "target": "timeseries_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "query_service",
+      "target": "timeseries_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "query_service",
+      "target": "query_cache",
+      "type": "sync_cache"
+    }
+  ],
+  "flows": {
+    "GET": {
+      "gateway": [
+        "query_service"
+      ],
+      "query_service": [
+        "query_cache",
+        "timeseries_db"
+      ]
+    },
+    "POST": {
+      "gateway": [
+        "ingestion_service"
+      ],
+      "ingestion_service": [
+        "metadata_cache",
+        "device_registry_db",
+        "raw_data_queue"
+      ]
+    },
+    "PUT": {
+      "gateway": [
+        "query_service"
+      ],
+      "query_service": [
+        "query_cache",
+        "timeseries_db"
+      ]
+    },
+    "DELETE": {
+      "gateway": [
+        "query_service"
+      ],
+      "query_service": [
+        "query_cache",
+        "timeseries_db"
+      ]
+    }
+  }
+}

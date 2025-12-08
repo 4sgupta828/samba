@@ -1,0 +1,318 @@
+{
+  "meta": {
+    "architecture_name": "Enterprise SaaS Platform",
+    "archetype": "hierarchical",
+    "domain": "SaaS Platform",
+    "description": "Multi-tenant SaaS platform with strict hierarchical layers for user management, subscription billing, analytics, and tenant isolation",
+    "pros": [
+      "Clear separation of concerns with strict layering",
+      "Easy to understand and maintain hierarchical structure",
+      "Excellent scalability through layer-based load distribution",
+      "Strong security boundaries between layers",
+      "Simplified debugging and monitoring per layer"
+    ],
+    "cons": [
+      "Rigid structure limits cross-cutting functionality",
+      "Potential performance overhead from layer traversal",
+      "Difficult to implement features spanning multiple layers",
+      "May require more network hops for complex operations"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "gateway",
+      "type": "RequestGateway"
+    },
+    {
+      "id": "auth_service",
+      "type": "Service",
+      "profile": "latency_sensitive",
+      "replicas": 3
+    },
+    {
+      "id": "tenant_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 3
+    },
+    {
+      "id": "subscription_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2
+    },
+    {
+      "id": "user_management_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
+    },
+    {
+      "id": "billing_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
+    },
+    {
+      "id": "analytics_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 4,
+      "async_consumer_capacity": 120
+    },
+    {
+      "id": "notification_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2,
+      "async_consumer_capacity": 200
+    },
+    {
+      "id": "reporting_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 90
+    },
+    {
+      "id": "user_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    {
+      "id": "tenant_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    {
+      "id": "analytics_db",
+      "type": "SqlDatabase",
+      "replicas": 3
+    },
+    {
+      "id": "auth_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    {
+      "id": "session_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    {
+      "id": "events_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "billing_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "payment_gateway",
+      "type": "ExternalService"
+    },
+    {
+      "id": "email_service",
+      "type": "ExternalService"
+    }
+  ],
+  "edges": [
+    {
+      "source": "gateway",
+      "target": "auth_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "gateway",
+      "target": "tenant_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "gateway",
+      "target": "subscription_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "auth_service",
+      "target": "user_management_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "tenant_service",
+      "target": "user_management_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "subscription_service",
+      "target": "billing_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "user_management_service",
+      "target": "user_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "user_management_service",
+      "target": "auth_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "user_management_service",
+      "target": "events_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "billing_service",
+      "target": "tenant_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "billing_service",
+      "target": "session_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "billing_service",
+      "target": "payment_gateway",
+      "type": "sync_external"
+    },
+    {
+      "source": "billing_service",
+      "target": "billing_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "auth_service",
+      "target": "auth_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "auth_service",
+      "target": "session_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "tenant_service",
+      "target": "tenant_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "subscription_service",
+      "target": "tenant_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "events_queue",
+      "target": "analytics_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "events_queue",
+      "target": "notification_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "billing_queue",
+      "target": "reporting_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "analytics_service",
+      "target": "analytics_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "notification_service",
+      "target": "email_service",
+      "type": "sync_external"
+    },
+    {
+      "source": "reporting_service",
+      "target": "analytics_db",
+      "type": "sync_db"
+    }
+  ],
+  "flows": {
+    "GET": {
+      "gateway": [
+        "auth_service",
+        "tenant_service"
+      ],
+      "auth_service": [
+        "auth_cache",
+        "session_cache",
+        "user_management_service"
+      ],
+      "tenant_service": [
+        "tenant_db",
+        "user_management_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "auth_cache"
+      ]
+    },
+    "POST": {
+      "gateway": [
+        "auth_service",
+        "subscription_service"
+      ],
+      "auth_service": [
+        "user_management_service"
+      ],
+      "subscription_service": [
+        "billing_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "events_queue"
+      ],
+      "billing_service": [
+        "tenant_db",
+        "payment_gateway",
+        "billing_queue"
+      ]
+    },
+    "PUT": {
+      "gateway": [
+        "tenant_service",
+        "subscription_service"
+      ],
+      "tenant_service": [
+        "user_management_service"
+      ],
+      "subscription_service": [
+        "billing_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "auth_cache",
+        "events_queue"
+      ],
+      "billing_service": [
+        "tenant_db",
+        "session_cache",
+        "billing_queue"
+      ]
+    },
+    "DELETE": {
+      "gateway": [
+        "auth_service",
+        "tenant_service"
+      ],
+      "auth_service": [
+        "user_management_service"
+      ],
+      "tenant_service": [
+        "user_management_service"
+      ],
+      "user_management_service": [
+        "user_db",
+        "events_queue"
+      ]
+    }
+  }
+}

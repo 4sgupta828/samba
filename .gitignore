@@ -19,4 +19,7 @@ simulation_data/
 
 *.json
 
+# Exception: allow topology files
+!topology_bank/**/*.json
+
 logs/
