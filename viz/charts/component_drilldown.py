@@ -1439,6 +1439,10 @@ def create_queue_drilldown(metrics_df: pd.DataFrame, component_id: str,
     """Create drill-down charts for MessageQueue."""
     charts = []
 
+    # Get all metrics for this component to check availability
+    component_metrics = metrics_df[metrics_df['component_id'] == component_id]
+    available_metrics = set(component_metrics['metric_name'].unique())
+
     # Messages visible
     charts.append(dcc.Graph(
         figure=create_metric_chart(
@@ -1471,6 +1475,53 @@ def create_queue_drilldown(metrics_df: pd.DataFrame, component_id: str,
         ),
         config={'displayModeBar': False}
     ))
+
+    # Message processing outcomes (success vs timeout failures)
+    if 'mq.messages.deleted' in available_metrics or 'mq.messages.timeout_failures' in available_metrics:
+        fig = go.Figure()
+
+        # Successfully processed messages
+        if 'mq.messages.deleted' in available_metrics:
+            deleted_data = metrics_df[
+                (metrics_df['component_id'] == component_id) &
+                (metrics_df['metric_name'] == 'mq.messages.deleted')
+            ].sort_values('timestamp')
+
+            fig.add_trace(go.Scatter(
+                x=deleted_data['timestamp'],
+                y=deleted_data['value'].cumsum(),
+                mode='lines',
+                name='Successfully Processed',
+                line=dict(color='green')
+            ))
+
+        # Timeout failures
+        if 'mq.messages.timeout_failures' in available_metrics:
+            timeout_data = metrics_df[
+                (metrics_df['component_id'] == component_id) &
+                (metrics_df['metric_name'] == 'mq.messages.timeout_failures')
+            ].sort_values('timestamp')
+
+            fig.add_trace(go.Scatter(
+                x=timeout_data['timestamp'],
+                y=timeout_data['value'].cumsum(),
+                mode='lines',
+                name='Timeout Failures (DLQ)',
+                line=dict(color='red')
+            ))
+
+        fig.update_layout(
+            title='Message Processing Outcomes',
+            xaxis_title='Time',
+            yaxis_title='Cumulative Count',
+            hovermode='x unified',
+            showlegend=True
+        )
+
+        charts.append(dcc.Graph(
+            figure=fig,
+            config={'displayModeBar': False}
+        ))
 
     return charts
 

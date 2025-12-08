@@ -55,6 +55,20 @@ class MessageQueue(EnrichedComponent):
             description="Age of oldest message in seconds (time-averaged)"
         )
 
+        # Counter for message processing failures (visibility timeout expiration)
+        self.message_timeout_failures_counter = self.meter.create_counter(
+            "mq.messages.timeout_failures",
+            description="Messages that failed processing due to visibility timeout expiration",
+            unit="1"
+        )
+
+        # Counter for successfully processed messages
+        self.messages_deleted_counter = self.meter.create_counter(
+            "mq.messages.deleted",
+            description="Messages successfully processed and deleted",
+            unit="1"
+        )
+
     def _apply_hcl_config(self):
         self.visibility_timeout = self.iac_config.get('visibility_timeout_seconds', 60)
 
@@ -170,16 +184,29 @@ class MessageQueue(EnrichedComponent):
         if msg.id in self.in_flight_messages:
             del self.in_flight_messages[msg.id]
             self._emit_log("INFO", f"Message {msg.id} deleted successfully.")
+            # Track successful message processing
+            self.messages_deleted_counter.add(1, {
+                "component.id": self.id
+            })
         else:
             self._emit_log("WARN", f"Attempted to delete message {msg.id} which was not in-flight.")
             
     def _handle_visibility_timeout(self, msg: Message):
-        """Simulates the visibility timeout for a message."""
+        """Simulates the visibility timeout for a message.
+
+        If processing takes longer than visibility timeout, treat it as a
+        message processing failure (similar to DLQ behavior in production).
+        """
         yield self.env.timeout(self.visibility_timeout)
-        
+
         # If the message is still in-flight after the timeout, it means the consumer failed.
         if msg.id in self.in_flight_messages:
-            self._emit_log("WARN", f"Visibility timeout for message {msg.id} expired. Re-queuing.")
+            self._emit_log("ERROR", f"Visibility timeout for message {msg.id} expired after {self.visibility_timeout}s. Message processing failed.")
             del self.in_flight_messages[msg.id]
-            # Put it back at the front of the queue
-            self.store.items.insert(0, msg)
+
+            # Track as a message processing failure (like DLQ in production)
+            # Do NOT re-queue to avoid infinite retry loops
+            self.message_timeout_failures_counter.add(1, {
+                "component.id": self.id,
+                "failure_reason": "visibility_timeout_expired"
+            })
