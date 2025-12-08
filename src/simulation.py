@@ -14,6 +14,9 @@ from src.core.logging_setup import get_logger
 from src.components.base_component import EnrichedComponent
 
 class Simulation:
+    # Class-level registry for global network link (for network partition checks)
+    _global_network_link = None
+
     def __init__(self, config: dict):
         self.config = config
         self.env = simpy.Environment()
@@ -29,6 +32,16 @@ class Simulation:
         self.output_dir = None
         self.simulation_id = None
         self.component_registry = None
+
+    @classmethod
+    def set_global_network(cls, network_link):
+        """Set the global network link for partition checks."""
+        cls._global_network_link = network_link
+
+    @classmethod
+    def get_global_network(cls):
+        """Get the global network link for partition checks."""
+        return cls._global_network_link
 
     def _periodic_metric_flush(self, interval: int = 60):
         """

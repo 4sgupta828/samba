@@ -170,22 +170,27 @@ class ServicePropagationMixin:
         dep_name: str,
         dep_type: str,
         call_func: Callable,
-        span=None
+        span=None,
+        source_id: str = None,
+        target_id: str = None
     ):
         """
         Call a dependency with full propagation logic.
 
         This is the core method that implements:
-        1. Circuit breaker check
-        2. Retry logic
-        3. Timeout detection
-        4. Error propagation
+        1. Network partition check
+        2. Circuit breaker check
+        3. Retry logic
+        4. Timeout detection
+        5. Error propagation
 
         Args:
             dep_name: Dependency name (for metrics/logging)
             dep_type: Dependency type ('external', 'database', 'cache', 'service')
             call_func: Function that makes the actual call (must be generator for SimPy)
             span: OpenTelemetry span (optional)
+            source_id: Source component ID (for network partition checks)
+            target_id: Target component ID (for network partition checks)
 
         Yields:
             SimPy timeout events
@@ -195,6 +200,22 @@ class ServicePropagationMixin:
             DependencyTimeoutException: If call times out
             DependencyFailureException: If call fails and error propagates
         """
+        # Check for network partition FIRST (before circuit breaker)
+        if source_id and target_id:
+            try:
+                from src.components.network import check_network_partition
+                check_network_partition(source_id, target_id, self._emit_log if hasattr(self, '_emit_log') else None)
+            except Exception as e:
+                # Add span event if available
+                if span:
+                    span.add_event("network_partition", {
+                        "source": source_id,
+                        "target": target_id,
+                        "dependency": dep_name
+                    })
+                # Re-raise the exception
+                raise
+
         # Get circuit breaker and check if request should proceed
         circuit_breaker = self._get_or_create_circuit_breaker(dep_name, dep_type)
 

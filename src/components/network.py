@@ -15,6 +15,42 @@ class NetworkPartitionError(Exception):
     pass
 
 
+def check_network_partition(source_id: str, target_id: str, emit_log_func=None):
+    """
+    Utility function to check if network partition blocks communication.
+
+    This is a shared implementation used across all components to avoid code duplication.
+
+    Args:
+        source_id: ID of the source component
+        target_id: ID of the target component
+        emit_log_func: Optional logging function (e.g., component._emit_log)
+
+    Raises:
+        NetworkPartitionError: If network partition blocks this communication
+    """
+    from src.simulation import Simulation
+    network_link = Simulation.get_global_network()
+    if network_link and network_link.partition_rules:
+        for (partition_source, partition_target) in network_link.partition_rules:
+            # Check if source matches (exact or pod belongs to service)
+            source_matches = (source_id == partition_source or
+                            partition_source in source_id or
+                            source_id.startswith(f"pod_{partition_source}"))
+
+            # Check if target matches
+            target_matches = (target_id == partition_target or
+                            partition_target in target_id or
+                            target_id.startswith(f"pod_{partition_target}"))
+
+            if source_matches and target_matches:
+                # Network partition blocks this communication
+                error_msg = f"Network partition blocks communication from {source_id} to {target_id}"
+                if emit_log_func:
+                    emit_log_func("ERROR", error_msg)
+                raise NetworkPartitionError(error_msg)
+
+
 class NetworkLink(EnrichedComponent):
     """
     Simulates a network link between components with realistic network errors.

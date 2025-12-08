@@ -99,6 +99,19 @@ class RequestGateway(EnrichedComponent):
                 queue_depth=0
             )
 
+    def _check_network_partition(self, target_id: str):
+        """
+        Check if network partition blocks communication to target.
+
+        Args:
+            target_id: ID of the target component
+
+        Raises:
+            NetworkPartitionError: If network partition blocks this communication
+        """
+        from src.components.network import check_network_partition
+        check_network_partition(self.id, target_id, self._emit_log)
+
     def register_service(self, service, request_types):
         """
         Register a service to handle specific request types.
@@ -257,6 +270,9 @@ class RequestGateway(EnrichedComponent):
             return
 
         try:
+            # Check for network partition BEFORE forwarding request
+            self._check_network_partition(target.id)
+
             # Forward the request to the service or compute agent with span context as parameter
             # This prevents concurrent requests from overwriting each other's tracing context
             should_trace = span_ctx is not None

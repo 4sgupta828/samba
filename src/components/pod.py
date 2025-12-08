@@ -165,6 +165,19 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.dependency_duration = None
         self.dependency_errors = None
 
+    def _check_network_partition(self, target_id: str):
+        """
+        Check if network partition blocks communication to target.
+
+        Args:
+            target_id: ID of the target component
+
+        Raises:
+            NetworkPartitionError: If network partition blocks this communication
+        """
+        from src.components.network import check_network_partition
+        check_network_partition(self.id, target_id, self._emit_log)
+
     def _initialize_request_metrics(self):
         """
         Initialize request-level metrics after parent_service is set.
@@ -393,6 +406,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # Continuously pull messages and spawn concurrent processing tasks
         while self.state.operational != "TERMINATED":
             try:
+                # Check for network partition BEFORE consuming from queue
+                self._check_network_partition(queue.id)
+
                 # Wait for a message from the queue
                 msg = yield from queue.receive_message()
 
@@ -850,6 +866,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         if not cache:
             return (False, None, None)
 
+        # Check for network partition BEFORE making cache call
+        self._check_network_partition(cache.id)
+
         # Generate cache key from a larger key space to simulate realistic cache behavior
         # Using 10,000 possible keys ensures cache (max 1000 items) experiences evictions
         cache_key = f"{self.parent_service.service_name}:data:{random.randint(1, 10000)}"
@@ -970,6 +989,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             span: OpenTelemetry span for tracing
         """
         try:
+            # Check for network partition BEFORE making cache call
+            self._check_network_partition(cache.id)
+
             should_trace_cache_set = span is not None
             cache_set_span_ctx = None
             if should_trace_cache_set:
@@ -1016,6 +1038,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             # Make the DB call with retries
             for attempt in range(max_retries):
                 try:
+                    # Check for network partition BEFORE making database call
+                    self._check_network_partition(db.id)
+
                     should_trace_db = span is not None
                     db_span_ctx = None
                     if should_trace_db:
@@ -1113,7 +1138,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             dep_name=conn_name,
                             dep_type='service',
                             call_func=make_service_call,
-                            span=span
+                            span=span,
+                            source_id=self.id,
+                            target_id=conn_target.id
                         )
 
                         # Record success metrics
@@ -1194,7 +1221,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             dep_name=conn_name,
                             dep_type='service',
                             call_func=make_service_call,
-                            span=span
+                            span=span,
+                            source_id=self.id,
+                            target_id=conn_target.id
                         )
 
                         # Record success metrics
@@ -1271,7 +1300,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         dep_name=conn_name,
                         dep_type='external',
                         call_func=make_external_call,
-                        span=span
+                        span=span,
+                        source_id=self.id,
+                        target_id=conn_target.id
                     )
 
                     # Record success metrics (only if metrics are initialized)
@@ -1331,6 +1362,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # Publish to all connected queues
         for queue in queues:
             try:
+                # Check for network partition BEFORE publishing to queue
+                self._check_network_partition(queue.id)
+
                 message_data = f"message_from_{self.parent_service.service_name}_{self.env.now}"
                 yield queue.send_message(message_data)  # send_message returns an event, not a generator
 

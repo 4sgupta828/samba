@@ -696,6 +696,11 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             from src.components.network import NetworkLink
             registry['global_network'] = NetworkLink(sim.env, 'global_network')
 
+        # Register the global network link for partition checks across all components
+        # Import is at module level to avoid UnboundLocalError
+        sim_module = __import__('src.simulation', fromlist=['Simulation'])
+        sim_module.Simulation.set_global_network(registry['global_network'])
+
         # Set target_id to global_network for fault injection
         actual_target_id = 'global_network'
 
