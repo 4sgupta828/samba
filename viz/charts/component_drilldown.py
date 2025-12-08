@@ -10,7 +10,7 @@ import networkx as nx
 import plotly.graph_objects as go
 from dash import dcc, html
 import dash_bootstrap_components as dbc
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Import workload charts
 from charts.workload import (
@@ -864,7 +864,8 @@ def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
 
 
 def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
-                             label_data: Dict, graph: nx.DiGraph = None) -> List[dcc.Graph]:
+                             label_data: Dict, graph: nx.DiGraph = None,
+                             topology_events: Optional[Dict] = None) -> List[dcc.Graph]:
     """Create drill-down charts for Service by aggregating Pod metrics."""
     charts = []
 
@@ -895,6 +896,11 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
         ]
 
     pod_metrics_available = set(pod_metrics['metric_name'].unique()) if not pod_metrics.empty else set()
+
+    # Add pod lifecycle timeline first (before other metrics)
+    pod_timeline = create_pod_lifecycle_timeline(component_id, topology_events, label_data)
+    if pod_timeline:
+        charts.append(pod_timeline)
 
     # Request rate (aggregate from Pod metrics)
     request_metric = f'service.{component_id}.requests'
@@ -2425,8 +2431,173 @@ def create_fault_injection_timeline(label_data: Dict, component_id: str) -> html
     ])
 
 
+def create_pod_lifecycle_timeline(service_id: str, topology_events: Optional[Dict],
+                                  label_data: Optional[Dict] = None) -> Optional[html.Div]:
+    """
+    Create a timeline visualization of pod lifecycle events for a service.
+
+    Args:
+        service_id: Service identifier
+        topology_events: Dictionary with topology events data
+        label_data: Label data containing warmup period info
+
+    Returns:
+        Dash HTML component with pod timeline, or None if no events
+    """
+    if not topology_events or not topology_events.get('by_service'):
+        return None
+
+    service_events = topology_events['by_service'].get(service_id, [])
+
+    if not service_events:
+        return None
+
+    # Get warmup period to convert physical time to simulation time
+    warmup_period = 0
+    if label_data:
+        warmup_period = label_data.get('warmup_period', 0)
+
+    # Convert event timestamps from physical time to simulation time
+    service_events_sim = []
+    for event in service_events:
+        event_sim = event.copy()
+        event_sim['timestamp'] = max(0, event['timestamp'] - warmup_period)
+        service_events_sim.append(event_sim)
+
+    # Get simulation time range from all events (to set consistent x-axis across all services)
+    all_timestamps = [e['timestamp'] for e in topology_events.get('all_events', [])]
+    if all_timestamps:
+        # Convert to simulation time
+        sim_start = max(0, min(all_timestamps) - warmup_period)
+        sim_end = max(0, max(all_timestamps) - warmup_period)
+    else:
+        sim_start = 0
+        sim_end = 300  # Default simulation duration
+
+    # Create timeline figure
+    fig = go.Figure()
+
+    # Event type colors
+    event_colors = {
+        'pod_created': '#10b981',      # Green
+        'pod_state_change': '#3b82f6', # Blue
+        'pod_crashed': '#ef4444',      # Red
+        'pod_terminated': '#6b7280',   # Gray
+        'pod_rescheduled': '#f59e0b',  # Orange
+        'pod_restarted': '#fbbf24'     # Yellow/Amber
+    }
+
+    # Event type symbols
+    event_symbols = {
+        'pod_created': 'circle',
+        'pod_state_change': 'diamond',
+        'pod_crashed': 'x',
+        'pod_terminated': 'square',
+        'pod_rescheduled': 'triangle-up',
+        'pod_restarted': 'circle-open'  # Hollow circle
+    }
+
+    # Group events by pod for y-axis placement
+    pods = sorted(set(e['pod_id'] for e in service_events_sim))
+    pod_to_y = {pod_id: i for i, pod_id in enumerate(pods)}
+
+    # Group events by (timestamp, pod_id) to handle overlapping events
+    from collections import defaultdict
+    events_by_time_pod = defaultdict(list)
+    for event in service_events_sim:
+        key = (event['timestamp'], event['pod_id'])
+        events_by_time_pod[key].append(event)
+
+    # Plot each event with slight offset for overlapping events at same time
+    for event in service_events_sim:
+        event_type = event['event_type']
+        color = event_colors.get(event_type, '#gray')
+        symbol = event_symbols.get(event_type, 'circle')
+
+        # Calculate y-offset for overlapping events (spread vertically)
+        key = (event['timestamp'], event['pod_id'])
+        events_at_time = events_by_time_pod[key]
+        if len(events_at_time) > 1:
+            event_index = events_at_time.index(event)
+            y_offset = (event_index - (len(events_at_time) - 1) / 2) * 0.15  # Spread by ±0.15 units
+        else:
+            y_offset = 0
+
+        hover_text = f"<b>{event_type.replace('_', ' ').title()}</b><br>"
+        hover_text += f"Pod: {event['pod_id']}<br>"
+        hover_text += f"Time: {event['timestamp']:.1f}s<br>"
+        hover_text += f"Node: {event.get('node_id', 'N/A')}<br>"
+        hover_text += f"Details: {event.get('details', '')}"
+        if 'restarts' in event:
+            hover_text += f"<br>Restarts: {event['restarts']}"
+
+        fig.add_trace(go.Scatter(
+            x=[event['timestamp']],
+            y=[pod_to_y[event['pod_id']] + y_offset],
+            mode='markers',
+            marker=dict(
+                size=12,
+                color=color,
+                symbol=symbol,
+                line=dict(width=1, color='white')
+            ),
+            name=event_type.replace('_', ' ').title(),
+            hovertext=hover_text,
+            hoverinfo='text',
+            showlegend=False
+        ))
+
+    # Use full simulation time range for consistent x-axis across all services
+    time_padding = (sim_end - sim_start) * 0.02  # 2% padding
+    x_range = [max(0, sim_start - time_padding), sim_end + time_padding]
+
+    # Update layout to match existing chart style (dark theme)
+    fig.update_layout(
+        title="Pod Lifecycle Timeline",
+        xaxis=dict(
+            title="Time (s)",
+            gridcolor='rgba(255, 255, 255, 0.1)',
+            range=x_range
+        ),
+        yaxis=dict(
+            title="Pods",
+            tickmode='array',
+            tickvals=list(range(len(pods))),
+            ticktext=pods,
+            gridcolor='rgba(255, 255, 255, 0.1)',
+            range=[-0.5, len(pods) - 0.5] if len(pods) > 1 else [-0.5, 0.5]  # Center pods in view
+        ),
+        height=max(200, len(pods) * 30 + 60),
+        hovermode='closest',
+        plot_bgcolor='#374151',
+        paper_bgcolor='#374151',
+        font=dict(color='#f9fafb'),
+        margin=dict(l=150, r=20, t=40, b=40),
+        showlegend=False
+    )
+
+    # Add legend manually with dark theme colors
+    legend_items = []
+    for event_type, color in event_colors.items():
+        count = sum(1 for e in service_events_sim if e['event_type'] == event_type)
+        if count > 0:
+            legend_items.append(
+                html.Span([
+                    html.Span("●", style={'color': color, 'fontSize': '16px', 'marginRight': '5px'}),
+                    html.Span(f"{event_type.replace('_', ' ').title()} ({count})",
+                             style={'color': '#f9fafb'})
+                ], style={'marginRight': '15px', 'display': 'inline-block'})
+            )
+
+    return html.Div([
+        html.Div(legend_items, style={'marginBottom': '10px', 'marginTop': '10px'}),
+        dcc.Graph(figure=fig, config={'displayModeBar': False})
+    ])
+
+
 def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
-                              graph: nx.DiGraph, label_data: Dict):
+                              graph: nx.DiGraph, label_data: Dict,
+                              topology_events: Optional[Dict] = None):
     """
     Create detailed drill-down view for a specific component.
 
@@ -2507,7 +2678,7 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
     charts = []
     if component_type == 'Service':
         # New architecture: Service with Pods
-        charts = create_service_drilldown(metrics_df, component_id, label_data, graph)
+        charts = create_service_drilldown(metrics_df, component_id, label_data, graph, topology_events)
     elif component_type == 'Pod':
         # New architecture: Individual Pod drill-down
         charts = create_pod_drilldown(metrics_df, component_id, label_data)

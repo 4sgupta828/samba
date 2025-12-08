@@ -176,7 +176,8 @@ class DeploymentController(EnrichedComponent):
             env=self.env,
             component_id=pod_id,
             parent_service=service,
-            compute_node=target_node
+            compute_node=target_node,
+            event_tracker=self.event_tracker if hasattr(self, 'event_tracker') else None
         )
 
         self._emit_log("INFO",

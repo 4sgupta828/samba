@@ -24,7 +24,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
     """
 
     def __init__(self, env: simpy.Environment, component_id: str,
-                 parent_service=None, compute_node=None, semantic_profile=None):
+                 parent_service=None, compute_node=None, semantic_profile=None,
+                 event_tracker=None):
         super().__init__(env, component_id, "Pod")
 
         # Initialize ServicePropagationMixin for fault propagation
@@ -33,6 +34,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # NEW: References to parent service and compute node
         self.parent_service = parent_service
         self.compute_node = compute_node
+
+        # Topology event tracker for state change notifications
+        self.event_tracker = event_tracker
 
         # NEW: Semantic profile for resource behavior
         self.semantic_profile = semantic_profile or {}
@@ -324,8 +328,13 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             self.env.process(self._consume_from_queue())
 
         while True:
+            old_state = self.state.operational
             self.state.operational = "STARTING"
             self.restarts += 1
+
+            # Track state change to STARTING
+            if self.event_tracker and old_state != "STARTING":
+                self.event_tracker.track_pod_state_change(self, old_state, "STARTING")
 
             # Comprehensive state reset (simulates process restart)
             self._reset_state_on_restart()
@@ -336,7 +345,13 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             startup_range = config.startup_time_range_seconds
             yield self.env.timeout(random.uniform(startup_range[0], startup_range[1]))  # Simulate startup time
 
+            old_state = self.state.operational
             self.state.operational = "RUNNING"
+
+            # Track state change to RUNNING
+            if self.event_tracker:
+                self.event_tracker.track_pod_state_change(self, old_state, "RUNNING")
+
             self._emit_log("INFO", f"Pod started successfully (Version: {self.version}).")
 
             # Store reference to current running process for interrupt
@@ -348,7 +363,13 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             except simpy.Interrupt as interrupt:
                 if interrupt.cause == "OOMKilled":
                     self._emit_log("FATAL", "OOMKilled: Memory limit exceeded. Restarting...")
+                    old_state = self.state.operational
                     self.state.operational = "CRASHED"
+
+                    # Track crash event
+                    if self.event_tracker:
+                        self.event_tracker.track_pod_crashed(self, "OOMKilled")
+
                     # State will be reset by _reset_state_on_restart() at top of next loop iteration
 
                     # Longer CrashLoopBackOff delay for OOM (includes cleanup, restart policy backoff)

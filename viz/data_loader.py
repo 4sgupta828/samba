@@ -19,6 +19,7 @@ import networkx as nx
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from analysis.impact_analyzer import detect_node_impacts
+from analysis.topology_event_extractor import extract_pod_events_from_snapshots, group_events_by_service, get_service_timeline_summary
 
 
 def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
@@ -243,6 +244,54 @@ def load_semantic_map(episode_path: str) -> Optional[Dict]:
         return None
 
 
+def load_topology_events(episode_path: str) -> Dict:
+    """
+    Load pod lifecycle events from topology_state.jsonl.
+
+    Args:
+        episode_path: Path to episode directory
+
+    Returns:
+        Dictionary with:
+        - all_events: List of all pod lifecycle events
+        - by_service: Events grouped by service_id
+        - service_summaries: Summary stats for each service
+    """
+    topology_state_file = os.path.join(episode_path, "topology_state.jsonl")
+
+    if not os.path.exists(topology_state_file):
+        return {
+            'all_events': [],
+            'by_service': {},
+            'service_summaries': {}
+        }
+
+    try:
+        # Extract events from topology_state.jsonl
+        all_events = extract_pod_events_from_snapshots(topology_state_file)
+
+        # Group by service
+        by_service = group_events_by_service(all_events)
+
+        # Generate summaries for each service
+        service_summaries = {}
+        for service_id, events in by_service.items():
+            service_summaries[service_id] = get_service_timeline_summary(events)
+
+        return {
+            'all_events': all_events,
+            'by_service': by_service,
+            'service_summaries': service_summaries
+        }
+    except Exception as e:
+        print(f"Warning: Failed to load topology events: {e}")
+        return {
+            'all_events': [],
+            'by_service': {},
+            'service_summaries': {}
+        }
+
+
 def load_metrics(data_dir: str) -> pd.DataFrame:
     """
     Load metrics.jsonl into a pandas DataFrame.
@@ -390,10 +439,11 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
     if not os.path.exists(episode_path):
         raise ValueError(f"Episode {episode_id} not found in {data_run_path}")
 
-    # Load label, topology, and semantic map from episode directory
+    # Load label, topology, semantic map, and topology events from episode directory
     label = load_label(episode_path)
     topology = load_topology(episode_path)
     semantic_map = load_semantic_map(episode_path)
+    topology_events = load_topology_events(episode_path)
 
     # Check if filtered topology exists and load it
     filtered_topology_path = os.path.join(episode_path, "topology_filtered.json")
@@ -471,6 +521,7 @@ def load_episode(episode_id: str, data_run_path: str) -> Dict:
         'topology_filtered': topology_filtered,
         'has_filtered_topology': has_filtered_topology,
         'semantic_map': semantic_map,  # NEW: Include semantic overlay
+        'topology_events': topology_events,  # NEW: Include pod lifecycle events
         'metrics_df': metrics_df,
         'topology_graph': topology_graph,
         'topology_graph_filtered': topology_graph_filtered,

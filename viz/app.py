@@ -1377,7 +1377,8 @@ def update_component_drilldown(click_data, episode_id):
             component_id,
             episode_data['metrics_df'],
             episode_data['topology_graph'],
-            episode_data['label']
+            episode_data['label'],
+            episode_data.get('topology_events')
         )
 
         return drilldown_content, True

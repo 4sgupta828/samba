@@ -284,3 +284,19 @@ class TopologyEventTracker:
             snapshot_type="change",
             event=event_desc
         )
+
+    def track_pod_crashed(self, pod, reason):
+        """Track pod crash event - export snapshot."""
+        event_desc = f"pod_crashed:{pod.id}:{reason}"
+        self.exporter.export_snapshot(
+            snapshot_type="change",
+            event=event_desc
+        )
+
+    def track_pod_state_change(self, pod, old_state, new_state):
+        """Track pod state transition - export snapshot."""
+        event_desc = f"pod_state_change:{pod.id}:{old_state}→{new_state}"
+        self.exporter.export_snapshot(
+            snapshot_type="change",
+            event=event_desc
+        )
