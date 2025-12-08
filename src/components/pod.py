@@ -544,14 +544,44 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             queue_depth = len(self.db_connection_pool.queue) if self.db_connection_pool else 0
 
             # Read actual thread pool usage from SimPy
-            actual_threads_active = self.thread_pool.count  # Actual blocked threads
+            actual_threads_held = self.thread_pool.count  # ALL threads holding the resource (working + deadlocked)
             actual_queue_depth = len(self.thread_pool.queue) if hasattr(self.thread_pool, 'queue') else 0
 
             # Pass thread pool size from actual SimPy resource
             self.dynamics.thread_pool_size = self.thread_pool.capacity
 
-            # Override dynamics' calculated concurrent_requests with ACTUAL thread count
-            self.dynamics.concurrent_requests = actual_threads_active
+            # CRITICAL FIX: Estimate WORKING threads from throughput
+            # Problem: thread_pool.count includes both working AND deadlocked (sleeping) threads
+            # Solution: Calculate concurrent requests from throughput and average latency
+            #
+            # concurrent_requests = throughput * avg_latency
+            # This naturally captures only threads doing actual work:
+            # - High throughput + normal latency = many working threads
+            # - Zero throughput (deadlock) = zero concurrent requests
+            # - Partial deadlock (some threads work) = proportional concurrent requests
+            #
+            # This is the correct Little's Law formulation:
+            # L (concurrent) = λ (throughput) * W (latency)
+
+            # Use dynamics' current latency estimate (in seconds)
+            avg_latency_seconds = self.dynamics.latency_ms / 1000.0
+
+            # Calculate concurrent requests from throughput
+            # throughput is per-second (requests_delta), latency is in seconds
+            estimated_concurrent = requests_delta * avg_latency_seconds
+
+            # Smooth the estimate using exponential moving average to prevent sudden jumps
+            alpha = 0.3  # Smoothing factor
+            self.dynamics.concurrent_requests = (
+                alpha * estimated_concurrent +
+                (1 - alpha) * self.dynamics.concurrent_requests
+            )
+
+            # Safety: concurrent requests can't exceed thread pool capacity
+            self.dynamics.concurrent_requests = min(
+                self.dynamics.concurrent_requests,
+                self.thread_pool.capacity
+            )
 
             # Update dynamics engine
             self.dynamics.update(
