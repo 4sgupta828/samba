@@ -635,6 +635,36 @@ app.layout = dbc.Container([
         ], width=12)
     ], className="mb-3"),
 
+    # Compute Node Co-location Panel
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader([
+                    html.Div([
+                        html.H5("🖥️ Compute Node Co-location Analysis", className="mb-0 d-inline-block"),
+                        html.Div([
+                            html.Span("Service in Focus: ", style={'marginRight': '8px', 'fontSize': '0.85rem', 'color': '#6c757d', 'fontWeight': 'bold'}),
+                            dcc.Dropdown(
+                                id='colocation-service-selector',
+                                options=[],  # Will be populated dynamically
+                                value=None,  # Will default to root cause
+                                clearable=False,
+                                className="d-inline-block me-3",
+                                style={'width': '250px', 'display': 'inline-block', 'verticalAlign': 'middle'}
+                            ),
+                        ], className="float-end d-inline-block"),
+                        dbc.Button("Toggle", id="colocation-collapse-button", size="sm", className="float-end me-2", color="secondary")
+                    ], className="clearfix")
+                ]),
+                dbc.Collapse([
+                    dbc.CardBody([
+                        html.Div(id='colocation-panel')
+                    ], style={'padding': '15px'})
+                ], id="colocation-collapse", is_open=False)
+            ], className="shadow-sm")
+        ], width=12)
+    ], className="mb-3"),
+
     # Fault Propagation Analysis Container
     dbc.Row([
         dbc.Col([
@@ -1385,6 +1415,273 @@ def update_component_drilldown(click_data, episode_id):
 
     except Exception as e:
         return html.Div(f"Error loading component details: {str(e)}", className="text-danger"), False
+
+
+@app.callback(
+    Output('colocation-collapse', 'is_open'),
+    Input('colocation-collapse-button', 'n_clicks'),
+    State('colocation-collapse', 'is_open')
+)
+def toggle_colocation_collapse(n_clicks, is_open):
+    """Toggle co-location panel collapse."""
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+@app.callback(
+    Output('colocation-service-selector', 'options'),
+    Output('colocation-service-selector', 'value'),
+    Input('episode-data-store', 'data')
+)
+def populate_colocation_service_selector(episode_id):
+    """Populate service selector dropdown with services that have pods."""
+    if not episode_id or episode_id not in current_episode_data:
+        return [], None
+
+    try:
+        episode_data = current_episode_data[episode_id]
+        graph = episode_data['topology_graph']
+        label_data = episode_data['label']
+        root_cause_node = label_data['root_cause_node']
+
+        # Find all services that have pods
+        services_with_pods = set()
+        for node_id in graph.nodes():
+            node_data = graph.nodes[node_id]
+            if node_data.get('type') == 'Pod':
+                parent_service = node_data.get('parent_service')
+                if parent_service:
+                    services_with_pods.add(parent_service)
+
+        if not services_with_pods:
+            return [{'label': 'No services with pods', 'value': '', 'disabled': True}], None
+
+        # Sort services with root cause first
+        sorted_services = sorted(services_with_pods)
+        if root_cause_node in sorted_services:
+            sorted_services.remove(root_cause_node)
+            sorted_services.insert(0, root_cause_node)
+
+        # Create options with root cause labeled
+        options = []
+        for service in sorted_services:
+            label = f"{service}"
+            if service == root_cause_node:
+                label += " (Root Cause)"
+            options.append({'label': label, 'value': service})
+
+        # Default to root cause
+        return options, root_cause_node
+
+    except Exception as e:
+        print(f"Error populating service selector: {e}")
+        return [], None
+
+
+@app.callback(
+    Output('colocation-panel', 'children'),
+    Input('episode-data-store', 'data'),
+    Input('colocation-service-selector', 'value')
+)
+def update_colocation_panel(episode_id, service_in_focus):
+    """Update compute node co-location panel when episode is loaded or service selection changes."""
+    if not episode_id or episode_id not in current_episode_data:
+        return html.Div("Load an episode to see compute node co-location analysis", className="text-muted")
+
+    try:
+        episode_data = current_episode_data[episode_id]
+        graph = episode_data['topology_graph']
+        label_data = episode_data['label']
+        root_cause_node = label_data['root_cause_node']
+
+        # Use root cause as default if no service selected
+        if not service_in_focus:
+            service_in_focus = root_cause_node
+
+        # Build compute node -> pods -> services mapping
+        compute_nodes = {}
+        pod_to_service = {}
+
+        for node_id in graph.nodes():
+            node_data = graph.nodes[node_id]
+            node_type = node_data.get('type', '')
+
+            # Track pod -> service mapping
+            if node_type == 'Pod':
+                parent_service = node_data.get('parent_service')
+                if parent_service:
+                    pod_to_service[node_id] = parent_service
+
+            # Build compute node mapping
+            if node_type == 'ComputeNode':
+                compute_nodes[node_id] = {
+                    'pods': [],
+                    'services': set(),
+                    'has_focus_service': False
+                }
+
+        # Find all pods and map them to compute nodes
+        for node_id in graph.nodes():
+            node_data = graph.nodes[node_id]
+            if node_data.get('type') == 'Pod':
+                compute_node = node_data.get('compute_node')
+                if compute_node and compute_node in compute_nodes:
+                    parent_service = pod_to_service.get(node_id)
+                    compute_nodes[compute_node]['pods'].append({
+                        'id': node_id,
+                        'service': parent_service
+                    })
+                    if parent_service:
+                        compute_nodes[compute_node]['services'].add(parent_service)
+
+                    # Check if this pod's service is the service in focus
+                    if parent_service == service_in_focus:
+                        compute_nodes[compute_node]['has_focus_service'] = True
+
+        # Find compute nodes with focus service pods
+        focus_nodes = [
+            node_id for node_id, data in compute_nodes.items()
+            if data['has_focus_service']
+        ]
+
+        if not focus_nodes:
+            return dbc.Alert([
+                html.H6("ℹ️ No Pod-Level Co-location", className="alert-heading"),
+                html.P(f"Service '{service_in_focus}' does not have pods placed on compute nodes."),
+                html.P("This may be because the topology doesn't use the service/pod/node model.", className="small")
+            ], color="info")
+
+        # Build the panel content
+        panel_content = []
+
+        # Summary section
+        total_services_on_focus_nodes = set()
+        for node_id in focus_nodes:
+            total_services_on_focus_nodes.update(compute_nodes[node_id]['services'])
+
+        # Remove service in focus to get co-located services
+        colocated_services = total_services_on_focus_nodes - {service_in_focus}
+
+        # Determine if service in focus is the root cause
+        is_root_cause = (service_in_focus == root_cause_node)
+
+        summary_card = dbc.Alert([
+            html.H6("📊 Co-location Summary", className="alert-heading"),
+            html.Div([
+                dbc.Row([
+                    dbc.Col([
+                        html.Strong("Service in Focus: "),
+                        html.Span(service_in_focus, style={'color': '#007bff', 'fontWeight': 'bold'}),
+                        html.Span(" (Root Cause)" if is_root_cause else "",
+                                 style={'fontStyle': 'italic', 'color': 'red', 'marginLeft': '5px'})
+                    ], width=4),
+                    dbc.Col([
+                        html.Strong("Compute Nodes: "),
+                        html.Span(f"{len(focus_nodes)} node(s)"),
+                    ], width=4),
+                    dbc.Col([
+                        html.Strong("Co-located Services: "),
+                        html.Span(f"{len(colocated_services)} service(s)",
+                                 style={'color': '#fd7e14', 'fontWeight': 'bold'} if colocated_services else {})
+                    ], width=4),
+                ])
+            ])
+        ], color="primary", className="mb-3")
+
+        panel_content.append(summary_card)
+
+        # Detail section: Show each compute node
+        for node_id in sorted(compute_nodes.keys()):
+            node_data = compute_nodes[node_id]
+            has_focus_service = node_data['has_focus_service']
+
+            if not node_data['pods']:
+                continue
+
+            # Determine card color and styling
+            if has_focus_service:
+                card_color = "info"
+                header_icon = "🔵"
+                header_suffix = f" (Contains {service_in_focus})"
+            else:
+                card_color = "light"
+                header_icon = "⚪"
+                header_suffix = ""
+
+            # Build pods list grouped by service
+            services_on_node = {}
+            for pod in node_data['pods']:
+                service = pod['service']
+                if service not in services_on_node:
+                    services_on_node[service] = []
+                services_on_node[service].append(pod['id'])
+
+            service_rows = []
+            for service_name in sorted(services_on_node.keys()):
+                pods = services_on_node[service_name]
+                is_focus_service = (service_name == service_in_focus)
+                is_root_cause_service = (service_name == root_cause_node)
+
+                # Determine styling based on service type
+                if is_focus_service:
+                    icon = "🔵"
+                    service_style = {'color': '#007bff', 'fontWeight': 'bold'}
+                elif is_root_cause_service:
+                    icon = "🔴"
+                    service_style = {'color': 'red', 'fontWeight': 'bold'}
+                elif has_focus_service:
+                    icon = "⚠️"
+                    service_style = {'color': '#fd7e14', 'fontWeight': 'bold'}
+                else:
+                    icon = "•"
+                    service_style = {'fontWeight': 'normal'}
+
+                service_rows.append(
+                    dbc.Row([
+                        dbc.Col([
+                            html.Span(f"{icon} "),
+                            html.Strong(service_name, style=service_style),
+                            html.Span(" (Focus)" if is_focus_service else " (Root Cause)" if is_root_cause_service else "",
+                                     className="text-muted small", style={'fontStyle': 'italic', 'marginLeft': '5px'}),
+                            html.Span(f" - {len(pods)} pod{'s' if len(pods) > 1 else ''}", className="text-muted small"),
+                        ], width=4),
+                        dbc.Col([
+                            html.Span(", ".join(pods), className="small", style={'fontFamily': 'monospace'})
+                        ], width=8)
+                    ], className="mb-2")
+                )
+
+            node_card = dbc.Card([
+                dbc.CardHeader([
+                    html.Span(f"{header_icon} ", style={'fontSize': '1.2em'}),
+                    html.Strong(node_id),
+                    html.Span(header_suffix, style={'fontStyle': 'italic', 'marginLeft': '10px'})
+                ]),
+                dbc.CardBody([
+                    html.Div([
+                        html.P([
+                            html.Strong("Services: "),
+                            html.Span(f"{len(services_on_node)} service(s), "),
+                            html.Strong("Total Pods: "),
+                            html.Span(f"{len(node_data['pods'])} pod(s)")
+                        ], className="mb-3"),
+                        html.Div(service_rows)
+                    ])
+                ])
+            ], color=card_color, outline=True, className="mb-3")
+
+            panel_content.append(node_card)
+
+        return html.Div(panel_content)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return dbc.Alert([
+            html.H6("❌ Error generating co-location panel", className="alert-heading"),
+            html.P(f"Error: {str(e)}")
+        ], color="danger")
 
 
 # Dataset Generator Callbacks
