@@ -659,15 +659,30 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     # 7. Inject Fault Programmatically (GRADUAL APPLICATION)
     # Special handling for network_partition
     if cfg.fault_type == 'network_partition':
-        # Network partition requires two components (source and target)
-        # Pick any two components from the topology
-        all_component_ids = list(nx_graph.nodes())
-        if len(all_component_ids) < 2:
-            print(f"Error: Network partition requires at least 2 components, found {len(all_component_ids)}")
+        # Network partition requires two components that COMMUNICATE with each other
+        # Find all edges in the topology (communication paths)
+        all_edges = list(nx_graph.edges())
+        if len(all_edges) < 1:
+            print(f"Error: Network partition requires at least 1 edge (communication path), found {len(all_edges)}")
             return None
 
-        # Randomly select two different components
-        source_id, target_id = random.sample(all_component_ids, 2)
+        # Filter out pod_pool and pod_placement edges (internal infrastructure)
+        # We want to partition actual service-to-service or service-to-database communication
+        valid_edges = [
+            (src, tgt) for src, tgt in all_edges
+            if nx_graph.get_edge_data(src, tgt).get('type') not in ['pod_pool', 'pod_placement']
+        ]
+
+        if not valid_edges:
+            print(f"Error: Network partition requires at least 1 non-infrastructure edge, found none")
+            return None
+
+        # Randomly select one edge to partition
+        source_id, target_id = random.choice(valid_edges)
+
+        # Get edge type for logging
+        edge_data = nx_graph.get_edge_data(source_id, target_id)
+        edge_type = edge_data.get('type', 'unknown') if edge_data else 'unknown'
 
         # Update params with the selected components
         params = cfg.get_failure_params()
@@ -686,8 +701,10 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
         if verbose:
             print(f"\n[Network Partition Setup]")
-            print(f"  Partitioning: {source_id} <-> {target_id}")
-            print(f"  Target component: {actual_target_id}")
+            print(f"  Partitioning edge: {source_id} -> {target_id}")
+            print(f"  Edge type: {edge_type}")
+            print(f"  This will block all communication on this edge")
+            print(f"  Target component for injection: {actual_target_id}")
     else:
         # Normal fault injection: select one component with matching role
         valid_targets = [
