@@ -50,7 +50,7 @@ def load_random_template(bank_dir: str = "data/topology_bank", topology_name: st
         topology_name: Optional specific topology name to load (if None, picks randomly)
 
     Returns:
-        Tuple of (nx_graph, semantic_map)
+        Tuple of (nx_graph, semantic_map, chosen_topology_name)
     """
     if not os.path.exists(bank_dir):
         raise ValueError(f"Topology bank not found at {bank_dir}. Run generate_topology_bank.py first.")
@@ -83,7 +83,7 @@ def load_random_template(bank_dir: str = "data/topology_bank", topology_name: st
     with open(semantic_path, 'r') as f:
         semantic_map = json.load(f)
 
-    return nx_graph, semantic_map
+    return nx_graph, semantic_map, chosen
 
 
 def create_dynamic_workload(nx_graph, base_rps: int = 80, peak_rps: int = 200):
@@ -190,7 +190,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False, replay_params: dict = None, force_root_cause: str = None, force_phi: float = None):
     """
     Generate a single training episode.
 
@@ -208,6 +208,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         llm_provider: LLM provider to use (openai, anthropic) - default: openai
         llm_model: Specific model to use (default: gpt-4 for openai, claude-opus-4-5 for anthropic)
         enable_enhanced_analysis: Enable enhanced fault propagation analysis (latency, config, causal chains)
+        replay_params: Dictionary of parameters to replay a previous run
+        force_root_cause: Force a specific root cause component
+        force_phi: Force a specific fragility index value
 
     Returns:
         Dictionary with episode metadata
@@ -265,6 +268,37 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     sys.stdout = TeeStream(log_file, original_stdout)
     sys.stderr = TeeStream(log_file, original_stderr)
 
+    # REPLAY MODE: Override parameters if replay_params is provided
+    if replay_params:
+        if verbose:
+            print(f"\n[REPLAY MODE ACTIVE]")
+            print(f"  Overriding parameters from replay config...")
+
+        # Override topology selection
+        use_llm_topologies = True  # Replay only works with LLM topologies
+        topology_name = replay_params['topology']['name']
+        # Override topology bank directory if provided
+        if 'bank_dir' in replay_params['topology']:
+            topology_bank_dir = replay_params['topology']['bank_dir']
+
+        # Override fault parameters
+        force_fault_type = replay_params['fault']['type']
+        force_fault_role = replay_params['fault']['role']
+        force_root_cause = replay_params['fault']['root_cause_node']
+
+        # Override capacity parameters
+        force_phi = replay_params['capacity']['phi']
+
+        if verbose:
+            print(f"    Topology: {topology_name}")
+            print(f"    Topology Bank: {topology_bank_dir}")
+            print(f"    Fault: {force_fault_type} ({force_fault_role})")
+            print(f"    Root Cause: {force_root_cause}")
+            print(f"    Phi: {force_phi:.3f}")
+
+    # Apply force_root_cause / force_phi even if not in replay mode
+    # (allows manual override via command line)
+
     # 1. Generate Topology first to see what node types are available
     phase_start = time.time()
 
@@ -275,7 +309,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"  Loading from topology bank: {topology_bank_dir}")
 
         # Load random LLM-designed topology
-        nx_graph, semantic_overlay = load_random_template(topology_bank_dir, topology_name)
+        nx_graph, semantic_overlay, chosen_topology_name = load_random_template(topology_bank_dir, topology_name)
+        # Store the actual topology directory name for replay
+        topology_name = chosen_topology_name
 
         # Get available node roles from the loaded topology
         available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
@@ -491,10 +527,14 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     # 2. Randomize Fragility (Curriculum Learning)
     # phi -> 1.0 means system is tuned "just in time" (metastable)
     # phi -> 0.0 means system is over-provisioned (robust)
-    phi = random.uniform(0.6, 0.95)
-
-    if verbose:
-        print(f"  Fragility Index (phi): {phi:.2f}")
+    if force_phi is not None:
+        phi = force_phi
+        if verbose:
+            print(f"  Fragility Index (phi): {phi:.2f} [FORCED]")
+    else:
+        phi = random.uniform(0.6, 0.95)
+        if verbose:
+            print(f"  Fragility Index (phi): {phi:.2f}")
 
     # 3. Run Capacity Planner
     planner = CapacityPlanner(nx_graph, semantic_overlay)
@@ -678,10 +718,18 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         if not valid_targets:
             raise ValueError(f"Internal error: No valid targets for role '{cfg.fault_target_role}' in episode {episode_id}")
 
-        # UNIFORM SELECTION: Use simple random selection to avoid bias
-        # Previous approach favored nodes with many predecessors (consumers)
-        # Now we want uniform distribution across all valid targets
-        target_id = random.choice(valid_targets)
+        # ROOT CAUSE SELECTION: Use force_root_cause if provided, otherwise random
+        if force_root_cause:
+            # Verify the forced root cause exists in valid targets
+            if force_root_cause not in valid_targets:
+                print(f"Error: Forced root cause '{force_root_cause}' not found in valid targets: {valid_targets}")
+                return None
+            target_id = force_root_cause
+        else:
+            # UNIFORM SELECTION: Use simple random selection to avoid bias
+            # Previous approach favored nodes with many predecessors (consumers)
+            # Now we want uniform distribution across all valid targets
+            target_id = random.choice(valid_targets)
 
         # Calculate connectivity for logging only (not for selection)
         def get_connectivity_info(target_node):
@@ -702,7 +750,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
         if verbose:
             conn_info = get_connectivity_info(target_id)
-            print(f"  Selected target {target_id} (uniform random)")
+            selection_method = "FORCED" if force_root_cause else "uniform random"
+            print(f"  Selected target {target_id} ({selection_method})")
             print(f"    Connectivity: {conn_info['predecessors']} upstream, {conn_info['successors']} downstream, {conn_info['downstream_reach']} 2nd-order downstream")
 
         actual_target_id = target_id
@@ -879,6 +928,59 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         with open(semantic_path, 'w') as f:
             json.dump(semantic_overlay, f, indent=2)
 
+    # NEW: Save run parameters for reproducibility (LLM topologies only)
+    if use_llm_topologies:
+        from datetime import datetime
+        run_params = {
+            'version': '1.0',
+            'generated_at': datetime.now().isoformat(),
+            'episode_id': episode_id,
+            'topology': {
+                'mode': 'llm',
+                'name': topology_name,  # This is the actual directory name in topology_bank
+                'architecture_name': semantic_overlay.get('architecture_name', 'unknown') if semantic_overlay else 'unknown',
+                'bank_dir': topology_bank_dir,
+                'num_nodes': len(nx_graph.nodes),
+                'num_edges': len(nx_graph.edges),
+                'domain': semantic_overlay.get('domain', 'unknown') if semantic_overlay else 'unknown'
+            },
+            'fault': {
+                'type': cfg.fault_type,
+                'role': cfg.fault_target_role,
+                'root_cause_node': actual_target_id,
+                'params': params,
+                'progression': cfg.progression
+            },
+            'capacity': {
+                'target_rps': target_rps,
+                'phi': phi,
+                'phi_forced': force_phi is not None
+            },
+            'scenario': {
+                'level': level,
+                'description': cfg.description,
+                'duration': cfg.duration,
+                'export_interval': cfg.export_interval
+            },
+            'timeline': {
+                'warmup_period': int(warmup_period),
+                'fault_start_time': adjusted_fault_start,
+                'fault_ramp_duration': fault_ramp_duration,
+                'fault_full_effect_time': adjusted_fault_full_effect,
+                'recovery_start_time': adjusted_recovery_start,
+                'recovery_complete_time': adjusted_recovery_complete,
+                'total_duration': adjusted_episode_end
+            },
+            'replay_instructions': {
+                'command': f'python generate_dataset.py --replay {episode_dir}/run_parameters.json --episodes 1 -v',
+                'note': 'Use --replay to reproduce this exact scenario. All randomization will be overridden.'
+            }
+        }
+
+        run_params_path = os.path.join(episode_dir, 'run_parameters.json')
+        with open(run_params_path, 'w') as f:
+            json.dump(run_params, f, indent=2)
+
     if verbose:
         print(f"\n[Ground Truth]")
         print(f"  Label saved to: {label_path}")
@@ -886,6 +988,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         if semantic_overlay:
             semantic_path = os.path.join(episode_dir, 'semantic_map.json')
             print(f"  Semantic map saved to: {semantic_path}")
+        if use_llm_topologies:
+            print(f"  Run parameters saved to: {run_params_path}")
         print(f"  Topology: {topology_data['num_nodes']} nodes, {topology_data['num_edges']} edges")
         if semantic_overlay:
             print(f"  Domain: {semantic_overlay.get('domain', 'unknown')}")
@@ -1060,6 +1164,34 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     with open(timing_file, 'w') as f:
         json.dump(phase_timings, f, indent=2)
 
+    # Add to replay history (LLM topologies only)
+    if use_llm_topologies:
+        try:
+            from src.utils.replay_history import add_to_history
+            run_params_path = os.path.join(episode_dir, 'run_parameters.json')
+            if os.path.exists(run_params_path):
+                # Determine outcome based on validation
+                validation_failed = os.path.exists(os.path.join(episode_dir, '.validation_failed'))
+                outcome = 'unhealthy_baseline' if validation_failed else 'success'
+
+                # Generate tags
+                tags = [cfg.fault_type, actual_target_id]
+                if semantic_overlay and 'domain' in semantic_overlay:
+                    tags.append(semantic_overlay['domain'])
+
+                add_to_history(
+                    run_params_path,
+                    tags=tags,
+                    notes=f"Episode {episode_id}: {cfg.description}",
+                    outcome=outcome
+                )
+
+                if verbose:
+                    print(f"  ✓ Added to replay history: ~/samba/repeatfaults/history.jsonl")
+        except Exception as e:
+            if verbose:
+                print(f"  Warning: Could not add to replay history: {e}")
+
     if verbose:
         print(f"\n{'='*60}")
         print(f"PERFORMANCE TIMING BREAKDOWN")
@@ -1082,16 +1214,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis, replay_params, force_root_cause, force_phi):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model, enable_enhanced_analysis=enable_enhanced_analysis)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model, enable_enhanced_analysis=enable_enhanced_analysis, replay_params=replay_params, force_root_cause=force_root_cause, force_phi=force_phi)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False, replay_params: dict = None, force_root_cause: str = None, force_phi: float = None):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -1109,6 +1241,9 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         llm_provider: LLM provider to use (openai, anthropic)
         llm_model: Specific model to use
         enable_enhanced_analysis: Enable enhanced fault propagation analysis (latency, config, causal chains)
+        replay_params: Dictionary of parameters to replay a previous run
+        force_root_cause: Force a specific root cause component
+        force_phi: Force a specific fragility index value
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -1148,7 +1283,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis, replay_params, force_root_cause, force_phi)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1299,8 +1434,37 @@ def main():
         default=None,
         help='Specific LLM model to use (default: gpt-4o for openai, claude-opus-4-5-20251101 for anthropic)'
     )
+    parser.add_argument(
+        '--replay',
+        type=str,
+        default=None,
+        metavar='PATH',
+        help='Path to run_parameters.json file to replay an exact scenario (e.g., data/old_run/ep_0/run_parameters.json)'
+    )
+    parser.add_argument(
+        '--root-cause',
+        type=str,
+        default=None,
+        help='Force a specific root cause component (e.g., notification_service, db_0)'
+    )
+    parser.add_argument(
+        '--phi',
+        type=float,
+        default=None,
+        help='Force a specific fragility index value (0.0-1.0, where 1.0 is most fragile)'
+    )
 
     args = parser.parse_args()
+
+    # Load replay parameters if provided
+    replay_params = None
+    if args.replay:
+        print(f"[REPLAY MODE] Loading parameters from: {args.replay}")
+        with open(args.replay, 'r') as f:
+            replay_params = json.load(f)
+        print(f"  Topology: {replay_params['topology']['name']}")
+        print(f"  Fault: {replay_params['fault']['type']} on {replay_params['fault']['root_cause_node']}")
+        print(f"  Phi: {replay_params['capacity']['phi']:.3f}")
 
     # Set random seed if provided
     if args.seed is not None:
@@ -1320,7 +1484,10 @@ def main():
         skip_analysis=not args.enable_llm_analysis,  # Invert the flag
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
-        enable_enhanced_analysis=args.enable_enhanced_analysis
+        enable_enhanced_analysis=args.enable_enhanced_analysis,
+        replay_params=replay_params,
+        force_root_cause=args.root_cause,
+        force_phi=args.phi
     )
 
 

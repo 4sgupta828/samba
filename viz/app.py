@@ -75,6 +75,14 @@ generation_state = {
     'error': None
 }
 
+# Global state for replay
+replay_state = {
+    'running': False,
+    'process': None,
+    'start_time': None,
+    'output': []
+}
+
 # Valid fault type and role combinations based on scenario library
 VALID_FAULT_COMBINATIONS = {
     'cpu_saturation': ['service'],
@@ -354,6 +362,70 @@ app.layout = dbc.Container([
                         ]),
                     ])
                 ], id="generator-collapse", is_open=False)
+            ], className="mb-4 shadow-sm")
+        ])
+    ]),
+
+    # Scenario Replay Section (Separate Pane)
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader([
+                    html.H5("🔄 Scenario Replay", className="mb-0 d-inline-block"),
+                    dbc.Button("Toggle", id="replay-collapse-button", size="sm", className="float-end", color="secondary")
+                ]),
+                dbc.Collapse([
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("Select Scenario to Replay:", html_for="replay-scenario-dropdown"),
+                                dcc.Dropdown(
+                                    id='replay-scenario-dropdown',
+                                    options=[],  # Will be populated from history
+                                    value=None,
+                                    placeholder="Select a previous scenario...",
+                                    clearable=False
+                                ),
+                            ], width=5),
+                            dbc.Col([
+                                dbc.Button(
+                                    "🔄 Refresh List",
+                                    id="replay-refresh-button",
+                                    color="secondary",
+                                    outline=True,
+                                    className="mt-4",
+                                    style={'width': '100%'}
+                                ),
+                            ], width=1),
+                            dbc.Col([
+                                dbc.Button(
+                                    "🔄 Replay Scenario",
+                                    id="replay-button",
+                                    color="primary",
+                                    className="mt-4",
+                                    style={'width': '100%'},
+                                    disabled=True
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Cancel",
+                                    id="replay-cancel-button",
+                                    color="danger",
+                                    outline=True,
+                                    className="mt-4",
+                                    style={'width': '100%'},
+                                    disabled=True
+                                ),
+                            ], width=1),
+                            dbc.Col([
+                                html.Div(id='replay-status', className="mt-4")
+                            ], width=3),
+                        ]),
+                    ])
+                ], id="replay-collapse", is_open=False),
+                # Interval for polling replay status
+                dcc.Interval(id='replay-poll-interval', interval=2000, disabled=True)
             ], className="mb-4 shadow-sm")
         ])
     ]),
@@ -1754,6 +1826,329 @@ def cancel_generation(n_clicks):
         ], color="danger")
 
         return error_msg, True, False, True  # Disable polling, enable generate button, disable cancel button
+
+
+# Replay Section Callbacks
+
+@app.callback(
+    Output('replay-collapse', 'is_open'),
+    Input('replay-collapse-button', 'n_clicks'),
+    State('replay-collapse', 'is_open')
+)
+def toggle_replay_collapse(n_clicks, is_open):
+    """Toggle replay section."""
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+@app.callback(
+    Output('replay-scenario-dropdown', 'options'),
+    Input('replay-collapse', 'is_open'),
+    Input('replay-refresh-button', 'n_clicks')
+)
+def populate_replay_scenarios(is_open, n_clicks):
+    """Populate replay scenario dropdown from persistent history file."""
+    if not is_open:
+        return []
+
+    from pathlib import Path
+    import sys
+    import json
+    import os
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    try:
+        from src.utils.replay_history import ReplayHistoryManager
+        manager = ReplayHistoryManager()
+        runs = manager.list_runs()
+
+        print(f"[REPLAY DEBUG] Found {len(runs)} runs in history")
+
+        if not runs:
+            return [{'label': 'No scenarios available yet', 'value': '', 'disabled': True}]
+
+        options = []
+        for run in reversed(runs):  # Most recent first
+            try:
+                # Load the run parameters to get detailed info
+                run_params_path = run['run_params_path']
+
+                # Check if the file still exists
+                if not os.path.exists(run_params_path):
+                    # File was deleted - use cached parameters from history
+                    if 'run_params_cached' not in run:
+                        # Old history format without cached params - skip
+                        continue
+
+                    cached_params = run['run_params_cached']
+                    fault_type = cached_params['fault']['type']
+                    topology = cached_params['topology']['name']
+                    root_cause = cached_params['fault']['root_cause_node']
+                    episode_id = cached_params.get('episode_id', '?')
+                    added_at = run['added_at'][:10]  # Just date
+
+                    label = f"{fault_type} | {topology} | ep_{episode_id} | {root_cause} | {added_at} [cached]"
+
+                    # Use special prefix to indicate this is from cache
+                    # Store the cached params as JSON in the value
+                    value = f"CACHED:{json.dumps(cached_params)}"
+
+                    options.append({
+                        'label': label,
+                        'value': value
+                    })
+                else:
+                    # File exists - use it
+                    with open(run_params_path, 'r') as f:
+                        params = json.load(f)
+
+                    fault_type = params['fault']['type']
+                    topology = params['topology']['name']
+                    root_cause = params['fault']['root_cause_node']
+                    episode_id = params.get('episode_id', '?')
+                    added_at = run['added_at'][:10]  # Just date
+
+                    label = f"{fault_type} | {topology} | ep_{episode_id} | {root_cause} | {added_at}"
+
+                    print(f"[REPLAY DEBUG] Added: {label}")
+
+                    options.append({
+                        'label': label,
+                        'value': run_params_path
+                    })
+            except Exception as e:
+                print(f"[REPLAY DEBUG] Error reading history entry: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+
+        if not options:
+            print(f"[REPLAY DEBUG] No valid options generated")
+            return [{'label': 'No valid scenarios available', 'value': '', 'disabled': True}]
+
+        print(f"[REPLAY DEBUG] Returning {len(options)} options")
+        return options
+
+    except Exception as e:
+        print(f"[REPLAY DEBUG] Error loading replay history: {e}")
+        import traceback
+        traceback.print_exc()
+        return [{'label': f'Error: {str(e)}', 'value': '', 'disabled': True}]
+
+
+@app.callback(
+    Output('replay-button', 'disabled'),
+    Input('replay-scenario-dropdown', 'value')
+)
+def enable_replay_button(scenario_path):
+    """Enable replay button when scenario is selected."""
+    return scenario_path is None
+
+
+@app.callback(
+    Output('replay-status', 'children'),
+    Output('replay-poll-interval', 'disabled'),
+    Input('replay-button', 'n_clicks'),
+    State('replay-scenario-dropdown', 'value'),
+    prevent_initial_call=True
+)
+def start_replay(n_clicks, scenario_value):
+    """Start scenario replay when button is clicked."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    import tempfile
+    import time
+
+    if not n_clicks or not scenario_value:
+        return html.Div(""), True
+
+    global replay_state
+    if replay_state['running']:
+        return dbc.Alert("Replay is already running", color="warning"), False
+
+    try:
+        # Check if this is a cached scenario or a file path
+        if scenario_value.startswith('CACHED:'):
+            # Extract cached parameters
+            cached_json = scenario_value[7:]  # Remove 'CACHED:' prefix
+            cached_params = json.loads(cached_json)
+
+            # Create a temporary file with the cached parameters
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+            json.dump(cached_params, temp_file, indent=2)
+            temp_file.close()
+
+            replay_path = temp_file.name
+            is_cached = True
+        else:
+            # Use the file path directly
+            replay_path = scenario_value
+            is_cached = False
+
+        # Build replay command
+        script_path = Path(__file__).parent.parent / 'generate_dataset.py'
+        # Use absolute path for output directory
+        output_dir = (Path(__file__).parent.parent / 'data' / 'replay_test').resolve()
+
+        cmd = [
+            sys.executable,
+            str(script_path),
+            '--replay', replay_path,
+            '--episodes', '1',
+            '--output', str(output_dir),
+            '--verbose'
+        ]
+
+        # Start the generation script in background
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1
+        )
+
+        # Store replay state
+        replay_state['running'] = True
+        replay_state['process'] = process
+        replay_state['start_time'] = time.time()
+        replay_state['output'] = []
+
+        # Show starting status
+        cache_note = " (using cached params - original data deleted)" if is_cached else ""
+        return dbc.Alert([
+            html.H6("🔄 Replay Started", className="alert-heading"),
+            html.P(f"Replaying scenario in background...{cache_note}"),
+            html.P(f"Command: {' '.join(cmd)}", className="small"),
+            dbc.Spinner(size="sm")
+        ], color="info"), False  # Enable polling
+
+    except Exception as e:
+        return dbc.Alert([
+            html.H6("❌ Failed to Start Replay", className="alert-heading"),
+            html.P(f"Error: {str(e)}")
+        ], color="danger"), True  # Disable polling
+
+
+@app.callback(
+    Output('replay-status', 'children', allow_duplicate=True),
+    Output('replay-poll-interval', 'disabled', allow_duplicate=True),
+    Output('replay-cancel-button', 'disabled'),
+    Output('datarun-dropdown', 'options', allow_duplicate=True),
+    Output('datarun-dropdown', 'value', allow_duplicate=True),
+    Input('replay-poll-interval', 'n_intervals'),
+    prevent_initial_call=True
+)
+def poll_replay_status(n_intervals):
+    """Poll the replay process status."""
+    import time
+
+    global replay_state
+
+    if not replay_state['running']:
+        return dash.no_update, True, True, dash.no_update, dash.no_update
+
+    process = replay_state['process']
+    returncode = process.poll()
+
+    if returncode is None:
+        # Still running
+        elapsed = time.time() - replay_state['start_time']
+        mins, secs = divmod(int(elapsed), 60)
+
+        running_msg = dbc.Alert([
+            html.H6("⏳ Replay In Progress", className="alert-heading"),
+            html.P(f"Elapsed time: {mins}m {secs}s"),
+            dbc.Spinner(size="sm")
+        ], color="info")
+
+        return running_msg, False, False, dash.no_update, dash.no_update  # Keep polling, enable cancel
+
+    else:
+        # Process finished
+        stdout, stderr = process.communicate()
+        replay_state['running'] = False
+        replay_state['process'] = None
+
+        if returncode == 0:
+            # Success - Refresh data run dropdown
+            runs = list_data_runs(BASE_DATA_DIR)
+            options = [
+                {
+                    'label': f"{run['id']} ({run['timestamp']})",
+                    'value': run['path']
+                }
+                for run in runs
+            ]
+            default_value = runs[0]['path'] if runs else None
+
+            success_msg = dbc.Alert([
+                html.H6("✅ Replay Complete!", className="alert-heading"),
+                html.P("Scenario replayed successfully. Data run list refreshed.")
+            ], color="success")
+            return success_msg, True, True, options, default_value  # Stop polling, disable cancel, refresh dropdown
+        else:
+            # Error
+            error_msg = dbc.Alert([
+                html.H6("❌ Replay Failed", className="alert-heading"),
+                html.P(f"Process exited with code: {returncode}"),
+                html.Pre(stderr[-500:] if stderr else "No error output", className="small")
+            ], color="danger")
+            return error_msg, True, True, dash.no_update, dash.no_update  # Stop polling, disable cancel
+
+
+@app.callback(
+    Output('replay-status', 'children', allow_duplicate=True),
+    Output('replay-poll-interval', 'disabled', allow_duplicate=True),
+    Output('replay-cancel-button', 'disabled', allow_duplicate=True),
+    Input('replay-cancel-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+def cancel_replay(n_clicks):
+    """Cancel the running replay process."""
+    import signal
+
+    global replay_state
+
+    if not n_clicks or not replay_state['running']:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    process = replay_state['process']
+
+    try:
+        # Try graceful termination first
+        process.terminate()
+
+        # Give it 2 seconds
+        import time
+        for _ in range(20):
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        # Force kill if still running
+        if process.poll() is None:
+            process.kill()
+
+        replay_state['running'] = False
+        replay_state['process'] = None
+
+        cancel_msg = dbc.Alert([
+            html.H6("⚠️ Replay Cancelled", className="alert-heading"),
+            html.P("Replay has been cancelled by user."),
+        ], color="warning")
+
+        return cancel_msg, True, True  # Stop polling, disable cancel
+
+    except Exception as e:
+        error_msg = dbc.Alert([
+            html.H6("❌ Failed to Cancel", className="alert-heading"),
+            html.P(f"Error: {str(e)}")
+        ], color="danger")
+
+        return error_msg, True, True
 
 
 if __name__ == '__main__':
