@@ -363,7 +363,13 @@ class TrainingFailureInjector:
             revert_func = REVERT_MODES.get(failure_mode)
             if revert_func:
                 print(f"   Using instant revert for '{failure_mode}'")
-                revert_func(target, params)
+                try:
+                    revert_func(target, params)
+                    print(f"   Revert function completed for '{failure_mode}'")
+                except Exception as e:
+                    print(f"   ERROR: Revert function failed for '{failure_mode}': {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"   WARNING: No revert function registered for '{failure_mode}'")
             return

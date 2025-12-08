@@ -25,58 +25,76 @@ class EpisodeConfig:
     def get_failure_params(self) -> dict:
         """
         Get failure parameters based on fault type.
-        Returns appropriate default parameters if not explicitly set.
+        Returns adaptive, randomized parameters for realistic fault injection.
 
-        Note: All fault types return empty dict {} by default.
-        Each fault function loads its defaults from simulation_config.yaml.
-        This avoids circular dependencies and keeps configuration centralized.
+        Philosophy:
+        - Use percentages/ranges instead of fixed values
+        - Randomize within realistic bounds for diversity
+        - Scale to component configuration (thread pools, capacity, etc.)
+        - Parameters set here are defaults; they can be overridden at injection time
         """
         if self.fault_params:
             return self.fault_params
 
+        import random
+
         # Default parameters for each failure type
+        # Use ranges and percentages for more realistic, diverse scenarios
         param_defaults = {
             'cpu_saturation': {
-                'cpu_multiplier': 3.0,
-                'latency_multiplier': 2.0,
-                'cpu_latency_ms': 500
+                # Randomize multipliers for diversity
+                'cpu_multiplier': random.uniform(2.5, 4.0),      # 2.5-4x CPU usage
+                'latency_multiplier': random.uniform(1.5, 3.0),  # 1.5-3x latency
+                'cpu_latency_ms': random.randint(300, 800)       # 300-800ms added latency
             },
             'memory_leak': {
-                'leak_mb_per_request': 0.5
+                # Randomize leak rate for different severities
+                'leak_mb_per_request': random.uniform(0.3, 1.0)  # 0.3-1.0 MB per request
             },
             'inject_latency': {
-                'latency_ms': 2000
+                # Randomize latency for realistic variation
+                'latency_ms': random.randint(1500, 3000)  # 1.5-3 seconds
             },
             'slow_queries': {
-                'wear_factor': 0.5
+                # Randomize wear factor
+                'wear_factor': random.uniform(0.4, 0.7)  # 40-70% wear
             },
             'connection_exhaustion': {
-                'latency_ms': 1000
+                # Randomize added latency
+                'latency_ms': random.randint(800, 1500)  # 0.8-1.5 seconds
             },
             'enable_background_job': {},
             'cache_failure': {},
             'inject_errors': {
-                'error_rate': 0.3
+                # Randomize error rate for different severities
+                'error_rate': random.uniform(0.2, 0.4)  # 20-40% error rate
             },
             'queue_consumer_slowdown': {
-                'latency_ms': 8000  # 8 seconds - exceeds visibility timeout to cause redelivery
+                # Randomize slowdown to exceed visibility timeout variably
+                'latency_ms': random.randint(7000, 10000)  # 7-10 seconds
             },
             # Structural failure modes
             'noisy_neighbor': {
-                'cpu_percent': 100.0  # Pin CPU to 100% on aggressor pod
+                # Randomize CPU contention level (high but not always 100%)
+                'cpu_percent': random.uniform(90.0, 100.0),      # 90-100% CPU
+                'steal_time_multiplier': random.uniform(1.3, 1.8)  # 1.3-1.8x steal time
             },
             'hot_shard': {
-                'target_pod_index': 0,
-                'skew_factor': 0.8  # 80% traffic to hot shard
+                # Pod will be selected randomly at injection time (see modes.py)
+                # Use 'random' to signal random selection
+                'target_pod_index': 'random',
+                # Randomize skew factor for different severities
+                'skew_factor': random.uniform(0.7, 0.9)  # 70-90% traffic to hot pod
             },
             'network_partition': {
-                'source_component_id': None,  # Will be set dynamically
-                'target_component_id': None,   # Will be set dynamically
+                'source_component_id': None,  # Will be set dynamically at injection
+                'target_component_id': None,   # Will be set dynamically at injection
                 'bidirectional': True
             },
             'force_deadlock': {
-                'locked_threads': 10,  # Lock 10 threads
-                'duration': 300.0       # 5 minutes
+                # Percentage-based locking (adaptive to thread pool size)
+                'thread_percentage': random.uniform(0.6, 0.8),  # 60-80% of threads
+                'duration': 300.0  # 5 minutes (fixed duration for consistent observation window)
             }
         }
 

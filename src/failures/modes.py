@@ -478,27 +478,29 @@ def disable_background_job(component: SqlDatabase, params: Dict[str, Any]):
 
 def noisy_neighbor(component, params: Dict[str, Any]):
     """
-    Simulates noisy neighbor by pinning CPU to 100% on the aggressor pod.
+    Simulates noisy neighbor by pinning CPU to high percentage on the aggressor pod.
     This causes resource contention on the shared node, affecting other pods
     on the same node through CPU steal time.
 
     The fault has TWO effects:
-    1. Aggressor pod: CPU pinned to target percentage (e.g., 100%)
+    1. Aggressor pod: CPU pinned to target percentage (e.g., 90-100%)
     2. Co-located pods: Experience CPU steal time due to node contention
 
     Args:
         component: The aggressor Pod or Service (if Service, picks a random pod)
-        params: cpu_percent (default: 100.0), steal_time_multiplier (default: 1.5)
+        params: cpu_percent (default: randomized 90-100%), steal_time_multiplier (default: 1.5)
     """
     # If component is a Service, pick a random pod
     if isinstance(component, Service):
         if not component.pods:
             component._emit_log("WARN", "noisy_neighbor: Service has no pods")
             return
-        target_pod = component.pods[0]  # Pick first pod as aggressor
+        # Pick a random pod as aggressor for diversity
+        import random
+        target_pod = random.choice(component.pods)
         # Store the affected pod ID on the Service for robust revert
         component._noisy_neighbor_pod_id = target_pod.id
-        component._emit_log("INFO", f"noisy_neighbor: Applying to pod {target_pod.id}")
+        component._emit_log("INFO", f"noisy_neighbor: Applying to randomly selected pod {target_pod.id} (out of {len(component.pods)} pods)")
     elif isinstance(component, Pod):
         target_pod = component
         # Store pod ID on itself for consistency
@@ -627,14 +629,26 @@ def hot_shard(component: Service, params: Dict[str, Any]):
 
     Args:
         component: The Service to apply traffic skew to
-        params: target_pod_index (int), skew_factor (float, e.g., 0.8 for 80%)
+        params:
+            - target_pod_index (int or 'random'): Which pod to make hot
+            - skew_factor (float, e.g., 0.8 for 80%): How much traffic to send to hot pod
     """
     if not isinstance(component, Service):
         component._emit_log("WARN", "hot_shard can only be applied to Service components.")
         return
 
+    if not component.pods:
+        component._emit_log("WARN", "hot_shard: Service has no pods")
+        return
+
     target_pod_index = params.get("target_pod_index", 0)
     skew_factor = params.get("skew_factor", 0.8)
+
+    # Support random pod selection
+    if target_pod_index == 'random':
+        import random
+        target_pod_index = random.randint(0, len(component.pods) - 1)
+        component._emit_log("INFO", f"hot_shard: Randomly selected pod index {target_pod_index} (out of {len(component.pods)} pods)")
 
     if target_pod_index >= len(component.pods):
         component._emit_log("ERROR", f"Invalid target_pod_index {target_pod_index} (only {len(component.pods)} pods)")
@@ -720,17 +734,24 @@ def force_deadlock(component, params: Dict[str, Any]):
 
     Args:
         component: The Pod or Service to deadlock (if Service, picks a random pod)
-        params: locked_threads (int, default: 10), duration (float, seconds)
+        params:
+            - locked_threads (int, optional): Absolute number of threads to lock
+            - thread_percentage (float, optional): Percentage of threads to lock (0.0-1.0)
+            - duration (float, seconds): How long to hold threads
+
+    If both locked_threads and thread_percentage are provided, locked_threads takes precedence.
+    If neither is provided, defaults to 70% of thread pool (enough to cause degradation).
     """
-    # If component is a Service, pick a random pod
+    # If component is a Service, pick a random pod for diversity
     if isinstance(component, Service):
         if not component.pods:
             component._emit_log("WARN", "force_deadlock: Service has no pods")
             return
-        target_pod = component.pods[0]  # Pick first pod to deadlock
+        import random
+        target_pod = random.choice(component.pods)
         # Store the affected pod ID on the Service for robust revert
         component._force_deadlock_pod_id = target_pod.id
-        component._emit_log("INFO", f"force_deadlock: Applying to pod {target_pod.id}")
+        component._emit_log("INFO", f"force_deadlock: Applying to randomly selected pod {target_pod.id} (out of {len(component.pods)} pods)")
     elif isinstance(component, Pod):
         target_pod = component
         # Store pod ID on itself for consistency
@@ -739,8 +760,34 @@ def force_deadlock(component, params: Dict[str, Any]):
         component._emit_log("WARN", f"force_deadlock can only be applied to Pod or Service components (got {type(component).__name__})")
         return
 
-    locked_threads = params.get("locked_threads", 10)  # Default to 10 threads
+    # Determine how many threads to lock
+    if "locked_threads" in params:
+        # Explicit thread count provided
+        locked_threads = params["locked_threads"]
+    elif "thread_percentage" in params:
+        # Percentage-based approach
+        thread_percentage = params["thread_percentage"]
+        pool_size = target_pod.thread_pool.capacity
+        locked_threads = max(1, int(pool_size * thread_percentage))
+        target_pod._emit_log("INFO", f"force_deadlock: Locking {thread_percentage*100:.0f}% of {pool_size} threads = {locked_threads} threads")
+    else:
+        # Default: Lock 70% of threads (enough to cause issues but not total failure)
+        pool_size = target_pod.thread_pool.capacity
+        locked_threads = max(1, int(pool_size * 0.7))
+        target_pod._emit_log("INFO", f"force_deadlock: Using default 70% of {pool_size} threads = {locked_threads} threads")
+
     duration = params.get("duration", 300.0)  # 5 minutes default
+
+    # Validate: Can't lock more threads than pool capacity
+    pool_capacity = target_pod.thread_pool.capacity
+    if locked_threads > pool_capacity:
+        target_pod._emit_log("WARN", f"force_deadlock: Requested {locked_threads} threads but pool only has {pool_capacity}. Capping to {pool_capacity}.")
+        locked_threads = pool_capacity
+
+    # Validate: Need at least 1 thread to deadlock
+    if locked_threads < 1:
+        target_pod._emit_log("WARN", f"force_deadlock: Cannot lock {locked_threads} threads. Must lock at least 1.")
+        return
 
     # Initialize zombie process tracking if not exists
     if not hasattr(target_pod, '_zombie_processes'):
@@ -821,6 +868,18 @@ def revert_force_deadlock(component, params: Dict[str, Any]):
     target_pod._zombie_processes = []
 
     target_pod._emit_log("INFO", f"Force deadlock reverted: {interrupted_count} threads released early")
+
+    # Validation: Check that threads were actually released
+    # Schedule a validation check after a short delay to allow interrupts to propagate
+    def validate_release():
+        yield target_pod.env.timeout(0.1)  # Small delay for interrupt propagation
+        active_count = target_pod.thread_pool.count
+        if active_count > 0:
+            target_pod._emit_log("ERROR", f"Deadlock revert validation FAILED: {active_count} threads still held after revert")
+        else:
+            target_pod._emit_log("INFO", f"Deadlock revert validation PASSED: All threads released")
+
+    target_pod.env.process(validate_release())
 
     # Clean up tracking
     del component._force_deadlock_pod_id

@@ -271,8 +271,12 @@ class MetricsDynamicsEngine:
         )
 
         # Phase 3: Add CPU overhead from resource contention
-        # Queue depth causes CPU spike (context switching, lock contention, thrashing)
-        queue_contention_cpu = (self.queue_depth / 10.0) * 10.0  # Each 10 queued requests adds ~10% CPU
+        # Queue depth causes CPU spike ONLY when threads are actively processing
+        # During deadlocks: queue grows but threads are sleeping → minimal CPU
+        # The key insight: queue contention CPU should be proportional to THROUGHPUT, not just queue depth
+        # If throughput is near zero (deadlock), queue doesn't cause CPU spikes
+        active_processing_factor = min(self.throughput_rps / max(self.config.throughput_capacity, 1.0), 1.0)
+        queue_contention_cpu = ((self.queue_depth / 10.0) * 5.0) * active_processing_factor  # Max 5% per 10 queued
 
         # Thread pool saturation causes contention
         # When many threads are blocked on slow I/O, CPU increases from context switching
