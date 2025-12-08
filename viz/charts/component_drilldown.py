@@ -1480,42 +1480,53 @@ def create_queue_drilldown(metrics_df: pd.DataFrame, component_id: str,
     if 'mq.messages.deleted' in available_metrics or 'mq.messages.timeout_failures' in available_metrics:
         fig = go.Figure()
 
-        # Successfully processed messages
+        # Successfully processed messages (cumulative)
         if 'mq.messages.deleted' in available_metrics:
             deleted_data = metrics_df[
                 (metrics_df['component_id'] == component_id) &
                 (metrics_df['metric_name'] == 'mq.messages.deleted')
-            ].sort_values('timestamp')
+            ].copy()
 
-            fig.add_trace(go.Scatter(
-                x=deleted_data['timestamp'],
-                y=deleted_data['value'].cumsum(),
-                mode='lines',
-                name='Successfully Processed',
-                line=dict(color='green')
-            ))
+            if not deleted_data.empty and 'sim_time' in deleted_data.columns:
+                deleted_data = deleted_data.sort_values('sim_time')
+                fig.add_trace(go.Scatter(
+                    x=deleted_data['sim_time'],
+                    y=deleted_data['value'].cumsum(),
+                    mode='lines+markers',
+                    name='Successfully Processed',
+                    line=dict(color='#10b981', width=2),  # Green
+                    marker=dict(size=4)
+                ))
 
-        # Timeout failures
+        # Timeout failures (cumulative)
         if 'mq.messages.timeout_failures' in available_metrics:
             timeout_data = metrics_df[
                 (metrics_df['component_id'] == component_id) &
                 (metrics_df['metric_name'] == 'mq.messages.timeout_failures')
-            ].sort_values('timestamp')
+            ].copy()
 
-            fig.add_trace(go.Scatter(
-                x=timeout_data['timestamp'],
-                y=timeout_data['value'].cumsum(),
-                mode='lines',
-                name='Timeout Failures (DLQ)',
-                line=dict(color='red')
-            ))
+            if not timeout_data.empty and 'sim_time' in timeout_data.columns:
+                timeout_data = timeout_data.sort_values('sim_time')
+                fig.add_trace(go.Scatter(
+                    x=timeout_data['sim_time'],
+                    y=timeout_data['value'].cumsum(),
+                    mode='lines+markers',
+                    name='Timeout Failures (DLQ)',
+                    line=dict(color='#ef4444', width=2),  # Red
+                    marker=dict(size=4)
+                ))
 
+        # Apply consistent styling (same as other queue charts)
         fig.update_layout(
             title='Message Processing Outcomes',
-            xaxis_title='Time',
+            xaxis_title='Time (s)',
             yaxis_title='Cumulative Count',
-            hovermode='x unified',
-            showlegend=True
+            height=200,
+            margin=dict(l=50, r=20, t=40, b=30),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor='#374151',
+            paper_bgcolor='#374151',
+            font=dict(color='#f9fafb')
         )
 
         charts.append(dcc.Graph(
