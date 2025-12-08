@@ -269,6 +269,13 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
     else:  # spring/force-directed (default)
         pos = _calculate_spring_layout(graph)
 
+    # Check if this is a network partition fault and get partition info
+    is_network_partition = label_data.get('fault_type') == 'network_partition'
+    partition_info = label_data.get('network_partition', {}) or label_data.get('fault_params', {})
+    partition_source = partition_info.get('source_component_id', partition_info.get('source_component'))
+    partition_target = partition_info.get('target_component_id', partition_info.get('target_component'))
+    partition_bidirectional = partition_info.get('bidirectional', False)
+
     # Create edge traces with arrows
     edge_traces = []
     edge_annotations = []
@@ -282,19 +289,42 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         edge_data = graph.get_edge_data(source, target)
         edge_type = edge_data.get('type', 'unknown') if edge_data else 'unknown'
 
+        # Check if this edge is the partitioned edge
+        is_partitioned_edge = False
+        if is_network_partition and partition_source and partition_target:
+            # Check for any edge that connects the two partitioned components
+            # (could be service-level or pod-level connections)
+            source_matches = (partition_source in source or source in partition_source)
+            target_matches = (partition_target in target or target in partition_target)
+            reverse_matches = (partition_target in source or source in partition_target) and \
+                            (partition_source in target or target in partition_source)
+
+            if (source_matches and target_matches) or (partition_bidirectional and reverse_matches):
+                is_partitioned_edge = True
+
         # Async edges are dashed, sync are solid
         line_dash = 'dash' if 'async' in edge_type else 'solid'
 
         # Color edges differently based on type
         edge_color = '#9b59b6' if 'async' in edge_type else '#bdc3c7'
+        edge_width = 1.5
+
+        # Highlight partitioned edges with special styling
+        if is_partitioned_edge:
+            edge_color = '#ff4444'  # Bright red
+            line_dash = 'dashdot'   # Special dash pattern
+            edge_width = 3.0        # Thicker line
+            hover_text = f"{source} ⚡ {target}<br>Type: {edge_type}<br>⚠️ NETWORK PARTITION"
+        else:
+            hover_text = f"{source} → {target}<br>Type: {edge_type}"
 
         edge_trace = go.Scatter(
             x=[x0, x1, None],
             y=[y0, y1, None],
             mode='lines',
-            line=dict(width=1.5, color=edge_color, dash=line_dash),
+            line=dict(width=edge_width, color=edge_color, dash=line_dash),
             hoverinfo='text',
-            hovertext=f"{source} → {target}<br>Type: {edge_type}",
+            hovertext=hover_text,
             showlegend=False
         )
         edge_traces.append(edge_trace)
@@ -346,13 +376,28 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
         node_type = node_data.get('type', 'Unknown')
         is_root_cause = (node == root_cause_node)
 
+        # Check if this node is part of the network partition
+        is_partitioned_node = False
+        if is_network_partition and partition_source and partition_target:
+            # Check if this node is one of the partitioned components or their pods
+            if (partition_source in node or node in partition_source or
+                partition_target in node or node in partition_target):
+                is_partitioned_node = True
+
         # NEW: Use semantic name if available
         semantic_name = node_data.get('semantic_name')
         resource_profile = node_data.get('resource_profile')
         domain = node_data.get('domain')
 
         node_colors.append(get_node_color(node_type, is_root_cause))
-        node_sizes.append(get_node_size(node_type, is_root_cause))
+
+        # Slightly enlarge partitioned nodes
+        base_size = get_node_size(node_type, is_root_cause)
+        if is_partitioned_node and not is_root_cause:
+            node_sizes.append(base_size + 5)
+        else:
+            node_sizes.append(base_size)
+
         node_symbols.append(get_node_symbol(node_type))
 
         # Node text (displayed on graph) - use semantic name if available
@@ -362,6 +407,8 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
             display_text = f"{node}"
         if is_root_cause:
             display_text += "<br>⚠️ ROOT CAUSE"
+        elif is_partitioned_node:
+            display_text += "<br>🔌"
         node_text.append(display_text)
 
         # Hover text (additional info)
@@ -377,6 +424,8 @@ def create_topology_chart(graph: nx.DiGraph, label_data: Dict, visible_types: li
             hover_text += f"Domain: {domain}<br>"
         if is_root_cause:
             hover_text += "<b style='color:red'>ROOT CAUSE</b><br>"
+        if is_partitioned_node:
+            hover_text += "<b style='color:orange'>🔌 NETWORK PARTITION</b><br>"
         hover_text += f"<i>Click for details</i>"
         node_hover.append(hover_text)
 

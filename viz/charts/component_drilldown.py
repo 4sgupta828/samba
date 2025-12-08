@@ -2445,8 +2445,26 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
     # Determine if this is the root cause
     is_root_cause = (component_id == label_data.get('root_cause_node'))
 
+    # Check if this is a network partition fault and if this component is affected
+    is_network_partition = label_data.get('fault_type') == 'network_partition'
+    partition_info = label_data.get('network_partition', {}) or label_data.get('fault_params', {})
+    partition_source = partition_info.get('source_component_id', partition_info.get('source_component'))
+    partition_target = partition_info.get('target_component_id', partition_info.get('target_component'))
+    partition_bidirectional = partition_info.get('bidirectional', False)
+
+    # Check if this component is one of the partitioned components
+    is_partitioned_component = False
+    partitioned_from = None
+    if is_network_partition and partition_source and partition_target:
+        if partition_source in component_id or component_id in partition_source:
+            is_partitioned_component = True
+            partitioned_from = partition_target
+        elif partition_target in component_id or component_id in partition_target:
+            is_partitioned_component = True
+            partitioned_from = partition_source
+
     # Create header
-    header = html.Div([
+    header_contents = [
         html.H5(f"Component: {component_id}"),
         html.P([
             html.Strong("Type: "),
@@ -2458,7 +2476,29 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
                 style={'color': 'red' if is_root_cause else 'green'}
             )
         ])
-    ])
+    ]
+
+    # Add network partition banner if this component is affected
+    if is_partitioned_component and partitioned_from:
+        fault_start = label_data.get('fault_start_time', 0)
+        recovery_start = label_data.get('recovery_start_time', 0)
+        direction_symbol = "⟷" if partition_bidirectional else "→"
+
+        partition_banner = dbc.Alert([
+            html.H6("🔌 NETWORK PARTITION DETECTED", className="alert-heading"),
+            html.P([
+                f"This component is partitioned from: ",
+                html.Strong(partitioned_from, style={'fontFamily': 'monospace'}),
+            ], className="mb-2"),
+            html.P([
+                f"Communication between these components is blocked during: ",
+                html.Strong(f"{fault_start}s - {recovery_start}s"),
+            ], className="mb-0", style={'fontSize': '0.9em'}),
+        ], color="danger", className="mt-2 mb-3")
+
+        header_contents.append(partition_banner)
+
+    header = html.Div(header_contents)
 
     # Add fault injection timeline if this is the root cause
     fault_timeline = create_fault_injection_timeline(label_data, component_id) if is_root_cause else html.Div()

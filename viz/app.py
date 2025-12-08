@@ -130,7 +130,11 @@ for fault_type, roles in VALID_FAULT_COMBINATIONS.items():
 
 def create_metadata_card(label_data):
     """Create a card displaying episode metadata and ground truth."""
-    return dbc.Card([
+    # Check if this is a network partition fault
+    is_network_partition = label_data.get('fault_type') == 'network_partition'
+    partition_info = label_data.get('network_partition', {}) or label_data.get('fault_params', {})
+
+    card_contents = [
         dbc.CardHeader(html.H4(f"📋 Episode {label_data['episode']}")),
         dbc.CardBody([
             dbc.Row([
@@ -172,7 +176,36 @@ def create_metadata_card(label_data):
                 ], width=12),
             ]),
         ])
-    ], className="mb-4")
+    ]
+
+    # Add network partition alert if applicable
+    if is_network_partition and partition_info:
+        source = partition_info.get('source_component_id', partition_info.get('source_component', 'Unknown'))
+        target = partition_info.get('target_component_id', partition_info.get('target_component', 'Unknown'))
+        bidirectional = partition_info.get('bidirectional', False)
+
+        partition_alert = dbc.Alert([
+            html.H5("🔌 Network Partition Active", className="alert-heading"),
+            html.Hr(),
+            html.P([
+                html.Strong("Partitioned Components:"),
+                html.Br(),
+                html.Span(f"  • {source} ", style={'fontFamily': 'monospace'}),
+                html.Span("⟷" if bidirectional else "→", style={'color': '#ff6b6b', 'fontSize': '1.2em'}),
+                html.Span(f" {target}", style={'fontFamily': 'monospace'}),
+            ]),
+            html.P([
+                html.Strong("Type: "),
+                html.Span("Bidirectional" if bidirectional else "Unidirectional"),
+                html.Br(),
+                html.Strong("Impact: "),
+                html.Span("All communication between these components is blocked during the fault period"),
+            ], className="mb-0", style={'fontSize': '0.9em'}),
+        ], color="warning", className="mt-3")
+
+        card_contents[1].children.append(partition_alert)
+
+    return dbc.Card(card_contents, className="mb-4")
 
 
 # App layout
