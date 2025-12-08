@@ -132,6 +132,12 @@ class DeploymentController(EnrichedComponent):
             new_pod = self._create_pod_for_service(service)
             if new_pod:
                 service.pods.append(new_pod)
+
+                # CRITICAL: Register newly created pod with topology exporter
+                # This ensures the pod appears in topology snapshots
+                if self.topology_exporter:
+                    self.topology_exporter.register_pod(new_pod)
+
                 self.env.process(new_pod.run())
 
                 self.pod_creation_counter.add(1, {
@@ -244,6 +250,10 @@ class DeploymentController(EnrichedComponent):
             # Track termination event
             if self.topology_exporter and hasattr(self, 'event_tracker'):
                 self.event_tracker.track_pod_terminated(pod, "SCALE_DOWN")
+
+            # Unregister from topology exporter (terminated pods shouldn't appear in snapshots)
+            if self.topology_exporter:
+                self.topology_exporter.unregister_pod(pod)
 
             # Remove from service
             service.pods.remove(pod)

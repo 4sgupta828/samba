@@ -41,16 +41,18 @@ class TopologyAdapter:
     4. Returns a component registry for simulation
     """
 
-    def __init__(self, env, semantic_overlay=None):
+    def __init__(self, env, semantic_overlay=None, topology_exporter=None):
         """
         Initialize the adapter.
 
         Args:
             env: SimPy environment
             semantic_overlay: Optional semantic configuration from SemanticMapper
+            topology_exporter: Optional TopologyStateExporter for pod lifecycle tracking
         """
         self.env = env
         self.semantic_overlay = semantic_overlay or {}
+        self.topology_exporter = topology_exporter
 
     def graph_to_registry(self, G: nx.DiGraph) -> Dict[str, Any]:
         """
@@ -189,7 +191,12 @@ class TopologyAdapter:
                     semantic_profile = semantic_services.get(parent_svc_id, {})
 
             # If still no profile, it will default to "standard" in Pod.__init__
-            component = Pod(self.env, node_id, parent_service=None, compute_node=None, semantic_profile=semantic_profile)
+            # Pass event_tracker if we have a topology_exporter
+            event_tracker = None
+            if self.topology_exporter:
+                from src.telemetry.topology_state_exporter import TopologyEventTracker
+                event_tracker = TopologyEventTracker(self.topology_exporter)
+            component = Pod(self.env, node_id, parent_service=None, compute_node=None, semantic_profile=semantic_profile, event_tracker=event_tracker)
 
             # Apply resource overrides from CapacityPlanner
             overrides = node_data.get('iac_config_overrides', {})
@@ -213,7 +220,7 @@ class TopologyAdapter:
             )
 
         elif component_type == 'DeploymentController':
-            return DeploymentController(self.env, node_id)
+            return DeploymentController(self.env, node_id, topology_exporter=self.topology_exporter)
 
         else:
             print(f"Warning: Unknown component type '{component_type}' for node '{node_id}'")

@@ -190,6 +190,9 @@ def _parse_snapshot_event(event_str: str, timestamp: float, snapshot: Dict) -> O
         pod_id = details.split('@')[0]
     elif '→' in details:
         pod_id = details.split('→')[0].split(':')[-1]
+    else:
+        # For events like "pod_restarted:pod_x:restart#2"
+        pod_id = details.split(':')[0] if ':' in details else details
 
     if not pod_id:
         return None
@@ -204,7 +207,15 @@ def _parse_snapshot_event(event_str: str, timestamp: float, snapshot: Dict) -> O
     if not pod_state:
         return None
 
-    return {
+    # Extract restart count for restart events
+    restart_count = None
+    if event_type == 'pod_restarted' and 'restart#' in details:
+        try:
+            restart_count = int(details.split('restart#')[1])
+        except (ValueError, IndexError):
+            pass
+
+    result = {
         'timestamp': timestamp,
         'event_type': event_type,
         'pod_id': pod_id,
@@ -214,6 +225,11 @@ def _parse_snapshot_event(event_str: str, timestamp: float, snapshot: Dict) -> O
         'operational_state': pod_state.get('operational_state'),
         'details': details
     }
+
+    if restart_count is not None:
+        result['restarts'] = restart_count
+
+    return result
 
 
 def group_events_by_service(events: List[Dict]) -> Dict[str, List[Dict]]:

@@ -691,20 +691,21 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     # 5. Initialize Simulation (bypass IaC parsing)
     sim = Simulation(sim_config)
 
-    # 6. Setup Simulation Environment using Simulation's env (CRITICAL FIX!)
-    # NEW: Pass semantic overlay to adapter
-    adapter = TopologyAdapter(sim.env, semantic_overlay=semantic_overlay)
-    registry = adapter.graph_to_registry(nx_graph)
-    sim.component_registry = registry  # Directly set registry
-
     # Initialize simulation timestamp (normally done in sim.run())
     import time
     now_ns = int(time.time() * 1_000_000_000)
     duration_ns = int(cfg.duration * 1_000_000_000)
     sim.simulation_start_timestamp_ns = now_ns - duration_ns
 
-    # 6.5. Setup Topology State Exporter
+    # 5.5. Setup Topology State Exporter BEFORE creating components
+    # This allows the DeploymentController to receive the exporter and track pod lifecycle events
     topology_exporter = TopologyStateExporter(sim.env, episode_dir)
+
+    # 6. Setup Simulation Environment using Simulation's env (CRITICAL FIX!)
+    # NEW: Pass semantic overlay AND topology_exporter to adapter
+    adapter = TopologyAdapter(sim.env, semantic_overlay=semantic_overlay, topology_exporter=topology_exporter)
+    registry = adapter.graph_to_registry(nx_graph)
+    sim.component_registry = registry  # Directly set registry
 
     # Register all components with the exporter
     for component_id, component in registry.items():

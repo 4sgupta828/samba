@@ -66,6 +66,16 @@ class TopologyStateExporter:
         """Register a pod for tracking."""
         self.pods.append(pod)
 
+    def unregister_pod(self, pod):
+        """
+        Unregister a terminated pod from tracking.
+
+        This ensures terminated pods don't appear in future snapshots.
+        Called when a pod is permanently terminated (not restarting).
+        """
+        if pod in self.pods:
+            self.pods.remove(pod)
+
     def register_node(self, node):
         """Register a compute node for tracking."""
         self.nodes.append(node)
@@ -288,6 +298,14 @@ class TopologyEventTracker:
     def track_pod_crashed(self, pod, reason):
         """Track pod crash event - export snapshot."""
         event_desc = f"pod_crashed:{pod.id}:{reason}"
+        self.exporter.export_snapshot(
+            snapshot_type="change",
+            event=event_desc
+        )
+
+    def track_pod_restarted(self, pod, restart_count):
+        """Track pod restart event - export snapshot."""
+        event_desc = f"pod_restarted:{pod.id}:restart#{restart_count}"
         self.exporter.export_snapshot(
             snapshot_type="change",
             event=event_desc

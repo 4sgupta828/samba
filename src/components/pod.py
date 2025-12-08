@@ -336,6 +336,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             if self.event_tracker and old_state != "STARTING":
                 self.event_tracker.track_pod_state_change(self, old_state, "STARTING")
 
+            # Track restart event (only for restarts > 1, since first one is initial startup)
+            if self.event_tracker and self.restarts > 1:
+                self.event_tracker.track_pod_restarted(self, self.restarts)
+
             # Comprehensive state reset (simulates process restart)
             self._reset_state_on_restart()
 
@@ -394,6 +398,11 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 elif interrupt.cause in ["TERMINATED_FOR_DEPLOYMENT", "TERMINATED_BY_OOMKILLER", "TERMINATED_BY_SCALE_DOWN"]:
                     self.state.operational = "TERMINATED"
                     self._emit_log("INFO", f"Pod terminated: {interrupt.cause}")
+
+                    # Track termination event if not already tracked by caller
+                    if self.event_tracker and interrupt.cause != "TERMINATED_BY_SCALE_DOWN":
+                        # SCALE_DOWN is already tracked by deployment_controller
+                        self.event_tracker.track_pod_terminated(self, interrupt.cause)
 
                     # Remove from node if attached
                     if self.compute_node and self in self.compute_node.pods:
