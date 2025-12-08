@@ -93,10 +93,15 @@ def compute_severity_score(
     distribution_comparison: Dict,
     effect_sizes: Dict,
     pattern_changes: Dict,
-    changepoint: Dict
+    changepoint: Dict,
+    baseline_characterization: Optional[Dict] = None,
+    fault_characterization: Optional[Dict] = None,
+    throughput_context: Optional[Dict] = None
 ) -> Tuple[float, str]:
     """
     Compute composite severity score from all analyses.
+
+    Enhanced with contextual severity scoring to handle 0→X transitions properly.
 
     Args:
         metric_name: Name of metric
@@ -104,10 +109,77 @@ def compute_severity_score(
         effect_sizes: Effect size results
         pattern_changes: Pattern analysis results
         changepoint: Changepoint detection results
+        baseline_characterization: Baseline period characterization (for contextual scoring)
+        fault_characterization: Fault period characterization (for contextual scoring)
+        throughput_context: Throughput context for error rate normalization
 
     Returns:
         (severity_score, severity_class)
     """
+    metric_type, criticality_weight = classify_metric_type(metric_name)
+
+    # === CONTEXTUAL SEVERITY (0→X Fix) ===
+    # If we have characterization data, use contextual severity for 0→X cases
+    if baseline_characterization and fault_characterization:
+        baseline_mean = baseline_characterization.get('location', {}).get('mean', 0.0)
+        fault_mean = fault_characterization.get('location', {}).get('mean', 0.0)
+
+        # Check if this is a 0→X transition
+        if baseline_mean == 0 and fault_mean > 0:
+            try:
+                # Import contextual severity module
+                import sys
+                import os
+                sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'sotaanalyzer'))
+                from contextual_severity import compute_contextual_severity
+
+                baseline_std = baseline_characterization.get('spread', {}).get('std', 0.0)
+                fault_std = fault_characterization.get('spread', {}).get('std', 0.0)
+                relative_change = effect_sizes.get('mean_pct_change', 0.0)
+                cohens_d = effect_sizes.get('cohens_d', 0.0)
+
+                contextual_score, reasoning, details = compute_contextual_severity(
+                    metric_name,
+                    baseline_mean,
+                    fault_mean,
+                    baseline_std,
+                    fault_std,
+                    relative_change,
+                    cohens_d,
+                    throughput_context
+                )
+
+                # Blend contextual score with statistical significance
+                # (contextual handles magnitude, stats handle confidence)
+                location_tests = distribution_comparison.get('location_tests', {})
+                mann_whitney = location_tests.get('mann_whitney_u', {})
+                p_value = mann_whitney.get('p_value', 1.0)
+
+                stat_confidence = 1.0 if p_value < 0.001 else (0.8 if p_value < 0.01 else 0.6)
+
+                # Weight: 70% contextual, 30% statistical confidence
+                final_score = contextual_score * 0.7 + (contextual_score * stat_confidence * 0.3)
+                final_score = min(1.0, final_score)
+
+                # Classify severity
+                if final_score >= 0.7:
+                    severity_class = 'CRITICAL'
+                elif final_score >= 0.5:
+                    severity_class = 'HIGH'
+                elif final_score >= 0.3:
+                    severity_class = 'MEDIUM'
+                elif final_score >= 0.1:
+                    severity_class = 'LOW'
+                else:
+                    severity_class = 'NEGLIGIBLE'
+
+                return float(final_score), severity_class
+
+            except Exception as e:
+                # Fall back to legacy scoring if contextual fails
+                pass
+
+    # === LEGACY SCORING (for non-0→X cases or if contextual unavailable) ===
     metric_type, criticality_weight = classify_metric_type(metric_name)
 
     # Component scores (0-1 scale)
@@ -224,7 +296,8 @@ def analyze_metric_impact(
     metric_name: str,
     times: np.ndarray,
     values: np.ndarray,
-    fault_start_time: float
+    fault_start_time: float,
+    throughput_context: Optional[Dict] = None
 ) -> MetricImpactResult:
     """
     Comprehensive impact analysis for a single metric.
@@ -234,6 +307,7 @@ def analyze_metric_impact(
         times: Array of timestamps
         values: Array of values corresponding to times
         fault_start_time: Time when fault was injected
+        throughput_context: Optional throughput context for error rate normalization
 
     Returns:
         MetricImpactResult with complete analysis
@@ -329,13 +403,16 @@ def analyze_metric_impact(
             changepoint['time'] = None
             changepoint['delay_from_fault'] = None
 
-    # 6. Compute severity score
+    # 6. Compute severity score (with contextual scoring for 0→X)
     severity_score, severity_class = compute_severity_score(
         metric_name,
         dist_comparison,
         effect_sizes,
         pattern_changes,
-        changepoint
+        changepoint,
+        baseline_characterization=baseline_char,
+        fault_characterization=fault_char,
+        throughput_context=throughput_context
     )
 
     # 7. Generate interpretation
@@ -424,7 +501,7 @@ def analyze_all_node_metrics(
 ) -> Dict[str, MetricImpactResult]:
     """
     Analyze all available metrics for a node.
-    NOW INCLUDES pod-level metrics (CPU, memory, thread pools, connection pools).
+    NOW INCLUDES pod-level metrics AND throughput context for error rate normalization.
 
     Args:
         metrics_df: DataFrame with all metrics
@@ -434,7 +511,40 @@ def analyze_all_node_metrics(
     Returns:
         Dictionary mapping metric_name -> MetricImpactResult
     """
-    # Find all metrics for this node
+    # === Collect Throughput Context (for error rate normalization) ===
+    throughput_context = None
+
+    # Look for request metrics to compute throughput
+    request_metrics = metrics_df[
+        (metrics_df['labels'].apply(
+            lambda x: x.get('component.id') == node_id or x.get('service.name') == node_id
+        )) &
+        (metrics_df['name'].str.contains('request', case=False, na=False))
+    ]
+
+    if len(request_metrics) > 0:
+        # Get baseline requests (before fault)
+        baseline_data = request_metrics[
+            request_metrics['labels'].apply(lambda x: x.get('sim.time', 0) < fault_start_time)
+        ]
+        baseline_requests = baseline_data['value'].sum() if 'value' in baseline_data.columns else 0
+
+        # Get fault requests (after fault)
+        fault_data = request_metrics[
+            request_metrics['labels'].apply(lambda x: x.get('sim.time', 0) >= fault_start_time)
+        ]
+        fault_requests = fault_data['value'].sum() if 'value' in fault_data.columns else 0
+
+        # Compute average request rate (assuming 120s fault window)
+        fault_duration = 120  # seconds (typical fault window)
+        if fault_requests > 0:
+            throughput_context = {
+                'baseline_requests': baseline_requests,
+                'fault_requests': fault_requests,
+                'requests_per_sec': fault_requests / fault_duration
+            }
+
+    # === Find all metrics for this node ===
     # Match by EITHER component.id OR service.name (for service-level aggregated metrics from pods)
     node_metrics = metrics_df[
         metrics_df['labels'].apply(
@@ -456,12 +566,13 @@ def analyze_all_node_metrics(
         if len(values) < 10:
             continue
 
-        # Analyze metric
+        # Analyze metric (with throughput context)
         result = analyze_metric_impact(
             metric_name,
             times,
             values,
-            fault_start_time
+            fault_start_time,
+            throughput_context=throughput_context
         )
 
         results[metric_name] = result

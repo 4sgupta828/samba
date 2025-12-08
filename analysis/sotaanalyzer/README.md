@@ -303,6 +303,12 @@ python analyze_sota.py data/data_20251205_181045/ep_0 --mode validation
    - Current signatures are keyword-based (e.g., "cpu" → CPU saturation)
    - Could be more sophisticated with pattern recognition
 
+4. **0→X Problem** (Partially Solved):
+   - Base system treats 0→0.01 and 0→10.0 identically (both show as "10000% increase")
+   - **Solution provided**: `contextual_severity.py` module handles this properly
+   - **Integration pending**: Needs to be connected to main metric analyzer
+   - See `ZERO_TO_X_SOLUTION.md` for details
+
 ### Future Improvements
 
 1. **Dependency Error Analysis**:
