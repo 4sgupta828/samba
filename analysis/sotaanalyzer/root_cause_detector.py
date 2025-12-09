@@ -163,9 +163,19 @@ class RootCauseDetector:
         """
         Identify root cause candidates.
 
+        UPDATED LOGIC (removes leaf node bias):
         A node is a candidate if:
         1. It is impacted (not healthy)
-        2. AND (it is a leaf node OR all its dependencies are healthy)
+        2. AND at least SOME of its dependencies are healthy (not necessarily ALL)
+           - This allows both leaf nodes AND non-leaf nodes with partial dependency failures
+           - Removes the bias toward leaf nodes
+
+        The old logic was:
+        - Leaf node → ALWAYS a candidate
+        - Non-leaf node → candidate only if ALL dependencies are healthy
+
+        This created a strong bias toward leaf nodes because they were automatically
+        included even if they had minimal impact.
 
         Args:
             impacted_nodes: List of impacted node IDs
@@ -175,30 +185,28 @@ class RootCauseDetector:
         Returns:
             List of root cause candidate node IDs (unique)
         """
-        leaf_nodes = self.identify_leaf_nodes()
         candidates = set()  # Use set to avoid duplicates
 
         for node_id in impacted_nodes:
-            # Case 1: Leaf node
-            if node_id in leaf_nodes:
-                candidates.add(node_id)
-                continue
-
-            # Case 2: All dependencies are healthy
             dependencies = self.get_node_dependencies(node_id)
 
+            # Case 1: No dependencies (leaf node)
             if len(dependencies) == 0:
-                # No dependencies (another way to be a leaf)
                 candidates.add(node_id)
                 continue
 
-            # Check if all dependencies are healthy
-            all_healthy = all(
-                dep in healthy_nodes or node_health_map.get(dep, 'UNKNOWN') == 'HEALTHY'
-                for dep in dependencies
+            # Case 2: Has dependencies - check if at least some are healthy
+            # This means the node is showing problems that aren't fully explained
+            # by its dependencies being down
+            healthy_dep_count = sum(
+                1 for dep in dependencies
+                if dep in healthy_nodes or node_health_map.get(dep, 'UNKNOWN') == 'HEALTHY'
             )
 
-            if all_healthy:
+            # Candidate if:
+            # - All dependencies are healthy (original case), OR
+            # - More than 50% of dependencies are healthy (new: allows partial propagation)
+            if healthy_dep_count >= len(dependencies) * 0.5:
                 candidates.add(node_id)
 
         return list(candidates)
@@ -546,7 +554,13 @@ class RootCauseDetector:
         """
         Check if impact times are consistent with candidate being root cause.
 
-        Nodes closer to candidate should be impacted earlier.
+        UPDATED LOGIC (stricter temporal ordering):
+        - Root cause MUST be impacted first (or within a small time window)
+        - Then hop-1 nodes (direct dependencies/dependents)
+        - Then hop-2 nodes, and so on
+        - This enforces causal propagation patterns
+
+        Old logic was too lenient and only checked if nodes were impacted "around the same time".
         """
         if not paths:
             return True
@@ -555,22 +569,54 @@ class RootCauseDetector:
         if candidate_time is None:
             return False
 
-        # Check a sample of paths
-        inconsistent_count = 0
-
-        for impacted_node, distance in paths[:10]:  # Check up to 10 paths
+        # Group paths by distance from candidate
+        paths_by_distance = defaultdict(list)
+        for impacted_node, distance in paths:
             impacted_time = node_first_impact_times.get(impacted_node)
+            if impacted_time is not None:
+                paths_by_distance[distance].append((impacted_node, impacted_time))
 
-            if impacted_time is None:
-                continue
+        # Check temporal ordering by distance (hop count)
+        # Nodes at distance 0 (the candidate itself) should be first
+        # Nodes at distance 1 should be impacted after distance 0
+        # Nodes at distance 2 should be impacted after distance 1, etc.
 
-            # Impacted node should be impacted AFTER (or at same time as) candidate
-            # Allow some tolerance (time_window)
-            if impacted_time < candidate_time - self.time_window:
-                inconsistent_count += 1
+        max_distance = max(paths_by_distance.keys()) if paths_by_distance else 0
+        inconsistent_count = 0
+        total_checks = 0
 
-        # Consider consistent if <20% of paths are inconsistent
-        return inconsistent_count < len(paths) * 0.2
+        for dist in range(max_distance + 1):
+            nodes_at_dist = paths_by_distance.get(dist, [])
+
+            for node_id, node_time in nodes_at_dist:
+                # Distance 0 is the candidate itself - skip
+                if dist == 0:
+                    continue
+
+                # Check: This node should be impacted AFTER the candidate
+                # Use time_window as tolerance (e.g., 5-10s)
+                if node_time < candidate_time - self.time_window:
+                    inconsistent_count += 1
+
+                total_checks += 1
+
+                # Also check hop-by-hop ordering:
+                # Nodes at distance N should be impacted after nodes at distance N-1
+                if dist > 1:
+                    prev_nodes = paths_by_distance.get(dist - 1, [])
+                    if prev_nodes:
+                        # Get earliest impact time at previous hop
+                        earliest_prev = min(t for _, t in prev_nodes)
+                        # Current node should be impacted after (or around) previous hop
+                        # Allow more tolerance for multi-hop propagation
+                        if node_time < earliest_prev - (self.time_window * 0.5):
+                            inconsistent_count += 1
+
+        if total_checks == 0:
+            return True
+
+        # Stricter threshold: consider inconsistent if >10% violations (was 20%)
+        return inconsistent_count < total_checks * 0.1
 
     def _compute_probability(
         self,
@@ -583,14 +629,20 @@ class RootCauseDetector:
     ) -> float:
         """
         Compute composite probability from weighted factors.
+
+        UPDATED WEIGHTS (emphasizes temporal ordering and severity):
+        - Temporal ordering is now MORE important (30% -> time + consistency)
+        - Severity is emphasized (25% -> 30%)
+        - Convergence is slightly reduced (30% -> 25%)
+        - Centrality and signature remain supportive (10% each)
         """
-        # Base weights
+        # Updated weights to emphasize temporal causality
         weights = {
-            'convergence': 0.30,
-            'severity': 0.25,
-            'time': 0.25,
-            'centrality': 0.10,
-            'signature': 0.10
+            'convergence': 0.25,  # Reduced from 0.30
+            'severity': 0.30,     # Increased from 0.25
+            'time': 0.25,         # Same (temporal precedence)
+            'centrality': 0.10,   # Same
+            'signature': 0.10     # Same
         }
 
         probability = (
@@ -601,9 +653,10 @@ class RootCauseDetector:
             signature_score * weights['signature']
         )
 
-        # Penalty for temporal inconsistency
+        # STRICTER penalty for temporal inconsistency (0.7 -> 0.5)
+        # If temporal ordering is violated, this is a major red flag
         if not temporal_consistent:
-            probability *= 0.7
+            probability *= 0.5
 
         return min(1.0, probability)
 

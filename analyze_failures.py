@@ -82,6 +82,12 @@ class FailureAnalyzer:
         # 5. Connection analysis between GT and false positives
         connection_analysis = self._analyze_connections(gt_node, top_candidates[:3])
 
+        # 6. NEW: Temporal ordering check
+        temporal_analysis = self._check_temporal_ordering()
+
+        # 7. NEW: Fault injection severity check
+        injection_analysis = self._check_fault_injection_severity()
+
         return {
             'episode': str(self.episode_dir),
             'ground_truth': gt_node,
@@ -93,6 +99,8 @@ class FailureAnalyzer:
             'false_positives': false_positive_analysis,
             'topology': topology_analysis,
             'connections': connection_analysis,
+            'temporal_ordering': temporal_analysis,
+            'fault_injection_severity': injection_analysis,
             'root_cause_hypothesis': self._generate_hypothesis(
                 gt_metrics,
                 false_positive_analysis,
@@ -318,6 +326,124 @@ class FailureAnalyzer:
 
         return connections
 
+    def _check_temporal_ordering(self) -> Dict:
+        """
+        Check if ground truth was impacted FIRST, before its dependents.
+
+        This is a critical criterion: root cause should show metric changes
+        before any of its downstream dependencies.
+        """
+        if not self.analysis:
+            return {'error': 'No analysis data'}
+
+        gt_node = self.label['root_cause_node']
+        gt_impact_time = None
+
+        # Get ground truth impact time
+        for report in self.analysis.get('node_reports', []):
+            if report['node_id'] == gt_node:
+                gt_impact_time = report.get('first_impact_time')
+                break
+
+        if gt_impact_time is None:
+            return {
+                'valid': False,
+                'reason': 'Ground truth has no recorded impact time'
+            }
+
+        # Get dependents (nodes that call the ground truth)
+        dependents = list(self.graph.predecessors(gt_node))
+
+        # Check if any dependent was impacted BEFORE ground truth
+        violations = []
+        for dep in dependents:
+            for report in self.analysis.get('node_reports', []):
+                if report['node_id'] == dep:
+                    dep_impact_time = report.get('first_impact_time')
+                    if dep_impact_time and dep_impact_time < gt_impact_time:
+                        violations.append({
+                            'node': dep,
+                            'impact_time': dep_impact_time,
+                            'delta': gt_impact_time - dep_impact_time
+                        })
+                    break
+
+        return {
+            'valid': len(violations) == 0,
+            'gt_impact_time': gt_impact_time,
+            'dependents_count': len(dependents),
+            'violations': violations,
+            'reason': f'{len(violations)} dependents were impacted BEFORE ground truth' if violations else 'Temporal ordering is correct'
+        }
+
+    def _check_fault_injection_severity(self) -> Dict:
+        """
+        Check if fault injection was severe enough to impact the ground truth node.
+
+        Examines:
+        1. Whether ground truth node shows ANY impact
+        2. Whether the impact magnitude is proportional to fault severity
+        3. Whether replicas/capacity might have absorbed the fault
+        """
+        if not self.analysis:
+            return {'error': 'No analysis data'}
+
+        gt_node = self.label['root_cause_node']
+        fault_type = self.label.get('fault_type', 'unknown')
+
+        # Get ground truth node data
+        gt_node_data = self.graph.nodes.get(gt_node, {})
+
+        # Get ground truth metrics
+        gt_report = None
+        for report in self.analysis.get('node_reports', []):
+            if report['node_id'] == gt_node:
+                gt_report = report
+                break
+
+        if not gt_report:
+            return {
+                'adequate': False,
+                'reason': 'Ground truth node not in analysis reports'
+            }
+
+        severity_score = gt_report.get('overall_severity_score', 0)
+        health_status = gt_report.get('health_classification', {}).get('health_status', 'UNKNOWN')
+        critical_metrics = gt_report.get('metrics_with_critical_impact', 0)
+        high_metrics = gt_report.get('metrics_with_high_impact', 0)
+
+        # Check if fault was absorbed by replicas/capacity
+        node_type = gt_node_data.get('type', 'Unknown')
+        is_service = node_type in ['InternalService', 'BackgroundService']
+
+        issues = []
+
+        # Issue 1: Ground truth is healthy
+        if health_status == 'HEALTHY':
+            issues.append('Ground truth classified as HEALTHY - fault was not severe enough')
+
+        # Issue 2: Very low severity
+        if severity_score < 0.2:
+            issues.append(f'Very low severity score ({severity_score:.3f}) - fault barely impacted the node')
+
+        # Issue 3: No critical metrics
+        if critical_metrics == 0 and high_metrics == 0:
+            issues.append('No critical or high-severity metrics - fault signature is too weak')
+
+        # Issue 4: Service with replicas might have absorbed fault
+        if is_service and severity_score < 0.5:
+            issues.append('Service-level fault with low severity - replicas may have absorbed the fault')
+
+        return {
+            'adequate': len(issues) == 0,
+            'severity_score': severity_score,
+            'health_status': health_status,
+            'critical_metrics': critical_metrics,
+            'high_metrics': high_metrics,
+            'node_type': node_type,
+            'issues': issues
+        }
+
     def _generate_hypothesis(
         self,
         gt_metrics: Dict,
@@ -335,6 +461,32 @@ class FailureAnalyzer:
                 "(3) Filtered out during preprocessing"
             )
             return hypotheses
+
+        # NEW: Check temporal ordering
+        temporal_check = self._check_temporal_ordering()
+        if not temporal_check.get('valid', False):
+            if temporal_check.get('violations'):
+                viol_details = temporal_check['violations'][0]  # Show first violation
+                hypotheses.append(
+                    f"❌ TEMPORAL ORDER VIOLATION: Ground truth was NOT impacted first! "
+                    f"Node '{viol_details['node']}' was impacted {viol_details['delta']:.1f}s BEFORE ground truth. "
+                    f"This violates causality - root cause must be impacted before its dependents. "
+                    f"Total violations: {len(temporal_check['violations'])}"
+                )
+            else:
+                hypotheses.append(
+                    f"❌ TEMPORAL ISSUE: {temporal_check.get('reason', 'Unknown temporal problem')}"
+                )
+
+        # NEW: Check fault injection severity
+        severity_check = self._check_fault_injection_severity()
+        if not severity_check.get('adequate', False):
+            issues_str = '\n      · '.join(severity_check.get('issues', []))
+            hypotheses.append(
+                f"❌ FAULT INJECTION TOO WEAK:\n      · {issues_str}\n"
+                f"   The fault was not severe enough to critically impact the ground truth node. "
+                f"Fault injection needs to be tuned based on node capacity and topology."
+            )
 
         # Check severity
         severity = gt_metrics.get('overall_severity_score', 0)
@@ -552,6 +704,26 @@ def print_failure_summary(results: List[Dict]):
     print(f"Ground Truth Detected (but not in top-K): {detected}/{total} ({detected/total*100:.1f}%)")
     print()
 
+    # NEW: Temporal ordering violations
+    temporal_violations = sum(
+        1 for r in results
+        if r.get('temporal_ordering', {}).get('valid') == False
+    )
+    if temporal_violations:
+        print(f"⚠️  TEMPORAL ORDER VIOLATIONS: {temporal_violations}/{total} ({temporal_violations/total*100:.1f}%)")
+        print(f"   → Ground truth was NOT impacted first - causality is broken!")
+        print()
+
+    # NEW: Inadequate fault injection
+    weak_injection = sum(
+        1 for r in results
+        if r.get('fault_injection_severity', {}).get('adequate') == False
+    )
+    if weak_injection:
+        print(f"⚠️  WEAK FAULT INJECTION: {weak_injection}/{total} ({weak_injection/total*100:.1f}%)")
+        print(f"   → Fault was not severe enough to critically impact ground truth")
+        print()
+
     # Failure reasons
     print("Common Failure Patterns:")
 
@@ -586,6 +758,48 @@ def print_failure_summary(results: List[Dict]):
     fault_types = Counter(r['fault_type'] for r in results)
     for ft, count in fault_types.most_common():
         print(f"  - {ft}: {count}")
+
+    # NEW: Recommendations
+    print(f"\n{'='*80}")
+    print("RECOMMENDATIONS TO IMPROVE FAULT INJECTION")
+    print(f"{'='*80}\n")
+
+    if weak_injection > 0:
+        print("🔧 FAULT INJECTION IMPROVEMENTS NEEDED:")
+        print()
+        print("1. Make fault injection CAPACITY-AWARE:")
+        print("   - For services with high replica count, inject faults on MULTIPLE pods")
+        print("   - For services with high CPU/memory limits, increase fault severity")
+        print("   - Current approach: fixed fault parameters don't scale with capacity")
+        print()
+        print("2. Make fault injection TOPOLOGY-AWARE:")
+        print("   - Critical path services need HARDER faults to propagate impact")
+        print("   - Leaf services need SEVERE faults since they're endpoints")
+        print("   - Consider node position in topology when setting fault parameters")
+        print()
+        print("3. Ensure fault CRITICALLY impacts the target:")
+        print("   - Target severity should be >= 0.5 for the ground truth node")
+        print("   - At least 1-2 metrics should show CRITICAL impact")
+        print("   - Health status should be IMPACTED or CRITICAL, not HEALTHY")
+        print()
+
+    if temporal_violations > 0:
+        print("🔧 SIMULATION & PROPAGATION IMPROVEMENTS NEEDED:")
+        print()
+        print("1. Verify fault propagation timing:")
+        print("   - Root cause MUST show impact FIRST")
+        print("   - Then direct dependents (hop-1) show impact")
+        print("   - Then hop-2, hop-3, etc. in sequence")
+        print()
+        print("2. Check if simulation is too fast:")
+        print("   - If propagation happens instantaneously, increase delays")
+        print("   - Add realistic processing time to service calls")
+        print("   - Ensure metrics are sampled at appropriate intervals")
+        print()
+        print("3. Review fault injection timing:")
+        print("   - Ensure fault is applied AFTER baseline period")
+        print("   - Allow sufficient time for propagation before measuring")
+        print()
 
 
 if __name__ == "__main__":
