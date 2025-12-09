@@ -1429,6 +1429,28 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
 
+    # Validate generated dataset
+    print(f"\n{'='*60}")
+    print(f"VALIDATING GENERATED DATASET")
+    print(f"{'='*60}")
+
+    try:
+        from validate_simulation_data import validate_dataset
+        from pathlib import Path
+
+        validation_results = validate_dataset(Path(run_dir), verbose=False)
+
+        if validation_results['invalid_episodes'] > 0:
+            print(f"⚠️  WARNING: {validation_results['invalid_episodes']}/{validation_results['total_episodes']} episodes failed validation")
+            print(f"   Invalid episodes may have incomplete data and should be regenerated.")
+            for invalid_dir in validation_results['invalid_dirs']:
+                print(f"   - {invalid_dir}")
+        else:
+            print(f"✅ All {validation_results['valid_episodes']} episodes passed validation")
+    except Exception as e:
+        print(f"⚠️  Could not validate dataset: {e}")
+        print(f"   You can manually validate using: python validate_simulation_data.py {run_dir}")
+
     print(f"\n{'='*60}")
     print(f"Dataset generation complete!")
     print(f"  Run ID: {run_id}")

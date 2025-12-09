@@ -221,6 +221,9 @@ app.layout = dbc.Container([
     # URL location component for handling URL parameters
     dcc.Location(id='url', refresh=False),
 
+    # Store for URL parameters (temporary storage for episode from URL)
+    dcc.Store(id='url-episode-store', data={}),
+
     # Header
     dbc.Row([
         dbc.Col([
@@ -802,23 +805,23 @@ app.layout = dbc.Container([
 # Callbacks
 # NOTE: Data run and episode dropdowns are populated by RCA failure analysis callbacks below
 
-# URL Parameter Handler - Load episode from URL
+# Store for URL parameters (to handle async loading)
+url_episode_store = {}
+
+# URL Parameter Handler - Parse URL and store parameters
 @app.callback(
-    [Output('scope-dropdown', 'value', allow_duplicate=True),
-     Output('datarun-dropdown', 'value', allow_duplicate=True),
-     Output('episode-dropdown', 'value', allow_duplicate=True),
-     Output('load-button', 'n_clicks', allow_duplicate=True)],
-    [Input('url', 'search')],
-    prevent_initial_call='initial_duplicate'
+    Output('url-episode-store', 'data'),
+    Input('url', 'search'),
+    prevent_initial_call=False
 )
-def load_episode_from_url(search):
+def parse_url_parameters(search):
     """
-    Parse URL parameters and load episode if specified.
+    Parse URL parameters and store them for loading.
 
     URL format: ?scope=batch_run&datarun=data_20251208_105225&episode=ep_0
 
-    Note: datarun is just the dataset ID, not the full path.
-    The scope dropdown callback will resolve it to the full path.
+    This callback only parses and stores URL parameters.
+    Other callbacks will read from the store and set dropdown values.
     """
     import dash
     from urllib.parse import parse_qs
@@ -861,12 +864,38 @@ def load_episode_from_url(search):
 
         # Check if it exists
         if not os.path.exists(datarun_path):
-            print(f"Warning: Could not find datarun path for {datarun_id} in scope {scope}")
+            print(f"[parse_url] Warning: Could not find datarun path for {datarun_id} in scope {scope}")
             raise dash.exceptions.PreventUpdate
 
-    # Return values to load the episode
-    # Trigger load button by setting n_clicks to 1
-    return scope, datarun_path, episode, 1
+    print(f"[parse_url] Parsed URL: scope={scope}, datarun={datarun_path}, episode={episode}")
+
+    # Store all parameters for subsequent callbacks to use
+    return {
+        'scope': scope,
+        'datarun': datarun_path,
+        'episode': episode,
+        'trigger_load': True
+    }
+
+
+# Set scope from URL store (datarun will be set by populate_data_runs callback)
+@app.callback(
+    Output('scope-dropdown', 'value', allow_duplicate=True),
+    Input('url-episode-store', 'data'),
+    prevent_initial_call='initial_duplicate'
+)
+def set_scope_from_url(url_store):
+    """Set scope dropdown value from URL parameters."""
+    import dash
+
+    if not url_store or not url_store.get('trigger_load'):
+        raise dash.exceptions.PreventUpdate
+
+    scope = url_store.get('scope')
+
+    print(f"[set_scope_from_url] Setting scope={scope}")
+
+    return scope
 
 
 @app.callback(
@@ -2643,10 +2672,13 @@ def populate_scope_dropdown(_):
 @app.callback(
     Output('datarun-dropdown', 'options'),
     Output('datarun-dropdown', 'value'),
-    Input('scope-dropdown', 'value')
+    Input('scope-dropdown', 'value'),
+    State('url-episode-store', 'data')
 )
-def populate_data_runs_with_scope(scope_dir):
+def populate_data_runs_with_scope(scope_dir, url_store):
     """Populate data run dropdown based on scope."""
+    print(f"[populate_data_runs] scope={scope_dir}, url_store={url_store}")
+
     runs = list_data_runs(BASE_DATA_DIR, scope_dir=scope_dir if scope_dir else None)
     options = [
         {
@@ -2655,7 +2687,17 @@ def populate_data_runs_with_scope(scope_dir):
         }
         for run in runs
     ]
-    default_value = runs[0]['path'] if runs else None
+
+    # Check if we're loading from a URL
+    if url_store and url_store.get('datarun') and url_store.get('trigger_load'):
+        # Set datarun to the value from URL
+        url_datarun = url_store.get('datarun')
+        print(f"[populate_data_runs] URL loading detected, setting datarun={url_datarun}")
+        default_value = url_datarun
+    else:
+        default_value = runs[0]['path'] if runs else None
+        print(f"[populate_data_runs] Setting default value: {default_value}")
+
     return options, default_value
 
 
@@ -2663,9 +2705,10 @@ def populate_data_runs_with_scope(scope_dir):
     Output('episode-dropdown', 'options'),
     Output('episode-dropdown', 'value'),
     Input('datarun-dropdown', 'value'),
-    Input('failed-only-checkbox', 'value')
+    Input('failed-only-checkbox', 'value'),
+    State('url-episode-store', 'data')
 )
-def populate_episodes_with_filter(data_run_path, failed_filter):
+def populate_episodes_with_filter(data_run_path, failed_filter, url_store):
     """Populate episode dropdown with optional failed-only filter."""
     if not data_run_path:
         return [], None
@@ -2673,11 +2716,11 @@ def populate_episodes_with_filter(data_run_path, failed_filter):
     # Check if filter is enabled
     failed_only = failed_filter and 'failed' in failed_filter
 
-    print(f"Populating episodes: data_run={data_run_path}, failed_only={failed_only}, filter_value={failed_filter}")
+    print(f"[populate_episodes] data_run={data_run_path}, failed_only={failed_only}, url_store={url_store}")
 
     episodes = list_episodes(data_run_path, failed_only=failed_only)
 
-    print(f"  Found {len(episodes)} episodes")
+    print(f"[populate_episodes] Found {len(episodes)} episodes")
 
     if len(episodes) == 0 and failed_only:
         # Show a message in the dropdown
@@ -2689,9 +2732,66 @@ def populate_episodes_with_filter(data_run_path, failed_filter):
         default_value = None
     else:
         options = [{'label': ep, 'value': ep} for ep in episodes]
-        default_value = episodes[0] if episodes else None
+
+        # Check if we're loading from a URL - if so, don't set a default value
+        # Let the set_episode_from_url callback handle it
+        if url_store and url_store.get('episode') and url_store.get('trigger_load'):
+            print(f"[populate_episodes] URL loading detected, not setting default value")
+            default_value = None
+        else:
+            default_value = episodes[0] if episodes else None
+            print(f"[populate_episodes] Setting default value: {default_value}")
 
     return options, default_value
+
+
+@app.callback(
+    [Output('episode-dropdown', 'value', allow_duplicate=True),
+     Output('load-button', 'n_clicks', allow_duplicate=True),
+     Output('url-episode-store', 'data', allow_duplicate=True)],
+    [Input('episode-dropdown', 'options')],
+    [State('url-episode-store', 'data'),
+     State('episode-dropdown', 'options')],
+    prevent_initial_call='initial_duplicate'
+)
+def set_episode_from_url(options_trigger, url_store, options):
+    """
+    After episode dropdown options are populated, check if there's a pending
+    episode from URL parameters and set it.
+
+    This callback is triggered ONLY when episode-dropdown options change.
+    It checks if there's a pending episode from URL to load.
+    """
+    import dash
+
+    print(f"[set_episode_from_url] Triggered. url_store={url_store}, options count={len(options) if options else 0}")
+
+    # Check if we have a stored episode to load
+    if not url_store or not url_store.get('episode') or not url_store.get('trigger_load'):
+        print(f"[set_episode_from_url] No stored episode to load, preventing update")
+        raise dash.exceptions.PreventUpdate
+
+    episode = url_store['episode']
+    print(f"[set_episode_from_url] Stored episode: {episode}")
+
+    # Check if the episode is in the options
+    if not options:
+        print(f"[set_episode_from_url] No options available yet, preventing update")
+        raise dash.exceptions.PreventUpdate
+
+    option_values = [opt['value'] for opt in options]
+    print(f"[set_episode_from_url] Available episodes: {option_values}")
+
+    if not any(opt['value'] == episode for opt in options):
+        print(f"[set_episode_from_url] WARNING: Episode {episode} not found in options")
+        # Clear the store to prevent retry loops
+        return dash.no_update, dash.no_update, {}
+
+    print(f"[set_episode_from_url] SUCCESS: Setting episode to {episode} and triggering load")
+
+    # Set the episode value and trigger load
+    # Clear the store so this doesn't trigger again
+    return episode, 1, {}
 
 
 @app.callback(
