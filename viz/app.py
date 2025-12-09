@@ -13,7 +13,9 @@ from flask import Flask
 import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
-from data_loader import list_data_runs, list_episodes, load_episode
+from data_loader import (list_data_runs, list_episodes, load_episode,
+                          is_rca_run, is_rca_failed, has_failure_analysis,
+                          list_scope_directories)
 
 # Import chart modules (will be created)
 from charts.topology import create_topology_chart, extract_zoom_subgraph
@@ -21,11 +23,16 @@ from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
 from charts.fault_propagation import create_fault_propagation_analysis
 from charts.forensic_analysis import create_forensic_analysis
+from charts.failure_analysis import (create_failure_analysis_view,
+                                      create_rca_not_run_message,
+                                      create_rca_success_message)
 
 # Add parent directory to path for analysis imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from analysis.propagation_analyzer import analyze_episode
 from analysis.forensic_analyzer import analyze_episode as forensic_analyze_episode
+from analysis.sotaanalyzer.sota_propagation_analyzer import discover_and_validate_rca
+from analyze_failures import FailureAnalyzer
 
 # Configuration
 # Default to ../data relative to this file's location
@@ -466,6 +473,16 @@ app.layout = dbc.Container([
     # Data run and episode selectors
     dbc.Row([
         dbc.Col([
+            dbc.Label("Scope to Directory:", html_for="scope-dropdown"),
+            dcc.Dropdown(
+                id='scope-dropdown',
+                options=[{'label': 'All Data', 'value': ''}],
+                value='',
+                placeholder="All data directories...",
+                clearable=False
+            ),
+        ], width=2),
+        dbc.Col([
             dbc.Label("Select Data Run:", html_for="datarun-dropdown"),
             dcc.Dropdown(
                 id='datarun-dropdown',
@@ -474,13 +491,23 @@ app.layout = dbc.Container([
                 placeholder="Select a data run...",
                 clearable=False
             ),
-        ], width=3),
+        ], width=2),
         dbc.Col([
             dcc.Clipboard(target_id="datarun-path-text", id="clipboard-datarun"),
             dbc.Button("📋 Copy Path", id="copy-datarun-button", color="secondary", outline=True, size="sm", className="mt-4"),
             html.Div(id="datarun-path-text", style={"display": "none"}),
             html.Div(id="copy-feedback", className="mt-1 small text-success", style={"minHeight": "20px"}),
         ], width=1),
+        dbc.Col([
+            dbc.Label("Filter Episodes:", html_for="failed-only-checkbox"),
+            dbc.Checklist(
+                id='failed-only-checkbox',
+                options=[{'label': ' Show Failed RCA Only', 'value': 'failed'}],
+                value=[],
+                switch=True,
+                className="mt-2"
+            ),
+        ], width=2),
         dbc.Col([
             dbc.Label("Select Episode:", html_for="episode-dropdown"),
             dcc.Dropdown(
@@ -490,7 +517,7 @@ app.layout = dbc.Container([
                 placeholder="Select an episode...",
                 clearable=False
             ),
-        ], width=3),
+        ], width=2),
         dbc.Col([
             dbc.Button("Load Episode", id="load-button", color="primary", className="mt-4", style={'width': '100%'}),
         ], width=2),
@@ -510,6 +537,17 @@ app.layout = dbc.Container([
                 "🔬 Run Forensics",
                 id="analyze-forensic-button",
                 color="info",
+                outline=True,
+                className="mt-4",
+                disabled=True,  # Enabled when episode loaded
+                style={'width': '100%'}
+            ),
+        ], width=2),
+        dbc.Col([
+            dbc.Button(
+                "🚨 RCA Failure Analysis",
+                id="analyze-rca-failure-button",
+                color="danger",
                 outline=True,
                 className="mt-4",
                 disabled=True,  # Enabled when episode loaded
@@ -679,6 +717,13 @@ app.layout = dbc.Container([
         ])
     ], className="mb-3"),
 
+    # RCA Failure Analysis Container
+    dbc.Row([
+        dbc.Col([
+            html.Div(id='rca-failure-analysis-container', style={'display': 'none'})
+        ])
+    ], className="mb-3"),
+
     # Hidden div to store episode data
     dcc.Store(id='episode-data-store'),
 
@@ -692,41 +737,7 @@ app.layout = dbc.Container([
 
 
 # Callbacks
-
-@app.callback(
-    Output('datarun-dropdown', 'options'),
-    Output('datarun-dropdown', 'value'),
-    Input('datarun-dropdown', 'id')  # Trigger on page load
-)
-def populate_data_runs(_):
-    """Populate data run dropdown on page load."""
-    runs = list_data_runs(BASE_DATA_DIR)
-    options = [
-        {
-            'label': f"{run['id']} ({run['timestamp']})",
-            'value': run['path']
-        }
-        for run in runs
-    ]
-    default_value = runs[0]['path'] if runs else None
-    return options, default_value
-
-
-@app.callback(
-    Output('episode-dropdown', 'options'),
-    Output('episode-dropdown', 'value'),
-    Input('datarun-dropdown', 'value')
-)
-def populate_episodes(data_run_path):
-    """Populate episode dropdown when data run is selected."""
-    if not data_run_path:
-        return [], None
-
-    episodes = list_episodes(data_run_path)
-    options = [{'label': ep, 'value': ep} for ep in episodes]
-    default_value = episodes[0] if episodes else None
-    return options, default_value
-
+# NOTE: Data run and episode dropdowns are populated by RCA failure analysis callbacks below
 
 @app.callback(
     Output('datarun-path-text', 'children'),
@@ -2480,6 +2491,243 @@ def cancel_replay(n_clicks):
         ], color="danger")
 
         return error_msg, True, True
+
+
+# ==============================================================================
+# RCA FAILURE ANALYSIS CALLBACKS
+# ==============================================================================
+
+@app.callback(
+    Output('scope-dropdown', 'options'),
+    Input('scope-dropdown', 'id')
+)
+def populate_scope_dropdown(_):
+    """Populate scope directory dropdown."""
+    scope_dirs = list_scope_directories(BASE_DATA_DIR)
+    options = [{'label': 'All Data', 'value': ''}]
+    options.extend([{'label': dir_name, 'value': dir_name} for dir_name in scope_dirs])
+    return options
+
+
+@app.callback(
+    Output('datarun-dropdown', 'options'),
+    Output('datarun-dropdown', 'value'),
+    Input('scope-dropdown', 'value')
+)
+def populate_data_runs_with_scope(scope_dir):
+    """Populate data run dropdown based on scope."""
+    runs = list_data_runs(BASE_DATA_DIR, scope_dir=scope_dir if scope_dir else None)
+    options = [
+        {
+            'label': f"{run['id']} ({run['timestamp']})",
+            'value': run['path']
+        }
+        for run in runs
+    ]
+    default_value = runs[0]['path'] if runs else None
+    return options, default_value
+
+
+@app.callback(
+    Output('episode-dropdown', 'options'),
+    Output('episode-dropdown', 'value'),
+    Input('datarun-dropdown', 'value'),
+    Input('failed-only-checkbox', 'value')
+)
+def populate_episodes_with_filter(data_run_path, failed_filter):
+    """Populate episode dropdown with optional failed-only filter."""
+    if not data_run_path:
+        return [], None
+
+    failed_only = 'failed' in failed_filter if failed_filter else False
+    episodes = list_episodes(data_run_path, failed_only=failed_only)
+    options = [{'label': ep, 'value': ep} for ep in episodes]
+    default_value = episodes[0] if episodes else None
+    return options, default_value
+
+
+@app.callback(
+    Output('analyze-rca-failure-button', 'disabled'),
+    Input('episode-data-store', 'data')
+)
+def update_rca_failure_button_state(episode_data):
+    """Enable RCA failure analysis button when episode loaded."""
+    return episode_data is None
+
+
+@app.callback(
+    [Output('rca-failure-analysis-container', 'children'),
+     Output('rca-failure-analysis-container', 'style')],
+    [Input('analyze-rca-failure-button', 'n_clicks')],
+    [State('datarun-dropdown', 'value'),
+     State('episode-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def run_rca_failure_analysis(n_clicks, datarun, episode):
+    """Run RCA failure analysis and display results."""
+    import json
+    import networkx as nx
+
+    if not n_clicks or not datarun or not episode:
+        return None, {'display': 'none'}
+
+    try:
+        episode_dir = os.path.join(datarun, episode)
+        print(f"Running RCA failure analysis on: {episode_dir}")
+
+        # Step 0: Validate topology integrity
+        try:
+            from data_loader import load_topology
+            topology_data = load_topology(episode_dir)
+
+            # Build graph to check for integrity issues
+            G = nx.DiGraph()
+            for node in topology_data.get('nodes', []):
+                G.add_node(node['id'])
+
+            # Check edges reference valid nodes
+            invalid_edges = []
+            for edge in topology_data.get('edges', []):
+                source = edge.get('source')
+                target = edge.get('target')
+                if source not in G.nodes:
+                    invalid_edges.append(f"source '{source}' not in nodes")
+                if target not in G.nodes:
+                    invalid_edges.append(f"target '{target}' not in nodes")
+
+            if invalid_edges:
+                error_msg = '; '.join(invalid_edges[:3])  # Show first 3
+                print(f"  ⚠️  Topology integrity issues: {error_msg}")
+
+                return dbc.Alert([
+                    html.H5("⚠️ Topology Data Quality Issue", className="alert-heading"),
+                    html.Hr(),
+                    html.P("This episode has a malformed topology. Some edges reference nodes that don't exist in the node list."),
+                    html.P(html.Strong("Issues detected:")),
+                    html.Ul([html.Li(issue) for issue in invalid_edges[:5]]),
+                    html.Hr(),
+                    html.P([
+                        "This usually happens when:",
+                        html.Br(),
+                        "• The topology was not generated correctly",
+                        html.Br(),
+                        "• Topology filtering removed nodes but not their edges",
+                        html.Br(),
+                        "• There's a bug in the topology generation code"
+                    ], className="small"),
+                    html.P(html.Strong("Recommendation: Skip this episode or regenerate the dataset.")),
+                ], color="warning"), {'display': 'block'}
+
+        except Exception as e:
+            print(f"  ⚠️  Error validating topology: {str(e)}")
+            # Continue anyway - let RCA handle it
+
+        # Step 1: Check if RCA has been run
+        if not is_rca_run(episode_dir):
+            print("  RCA not run yet - running discovery mode...")
+
+            # Run RCA discovery mode
+            try:
+                rca_result = discover_and_validate_rca(
+                    episode_dir=episode_dir,
+                    sample_interval=5,
+                    output_file=os.path.join(episode_dir, 'rca_analysis.json'),
+                    create_marker=True,
+                    top_k=5
+                )
+                print("  ✓ RCA discovery mode completed")
+
+                # Check if it succeeded
+                if rca_result['validation_result']['success']:
+                    # RCA succeeded - show success message
+                    ground_truth = rca_result['validation_result']['ground_truth']
+                    rank = rca_result['validation_result']['rank']
+
+                    return create_rca_success_message(ground_truth, rank), {'display': 'block'}
+
+            except nx.NodeNotFound as e:
+                print(f"  ERROR: Topology issue - {str(e)}")
+                return dbc.Alert([
+                    html.H5("⚠️ Topology Issue", className="alert-heading"),
+                    html.Hr(),
+                    html.P(f"Cannot run RCA due to topology data quality issue:"),
+                    html.P(html.Code(str(e))),
+                    html.Hr(),
+                    html.P("The topology has edges referencing nodes that don't exist. This episode should be skipped or regenerated."),
+                ], color="warning"), {'display': 'block'}
+
+            except Exception as e:
+                print(f"  ERROR running RCA: {str(e)}")
+                import traceback
+                traceback.print_exc()
+
+                return dbc.Alert([
+                    html.H5("Error running RCA", className="alert-heading"),
+                    html.Hr(),
+                    html.P(f"Failed to run RCA discovery mode: {str(e)}"),
+                    html.P(html.Small("Check console for full traceback"))
+                ], color="danger"), {'display': 'block'}
+
+        # Step 2: Check if it's a failure (RCA run but not successful)
+        if not is_rca_failed(episode_dir):
+            # RCA succeeded - show success message
+            marker_file = os.path.join(episode_dir, 'RCAInvestigated.marker')
+            with open(marker_file, 'r') as f:
+                marker_data = json.load(f)
+
+            ground_truth = marker_data.get('ground_truth')
+            rank = marker_data.get('rank', 1)
+
+            return create_rca_success_message(ground_truth, rank), {'display': 'block'}
+
+        # Step 3: RCA failed - run failure analysis
+        print("  RCA failed - running failure analysis...")
+
+        # Check if failure analysis already exists
+        failure_analysis_file = os.path.join(episode_dir, 'failure_analysis.json')
+
+        if has_failure_analysis(episode_dir):
+            print("  Loading existing failure analysis...")
+            with open(failure_analysis_file, 'r') as f:
+                failure_result = json.load(f)
+        else:
+            print("  Running new failure analysis...")
+            analyzer = FailureAnalyzer(episode_dir)
+            failure_result = analyzer.analyze()
+
+            # Save for future use
+            with open(failure_analysis_file, 'w') as f:
+                json.dump(failure_result, f, indent=2)
+
+            print(f"  ✓ Failure analysis saved to: {failure_analysis_file}")
+
+        # Step 4: Display failure analysis
+        analysis_view = create_failure_analysis_view(episode_dir, failure_result)
+
+        return analysis_view, {'display': 'block'}
+
+    except Exception as e:
+        print(f"Error in RCA failure analysis: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+        return dbc.Alert([
+            html.H5("Error running RCA failure analysis", className="alert-heading"),
+            html.Hr(),
+            html.P(f"An error occurred: {str(e)}"),
+            html.P("Check console for details.")
+        ], color="danger"), {'display': 'block'}
+
+
+@app.callback(
+    [Output('rca-failure-analysis-container', 'children', allow_duplicate=True),
+     Output('rca-failure-analysis-container', 'style', allow_duplicate=True)],
+    [Input('episode-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def reset_rca_failure_analysis(_):
+    """Hide RCA failure analysis when episode changes."""
+    return None, {'display': 'none'}
 
 
 if __name__ == '__main__':

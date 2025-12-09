@@ -22,7 +22,7 @@ from analysis.impact_analyzer import detect_node_impacts
 from analysis.topology_event_extractor import extract_pod_events_from_snapshots, group_events_by_service, get_service_timeline_summary
 
 
-def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
+def list_data_runs(base_dir: str = "data", scope_dir: Optional[str] = None) -> List[Dict[str, str]]:
     """
     List all available data directories in reverse chronological order.
 
@@ -33,6 +33,7 @@ def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
 
     Args:
         base_dir: Base data directory (default: 'data')
+        scope_dir: Optional scope to specific subdirectory (e.g., 'batch_run')
 
     Returns:
         List of dictionaries with 'id', 'path', and 'timestamp' for each run
@@ -43,6 +44,12 @@ def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
 
     if not os.path.exists(base_dir):
         return []
+
+    # If scope_dir specified, search within that subdirectory
+    if scope_dir:
+        scope_path = os.path.join(base_dir, scope_dir)
+        if os.path.exists(scope_path):
+            base_dir = scope_path
 
     # Pattern for timestamped directories
     pattern = re.compile(r'data_(\d{8})_(\d{6})$')
@@ -132,19 +139,130 @@ def list_data_runs(base_dir: str = "data") -> List[Dict[str, str]]:
     return runs
 
 
-def list_episodes(data_run_path: str) -> List[str]:
+def list_episodes(data_run_path: str, failed_only: bool = False) -> List[str]:
     """
     List all available episodes in a data run directory.
 
     Args:
         data_run_path: Path to data run directory (e.g., 'data/data_20251121_184527')
+        failed_only: If True, only return episodes where RCA failed
 
     Returns:
         List of episode IDs (e.g., ['ep_0', 'ep_1', ...])
     """
     ep_dirs = glob.glob(os.path.join(data_run_path, "ep_*"))
     episodes = sorted([os.path.basename(d) for d in ep_dirs if os.path.isdir(d)])
+
+    if failed_only:
+        # Filter to only episodes with RCA failures
+        filtered_episodes = []
+        for ep in episodes:
+            ep_path = os.path.join(data_run_path, ep)
+            if is_rca_failed(ep_path):
+                filtered_episodes.append(ep)
+        return filtered_episodes
+
     return episodes
+
+
+def is_rca_failed(episode_path: str) -> bool:
+    """
+    Check if RCA failed for this episode.
+
+    Args:
+        episode_path: Path to episode directory
+
+    Returns:
+        True if RCA was run and failed (ground truth not in top-K)
+    """
+    marker_file = os.path.join(episode_path, 'RCAInvestigated.marker')
+
+    if not os.path.exists(marker_file):
+        # RCA not run yet - not considered "failed"
+        return False
+
+    try:
+        with open(marker_file, 'r') as f:
+            marker_data = json.load(f)
+
+        # Check if RCA failed (success = False means not in top-K)
+        return not marker_data.get('success', False)
+
+    except Exception:
+        return False
+
+
+def is_rca_run(episode_path: str) -> bool:
+    """
+    Check if RCA has been run for this episode.
+
+    Args:
+        episode_path: Path to episode directory
+
+    Returns:
+        True if RCA has been run (marker file exists)
+    """
+    marker_file = os.path.join(episode_path, 'RCAInvestigated.marker')
+    return os.path.exists(marker_file)
+
+
+def has_failure_analysis(episode_path: str) -> bool:
+    """
+    Check if failure analysis has been run for this episode.
+
+    Args:
+        episode_path: Path to episode directory
+
+    Returns:
+        True if failure analysis exists
+    """
+    analysis_file = os.path.join(episode_path, 'failure_analysis.json')
+    return os.path.exists(analysis_file)
+
+
+def list_scope_directories(base_dir: str = "data") -> List[str]:
+    """
+    List all subdirectories that could be used for scoping.
+
+    Args:
+        base_dir: Base data directory
+
+    Returns:
+        List of subdirectory names (e.g., ['batch_run', 'test_run', ...])
+    """
+    if not os.path.exists(base_dir):
+        return []
+
+    subdirs = []
+    for item in os.listdir(base_dir):
+        if item.startswith('.'):
+            continue
+
+        item_path = os.path.join(base_dir, item)
+        if os.path.isdir(item_path):
+            # Check if this directory contains episode directories
+            # (either directly or one level deep)
+            has_episodes = False
+
+            # Check direct children
+            if any(d.startswith('ep_') for d in os.listdir(item_path) if os.path.isdir(os.path.join(item_path, d))):
+                has_episodes = True
+            else:
+                # Check one level deeper
+                try:
+                    for subitem in os.listdir(item_path):
+                        subitem_path = os.path.join(item_path, subitem)
+                        if os.path.isdir(subitem_path):
+                            if any(d.startswith('ep_') for d in os.listdir(subitem_path) if os.path.isdir(os.path.join(subitem_path, d))):
+                                has_episodes = True
+                                break
+                except (PermissionError, OSError):
+                    continue
+
+            if has_episodes:
+                subdirs.append(item)
+
+    return sorted(subdirs)
 
 
 def get_episode_data_dir(episode_path: str) -> Optional[str]:

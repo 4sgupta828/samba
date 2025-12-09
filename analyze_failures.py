@@ -67,6 +67,10 @@ class FailureAnalyzer:
         # Get top candidates
         top_candidates = self.marker.get('top_k_candidates', []) if self.marker else []
 
+        # Extract dataset directory name (e.g., data_20251122_161023)
+        # Episode dir is like: data/batch_run/data_20251122_161023/ep_0
+        dataset_dir = self.episode_dir.parent.name
+
         # 1. Check if ground truth was detected at all
         gt_in_candidates = self._find_ground_truth_in_analysis()
 
@@ -90,6 +94,8 @@ class FailureAnalyzer:
 
         return {
             'episode': str(self.episode_dir),
+            'episode_name': self.episode_dir.name,
+            'dataset_dir': dataset_dir,
             'ground_truth': gt_node,
             'fault_type': fault_type,
             'top_3_candidates': top_candidates[:3],
@@ -603,8 +609,10 @@ def analyze_all_failures(base_dir: str = 'data/batch_run'):
     # Analyze each failure
     results = []
     for i, episode_dir in enumerate(failures, 1):
+        # Extract dataset directory (parent of episode)
+        dataset_name = episode_dir.parent.name
         print(f"\n{'='*80}")
-        print(f"FAILURE #{i}: {episode_dir.name}")
+        print(f"FAILURE #{i}: {dataset_name}/{episode_dir.name}")
         print(f"{'='*80}\n")
 
         try:
@@ -631,6 +639,8 @@ def analyze_all_failures(base_dir: str = 'data/batch_run'):
 
 def print_failure_analysis(result: Dict):
     """Print detailed analysis for a single failure."""
+    print(f"Dataset: {result.get('dataset_dir', 'Unknown')}")
+    print(f"Episode: {result.get('episode_name', 'Unknown')}")
     print(f"Ground Truth: {result['ground_truth']}")
     print(f"Fault Type: {result['fault_type']}")
     print(f"Ground Truth Detected: {'Yes' if result['ground_truth_detected'] else 'No'}")
@@ -758,6 +768,14 @@ def print_failure_summary(results: List[Dict]):
     fault_types = Counter(r['fault_type'] for r in results)
     for ft, count in fault_types.most_common():
         print(f"  - {ft}: {count}")
+
+    print()
+
+    # NEW: Failures by dataset
+    print("Failures by Dataset Directory:")
+    datasets = Counter(r.get('dataset_dir', 'Unknown') for r in results)
+    for dataset, count in datasets.most_common():
+        print(f"  - {dataset}: {count} failures")
 
     # NEW: Recommendations
     print(f"\n{'='*80}")
