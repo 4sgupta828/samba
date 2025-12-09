@@ -1,0 +1,1772 @@
+================================================================================
+BATCH RCA DISCOVERY
+================================================================================
+Base directory: data/batch_run
+Top-K candidates: 5
+Sample interval: 5s
+================================================================================
+
+Found 60 episodes
+  Already investigated: 0
+  Already failed: 0
+  To process: 60
+
+[1/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_105225/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_105225/ep_0
+   Ground truth (hidden from analyzer): analytics_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. session_cache (confidence: 0.395)
+   2. events_queue (confidence: 0.214)
+   3. user_db (confidence: 0.207)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'analytics_service'
+   Top 5 were: ['session_cache', 'events_queue', 'user_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_105225/ep_0/RCAInvestigated.marker
+
+[2/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_105310/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_105310/ep_0
+   Ground truth (hidden from analyzer): entertainment_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 5 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.510)
+   2. device_cache (confidence: 0.267)
+   3. automation_db (confidence: 0.193)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'entertainment_service'
+   Top 5 were: ['devices_db', 'device_cache', 'automation_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_105310/ep_0/RCAInvestigated.marker
+
+[3/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_105501/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_105501/ep_0
+   Ground truth (hidden from analyzer): analytics_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 13 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 6 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. game_events_queue (confidence: 0.282)
+   2. player_db (confidence: 0.247)
+   3. player_cache (confidence: 0.246)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'analytics_service'
+   Top 5 were: ['game_events_queue', 'player_db', 'player_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_105501/ep_0/RCAInvestigated.marker
+
+[4/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_105621/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_105621/ep_0
+   Ground truth (hidden from analyzer): validation_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 10 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. metadata_cache (confidence: 0.455)
+   2. device_registry_db (confidence: 0.353)
+   3. enriched_data_queue (confidence: 0.233)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'validation_service'
+   Top 5 were: ['metadata_cache', 'device_registry_db', 'enriched_data_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_105621/ep_0/RCAInvestigated.marker
+
+[5/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_105657/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_105657/ep_0
+   Ground truth (hidden from analyzer): analytics_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 6 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 9 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. email_service (confidence: 0.283)
+   2. auth_cache (confidence: 0.233)
+   3. payment_gateway (confidence: 0.214)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'analytics_service'
+   Top 5 were: ['email_service', 'auth_cache', 'payment_gateway']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_105657/ep_0/RCAInvestigated.marker
+
+[6/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_105739/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_105739/ep_0
+   Ground truth (hidden from analyzer): climate_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.253)
+   2. device_cache (confidence: 0.238)
+   3. device_events_queue (confidence: 0.217)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'climate_service'
+   Top 5 were: ['devices_db', 'device_cache', 'device_events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_105739/ep_0/RCAInvestigated.marker
+
+[7/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_105941/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_105941/ep_0
+   Ground truth (hidden from analyzer): analytics_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 6 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. payment_gateway (confidence: 0.447)
+   2. notification_queue (confidence: 0.437)
+   3. session_cache (confidence: 0.420)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'analytics_service'
+   Top 5 were: ['payment_gateway', 'notification_queue', 'session_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_105941/ep_0/RCAInvestigated.marker
+
+[8/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_110128/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_110128/ep_0
+   Ground truth (hidden from analyzer): analytics_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. query_cache (confidence: 0.407)
+   2. timeseries_db (confidence: 0.405)
+   3. metadata_cache (confidence: 0.228)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'analytics_service'
+   Top 5 were: ['query_cache', 'timeseries_db', 'metadata_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_110128/ep_0/RCAInvestigated.marker
+
+[9/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_110206/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_110206/ep_0
+   Ground truth (hidden from analyzer): subscription_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 6 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. tenant_db (confidence: 0.438)
+   2. payment_gateway (confidence: 0.231)
+   3. billing_queue (confidence: 0.199)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'subscription_service'
+   Top 5 were: ['tenant_db', 'payment_gateway', 'billing_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_110206/ep_0/RCAInvestigated.marker
+
+[10/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_110247/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_110247/ep_0
+   Ground truth (hidden from analyzer): device_state_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. cloud_iot_platform (confidence: 0.399)
+   2. devices_db (confidence: 0.251)
+   3. device_cache (confidence: 0.233)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'device_state_service'
+   Top 5 were: ['cloud_iot_platform', 'devices_db', 'device_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_110247/ep_0/RCAInvestigated.marker
+
+[11/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_110437/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_110437/ep_0
+   Ground truth (hidden from analyzer): inventory_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. session_cache (confidence: 0.432)
+   2. game_events_queue (confidence: 0.321)
+   3. payment_gateway (confidence: 0.246)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'inventory_service'
+   Top 5 were: ['session_cache', 'game_events_queue', 'payment_gateway']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_110437/ep_0/RCAInvestigated.marker
+
+[12/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_110623/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_110623/ep_0
+   Ground truth (hidden from analyzer): notification_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 9 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. enriched_data_queue (confidence: 0.384)
+   2. alerts_queue (confidence: 0.372)
+   3. query_cache (confidence: 0.365)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'notification_service'
+   Top 5 were: ['enriched_data_queue', 'alerts_queue', 'query_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_110623/ep_0/RCAInvestigated.marker
+
+[13/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_110659/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_110659/ep_0
+   Ground truth (hidden from analyzer): tenant_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. events_queue (confidence: 0.501)
+   2. user_db (confidence: 0.490)
+   3. billing_queue (confidence: 0.439)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'tenant_db'
+   Top 5 were: ['events_queue', 'user_db', 'billing_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_110659/ep_0/RCAInvestigated.marker
+
+[14/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_110818/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_110818/ep_0
+   Ground truth (hidden from analyzer): automation_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 3 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.476)
+   2. automation_queue (confidence: 0.284)
+   3. device_cache (confidence: 0.243)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'automation_db'
+   Top 5 were: ['devices_db', 'automation_queue', 'device_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_110818/ep_0/RCAInvestigated.marker
+
+[15/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_111305/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_111305/ep_0
+   Ground truth (hidden from analyzer): game_state_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 6 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. game_state_db (confidence: 0.497)
+   2. player_cache (confidence: 0.436)
+   3. game_events_queue (confidence: 0.274)
+
+============================================================
+✅ SUCCESS: Ground truth 'game_state_db' found at rank 1
+   Confidence: 0.497
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_111305/ep_0/RCAInvestigated.marker
+
+[16/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_111702/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_111702/ep_0
+   Ground truth (hidden from analyzer): timeseries_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 6 critical
+  Phase 4: Root cause detection...
+    ✓ Found 10 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. processed_data_queue (confidence: 0.514)
+   2. analytics_queue (confidence: 0.513)
+   3. device_registry_db (confidence: 0.450)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'timeseries_db'
+   Top 5 were: ['processed_data_queue', 'analytics_queue', 'device_registry_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_111702/ep_0/RCAInvestigated.marker
+
+[17/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_111814/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_111814/ep_0
+   Ground truth (hidden from analyzer): tenant_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 9 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. events_queue (confidence: 0.480)
+   2. user_db (confidence: 0.448)
+   3. billing_queue (confidence: 0.427)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'tenant_db'
+   Top 5 were: ['events_queue', 'user_db', 'billing_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_111814/ep_0/RCAInvestigated.marker
+
+[18/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_111954/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_111954/ep_0
+   Ground truth (hidden from analyzer): devices_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 5 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. device_cache (confidence: 0.505)
+   2. automation_queue (confidence: 0.435)
+   3. devices_db (confidence: 0.322)
+
+============================================================
+✅ SUCCESS: Ground truth 'devices_db' found at rank 3
+   Confidence: 0.322
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_111954/ep_0/RCAInvestigated.marker
+
+[19/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_112326/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_112326/ep_0
+   Ground truth (hidden from analyzer): game_state_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. game_events_queue (confidence: 0.268)
+   2. game_state_db (confidence: 0.262)
+   3. player_db (confidence: 0.232)
+
+============================================================
+✅ SUCCESS: Ground truth 'game_state_db' found at rank 2
+   Confidence: 0.262
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_112326/ep_0/RCAInvestigated.marker
+
+[20/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_112652/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_112652/ep_0
+   Ground truth (hidden from analyzer): device_registry_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 9 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. device_registry_db (confidence: 0.250)
+   2. timeseries_db (confidence: 0.198)
+   3. raw_data_queue (confidence: 0.168)
+
+============================================================
+✅ SUCCESS: Ground truth 'device_registry_db' found at rank 1
+   Confidence: 0.250
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_112652/ep_0/RCAInvestigated.marker
+
+[21/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_112810/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_112810/ep_0
+   Ground truth (hidden from analyzer): analytics_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. payment_gateway (confidence: 0.416)
+   2. session_cache (confidence: 0.402)
+   3. events_queue (confidence: 0.294)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'analytics_db'
+   Top 5 were: ['payment_gateway', 'session_cache', 'events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_112810/ep_0/RCAInvestigated.marker
+
+[22/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_113014/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_113014/ep_0
+   Ground truth (hidden from analyzer): devices_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 3 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. device_cache (confidence: 0.259)
+   2. devices_db (confidence: 0.224)
+   3. device_events_queue (confidence: 0.220)
+
+============================================================
+✅ SUCCESS: Ground truth 'devices_db' found at rank 2
+   Confidence: 0.224
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_113014/ep_0/RCAInvestigated.marker
+
+[23/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_113418/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_113418/ep_0
+   Ground truth (hidden from analyzer): player_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. payment_gateway (confidence: 0.374)
+   2. game_events_queue (confidence: 0.268)
+   3. player_cache (confidence: 0.238)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'player_db'
+   Top 5 were: ['payment_gateway', 'game_events_queue', 'player_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_113418/ep_0/RCAInvestigated.marker
+
+[24/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_113744/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_113744/ep_0
+   Ground truth (hidden from analyzer): timeseries_db
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. alerts_queue (confidence: 0.226)
+   2. processed_data_queue (confidence: 0.223)
+   3. metadata_cache (confidence: 0.209)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'timeseries_db'
+   Top 5 were: ['alerts_queue', 'processed_data_queue', 'metadata_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_113744/ep_0/RCAInvestigated.marker
+
+[25/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_113856/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_113856/ep_0
+   Ground truth (hidden from analyzer): session_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 6 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. session_cache (confidence: 0.555)
+   2. events_queue (confidence: 0.215)
+   3. tenant_db (confidence: 0.209)
+
+============================================================
+✅ SUCCESS: Ground truth 'session_cache' found at rank 1
+   Confidence: 0.555
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_113856/ep_0/RCAInvestigated.marker
+
+[26/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_114042/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_114042/ep_0
+   Ground truth (hidden from analyzer): device_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 22 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. session_cache (confidence: 0.416)
+   2. device_cache (confidence: 0.320)
+   3. automation_queue (confidence: 0.302)
+
+============================================================
+✅ SUCCESS: Ground truth 'device_cache' found at rank 2
+   Confidence: 0.320
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_114042/ep_0/RCAInvestigated.marker
+
+[27/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_114530/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_114530/ep_0
+   Ground truth (hidden from analyzer): session_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 6 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. session_cache (confidence: 0.541)
+   2. game_events_queue (confidence: 0.284)
+   3. game_state_db (confidence: 0.230)
+
+============================================================
+✅ SUCCESS: Ground truth 'session_cache' found at rank 1
+   Confidence: 0.541
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_114530/ep_0/RCAInvestigated.marker
+
+[28/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_114926/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_114926/ep_0
+   Ground truth (hidden from analyzer): query_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 4 critical
+  Phase 4: Root cause detection...
+    ✓ Found 9 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. query_cache (confidence: 0.490)
+   2. timeseries_db (confidence: 0.483)
+   3. validated_data_queue (confidence: 0.358)
+
+============================================================
+✅ SUCCESS: Ground truth 'query_cache' found at rank 1
+   Confidence: 0.490
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_114926/ep_0/RCAInvestigated.marker
+
+[29/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_115056/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_115056/ep_0
+   Ground truth (hidden from analyzer): auth_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. analytics_db (confidence: 0.274)
+   2. tenant_db (confidence: 0.265)
+   3. events_queue (confidence: 0.259)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'auth_cache'
+   Top 5 were: ['analytics_db', 'tenant_db', 'events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_115056/ep_0/RCAInvestigated.marker
+
+[30/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_115227/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_115227/ep_0
+   Ground truth (hidden from analyzer): device_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.314)
+   2. automation_queue (confidence: 0.307)
+   3. device_cache (confidence: 0.278)
+
+============================================================
+✅ SUCCESS: Ground truth 'device_cache' found at rank 3
+   Confidence: 0.278
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_115227/ep_0/RCAInvestigated.marker
+
+[31/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_115537/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_115537/ep_0
+   Ground truth (hidden from analyzer): session_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 3 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. player_db (confidence: 0.562)
+   2. notification_queue (confidence: 0.513)
+   3. game_events_queue (confidence: 0.349)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'session_cache'
+   Top 5 were: ['player_db', 'notification_queue', 'game_events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_115537/ep_0/RCAInvestigated.marker
+
+[32/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_120410/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_120410/ep_0
+   Ground truth (hidden from analyzer): query_cache
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 6 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 11 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. metadata_cache (confidence: 0.430)
+   2. raw_data_queue (confidence: 0.296)
+   3. alerts_queue (confidence: 0.270)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'query_cache'
+   Top 5 were: ['metadata_cache', 'raw_data_queue', 'alerts_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_120410/ep_0/RCAInvestigated.marker
+
+[33/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_120513/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_120513/ep_0
+   Ground truth (hidden from analyzer): events_queue
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 11 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. analytics_db (confidence: 0.359)
+   2. events_queue (confidence: 0.272)
+   3. payment_gateway (confidence: 0.224)
+
+============================================================
+✅ SUCCESS: Ground truth 'events_queue' found at rank 2
+   Confidence: 0.272
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_120513/ep_0/RCAInvestigated.marker
+
+[34/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_120702/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_120702/ep_0
+   Ground truth (hidden from analyzer): notification_queue
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 4 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. device_events_queue (confidence: 0.271)
+   2. device_cache (confidence: 0.238)
+   3. notification_queue (confidence: 0.237)
+
+============================================================
+✅ SUCCESS: Ground truth 'notification_queue' found at rank 3
+   Confidence: 0.237
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_120702/ep_0/RCAInvestigated.marker
+
+[35/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_121208/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_121208/ep_0
+   Ground truth (hidden from analyzer): game_events_queue
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 5 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. game_events_queue (confidence: 0.294)
+   2. player_db (confidence: 0.235)
+   3. payment_gateway (confidence: 0.208)
+
+============================================================
+✅ SUCCESS: Ground truth 'game_events_queue' found at rank 1
+   Confidence: 0.294
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_121208/ep_0/RCAInvestigated.marker
+
+[36/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_121550/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_121550/ep_0
+   Ground truth (hidden from analyzer): raw_data_queue
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 10 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. raw_data_queue (confidence: 0.272)
+   2. notification_service_ext (confidence: 0.192)
+   3. timeseries_db (confidence: 0.189)
+
+============================================================
+✅ SUCCESS: Ground truth 'raw_data_queue' found at rank 1
+   Confidence: 0.272
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_121550/ep_0/RCAInvestigated.marker
+
+[37/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_121713/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_121713/ep_0
+   Ground truth (hidden from analyzer): subscription_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. events_queue (confidence: 0.207)
+   2. session_cache (confidence: 0.191)
+   3. tenant_db (confidence: 0.190)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'subscription_service'
+   Top 5 were: ['events_queue', 'session_cache', 'tenant_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_121713/ep_0/RCAInvestigated.marker
+
+[38/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_121901/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_121901/ep_0
+   Ground truth (hidden from analyzer): entertainment_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 6 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.554)
+   2. device_cache (confidence: 0.235)
+   3. device_events_queue (confidence: 0.234)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'entertainment_service'
+   Top 5 were: ['devices_db', 'device_cache', 'device_events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_121901/ep_0/RCAInvestigated.marker
+
+[39/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_122402/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_122402/ep_0
+   Ground truth (hidden from analyzer): matchmaking_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 6 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. game_state_db (confidence: 0.416)
+   2. game_events_queue (confidence: 0.287)
+   3. player_db (confidence: 0.234)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'matchmaking_service'
+   Top 5 were: ['game_state_db', 'game_events_queue', 'player_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_122402/ep_0/RCAInvestigated.marker
+
+[40/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_122745/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_122745/ep_0
+   Ground truth (hidden from analyzer): query_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 9 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. alerts_queue (confidence: 0.212)
+   2. analytics_queue (confidence: 0.209)
+   3. timeseries_db (confidence: 0.201)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'query_service'
+   Top 5 were: ['alerts_queue', 'analytics_queue', 'timeseries_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_122745/ep_0/RCAInvestigated.marker
+
+[41/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_122908/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_122908/ep_0
+   Ground truth (hidden from analyzer): user_management_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. tenant_db (confidence: 0.297)
+   2. payment_gateway (confidence: 0.271)
+   3. session_cache (confidence: 0.221)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'user_management_service'
+   Top 5 were: ['tenant_db', 'payment_gateway', 'session_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_122908/ep_0/RCAInvestigated.marker
+
+[42/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_123045/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_123045/ep_0
+   Ground truth (hidden from analyzer): climate_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.332)
+   2. device_cache (confidence: 0.220)
+   3. device_events_queue (confidence: 0.209)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'climate_service'
+   Top 5 were: ['devices_db', 'device_cache', 'device_events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_123045/ep_0/RCAInvestigated.marker
+
+[43/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_123526/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_123526/ep_0
+   Ground truth (hidden from analyzer): notification_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 4 critical
+  Phase 4: Root cause detection...
+    ✓ Found 6 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. game_events_queue (confidence: 0.278)
+   2. payment_gateway (confidence: 0.252)
+   3. notification_queue (confidence: 0.244)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'notification_service'
+   Top 5 were: ['game_events_queue', 'payment_gateway', 'notification_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_123526/ep_0/RCAInvestigated.marker
+
+[44/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_123845/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_123845/ep_0
+   Ground truth (hidden from analyzer): storage_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 11 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. query_cache (confidence: 0.393)
+   2. metadata_cache (confidence: 0.248)
+   3. processed_data_queue (confidence: 0.213)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'storage_service'
+   Top 5 were: ['query_cache', 'metadata_cache', 'processed_data_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_123845/ep_0/RCAInvestigated.marker
+
+[45/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_124014/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_124014/ep_0
+   Ground truth (hidden from analyzer): billing_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 9 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. payment_gateway (confidence: 0.287)
+   2. tenant_db (confidence: 0.238)
+   3. events_queue (confidence: 0.227)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'billing_service'
+   Top 5 were: ['payment_gateway', 'tenant_db', 'events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_124014/ep_0/RCAInvestigated.marker
+
+[46/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_124146/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_124146/ep_0
+   Ground truth (hidden from analyzer): notification_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 4 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.508)
+   2. notification_queue (confidence: 0.295)
+   3. device_events_queue (confidence: 0.245)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'notification_service'
+   Top 5 were: ['devices_db', 'notification_queue', 'device_events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_124146/ep_0/RCAInvestigated.marker
+
+[47/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_124625/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_124625/ep_0
+   Ground truth (hidden from analyzer): analytics_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. game_events_queue (confidence: 0.296)
+   2. player_db (confidence: 0.240)
+   3. notification_queue (confidence: 0.223)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'analytics_service'
+   Top 5 were: ['game_events_queue', 'player_db', 'notification_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_124625/ep_0/RCAInvestigated.marker
+
+[48/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_125053/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_125053/ep_0
+   Ground truth (hidden from analyzer): notification_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 10 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. alerts_queue (confidence: 0.389)
+   2. analytics_queue (confidence: 0.379)
+   3. processed_data_queue (confidence: 0.331)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'notification_service'
+   Top 5 were: ['alerts_queue', 'analytics_queue', 'processed_data_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_125053/ep_0/RCAInvestigated.marker
+
+[49/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_125216/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_125216/ep_0
+   Ground truth (hidden from analyzer): payment_gateway
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. tenant_db (confidence: 0.508)
+   2. email_service (confidence: 0.263)
+   3. events_queue (confidence: 0.243)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'payment_gateway'
+   Top 5 were: ['tenant_db', 'email_service', 'events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_125216/ep_0/RCAInvestigated.marker
+
+[50/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_125349/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_125349/ep_0
+   Ground truth (hidden from analyzer): cloud_iot_platform
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.312)
+   2. device_cache (confidence: 0.255)
+   3. device_events_queue (confidence: 0.240)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'cloud_iot_platform'
+   Top 5 were: ['devices_db', 'device_cache', 'device_events_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_125349/ep_0/RCAInvestigated.marker
+
+[51/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_125754/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_125754/ep_0
+   Ground truth (hidden from analyzer): payment_gateway
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 3 critical
+  Phase 4: Root cause detection...
+    ✓ Found 6 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. player_db (confidence: 0.495)
+   2. player_cache (confidence: 0.469)
+   3. payment_gateway (confidence: 0.444)
+
+============================================================
+✅ SUCCESS: Ground truth 'payment_gateway' found at rank 3
+   Confidence: 0.444
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_125754/ep_0/RCAInvestigated.marker
+
+[52/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_130248/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_130248/ep_0
+   Ground truth (hidden from analyzer): notification_service_ext
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. alerts_queue (confidence: 0.414)
+   2. device_registry_db (confidence: 0.307)
+   3. query_cache (confidence: 0.296)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'notification_service_ext'
+   Top 5 were: ['alerts_queue', 'device_registry_db', 'query_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_130248/ep_0/RCAInvestigated.marker
+
+[53/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_130406/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_130406/ep_0
+   Ground truth (hidden from analyzer): email_service
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 11 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. events_queue (confidence: 0.455)
+   2. email_service (confidence: 0.302)
+   3. payment_gateway (confidence: 0.248)
+
+============================================================
+✅ SUCCESS: Ground truth 'email_service' found at rank 2
+   Confidence: 0.302
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_130406/ep_0/RCAInvestigated.marker
+
+[54/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_130601/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_130601/ep_0
+   Ground truth (hidden from analyzer): cloud_iot_platform
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 7 healthy, 9 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. cloud_iot_platform (confidence: 0.553)
+   2. device_cache (confidence: 0.243)
+   3. device_events_queue (confidence: 0.240)
+
+============================================================
+✅ SUCCESS: Ground truth 'cloud_iot_platform' found at rank 1
+   Confidence: 0.553
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_130601/ep_0/RCAInvestigated.marker
+
+[55/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_131017/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_131017/ep_0
+   Ground truth (hidden from analyzer): payment_gateway
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 1 critical
+  Phase 4: Root cause detection...
+    ✓ Found 5 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. payment_gateway (confidence: 0.561)
+   2. game_state_db (confidence: 0.393)
+   3. game_events_queue (confidence: 0.341)
+
+============================================================
+✅ SUCCESS: Ground truth 'payment_gateway' found at rank 1
+   Confidence: 0.561
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_131017/ep_0/RCAInvestigated.marker
+
+[56/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_131350/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_131350/ep_0
+   Ground truth (hidden from analyzer): notification_service_ext
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 8 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. alerts_queue (confidence: 0.264)
+   2. metadata_cache (confidence: 0.245)
+   3. notification_service_ext (confidence: 0.223)
+
+============================================================
+✅ SUCCESS: Ground truth 'notification_service_ext' found at rank 3
+   Confidence: 0.223
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_131350/ep_0/RCAInvestigated.marker
+
+[57/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_131508/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_131508/ep_0
+   Ground truth (hidden from analyzer): global_network
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. events_queue (confidence: 0.385)
+   2. auth_cache (confidence: 0.282)
+   3. user_db (confidence: 0.264)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'global_network'
+   Top 5 were: ['events_queue', 'auth_cache', 'user_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_131508/ep_0/RCAInvestigated.marker
+
+[58/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_131640/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_131640/ep_0
+   Ground truth (hidden from analyzer): global_network
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 9 healthy, 0 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. devices_db (confidence: 0.549)
+   2. automation_db (confidence: 0.404)
+   3. device_cache (confidence: 0.249)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'global_network'
+   Top 5 were: ['devices_db', 'automation_db', 'device_cache']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_131640/ep_0/RCAInvestigated.marker
+
+[59/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_132034/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_132034/ep_0
+   Ground truth (hidden from analyzer): global_network
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 10 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 7 candidates
+  Phase 5: Network partition detection...
+    ⚠️  Network partition detected!
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. payment_gateway (confidence: 0.456)
+   2. game_events_queue (confidence: 0.333)
+   3. game_state_db (confidence: 0.250)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'global_network'
+   Top 5 were: ['payment_gateway', 'game_events_queue', 'game_state_db']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_132034/ep_0/RCAInvestigated.marker
+
+[60/60] 
+================================================================================
+Processing: data/batch_run/data_20251208_132525/ep_0
+================================================================================
+🔍 Running discovery mode RCA analysis on: data/batch_run/data_20251208_132525/ep_0
+   Ground truth (hidden from analyzer): global_network
+🔍 Starting SOTA analysis (mode: discovery)...
+  Phase 1: Analyzing impact on all nodes...
+  Phase 2: Pod-level forensics...
+  Phase 3: Health classification...
+    ✓ 8 healthy, 2 critical
+  Phase 4: Root cause detection...
+    ✓ Found 10 candidates
+  Phase 5: Network partition detection...
+✅ SOTA analysis complete!
+
+📊 Top 5 RCA candidates identified (service-level):
+   1. timeseries_db (confidence: 0.457)
+   2. metadata_cache (confidence: 0.407)
+   3. enriched_data_queue (confidence: 0.405)
+
+============================================================
+❌ NOT IN TOP-5: Ground truth 'global_network'
+   Top 5 were: ['timeseries_db', 'metadata_cache', 'enriched_data_queue']
+   Ground truth was not detected at all
+============================================================
+
+✅ Created RCA investigation marker: data/batch_run/data_20251208_132525/ep_0/RCAInvestigated.marker
+
+================================================================================
+BATCH RCA DISCOVERY SUMMARY
+================================================================================
+Total episodes found: 60
+  Already investigated: 0
+  Already failed: 0
+  Processed this run: 60
+
+Results for 60 processed episodes:
+  ✅ Success (found in top-K): 19 (31.7%)
+  ❌ Not in top-K: 41 (68.3%)
+  ⚠️  Errors: 0 (0.0%)
+================================================================================
+
+Overall success rate: 19/60 (31.7%)

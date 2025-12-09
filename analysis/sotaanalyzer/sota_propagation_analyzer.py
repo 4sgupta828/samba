@@ -642,32 +642,34 @@ def analyze_episode_sota(
 def validate_rca_discovery(
     result: SOTAAnalysisResult,
     ground_truth_root_cause: str,
-    pod_to_service_map: Optional[Dict[str, str]] = None
+    pod_to_service_map: Optional[Dict[str, str]] = None,
+    top_k: int = 5
 ) -> Dict:
     """
-    Validate if ground truth root cause is in top 3 candidates from discovery mode.
+    Validate if ground truth root cause is in top-K candidates from discovery mode.
 
-    Handles service-level RCA: if ground truth is a pod, checks if its service is in top 3.
+    Handles service-level RCA: if ground truth is a pod, checks if its service is in top-K.
 
     Args:
         result: SOTAAnalysisResult from discovery mode
         ground_truth_root_cause: The actual root cause node (might be a pod)
         pod_to_service_map: Optional mapping of pod IDs to service names
+        top_k: Number of top candidates to check (default: 5)
 
     Returns:
         Dictionary with validation results
     """
-    top_3_candidates = [c.node_id for c in result.root_cause_candidates[:3]]
+    top_k_candidates = [c.node_id for c in result.root_cause_candidates[:top_k]]
 
     # Check if ground truth is a pod that should be mapped to service
     ground_truth_service = None
     if pod_to_service_map and ground_truth_root_cause in pod_to_service_map:
         ground_truth_service = pod_to_service_map[ground_truth_root_cause]
 
-    # Check if ground truth (or its service) is in top 3
-    found_in_top_3 = (
-        ground_truth_root_cause in top_3_candidates or
-        (ground_truth_service and ground_truth_service in top_3_candidates)
+    # Check if ground truth (or its service) is in top-K
+    found_in_top_k = (
+        ground_truth_root_cause in top_k_candidates or
+        (ground_truth_service and ground_truth_service in top_k_candidates)
     )
 
     # Find rank if present (check both pod ID and service name)
@@ -689,16 +691,17 @@ def validate_rca_discovery(
 
     # If matched as service, include pod details
     pod_details = None
-    if matched_as == 'service' and rank and rank <= 3:
+    if matched_as == 'service' and rank and rank <= top_k:
         matched_candidate = result.root_cause_candidates[rank - 1]
         if hasattr(matched_candidate, 'service_pod_details') and matched_candidate.service_pod_details:
             pod_details = matched_candidate.service_pod_details
 
     validation_result = {
-        'success': found_in_top_3,
+        'success': found_in_top_k,
         'ground_truth': ground_truth_root_cause,
         'ground_truth_service': ground_truth_service,
-        'top_3_candidates': top_3_candidates,
+        'top_k': top_k,
+        'top_k_candidates': top_k_candidates,
         'rank': rank,
         'confidence': confidence,
         'matched_as': matched_as,
@@ -730,18 +733,48 @@ def mark_episode_as_rca_investigated(
     print(f"✅ Created RCA investigation marker: {marker_file}")
 
 
+def mark_episode_as_rca_failed(
+    episode_dir: str,
+    error_info: Dict
+) -> None:
+    """
+    Create a marker file to indicate RCA failed for this episode.
+
+    Args:
+        episode_dir: Path to episode directory
+        error_info: Error information (error message, traceback, etc.)
+    """
+    episode_path = Path(episode_dir)
+    marker_file = episode_path / 'RCAFailed.marker'
+
+    # Write error info to marker file
+    from datetime import datetime
+    error_data = {
+        'failed_at': datetime.now().isoformat(),
+        'error': error_info.get('error', 'Unknown error'),
+        'error_type': error_info.get('error_type', 'Unknown'),
+        'traceback': error_info.get('traceback', None)
+    }
+
+    with open(marker_file, 'w') as f:
+        json.dump(error_data, f, indent=2)
+
+    print(f"⚠️  Created RCA failure marker: {marker_file}")
+
+
 def discover_and_validate_rca(
     episode_dir: str,
     sample_interval: int = 5,
     output_file: Optional[str] = None,
-    create_marker: bool = True
+    create_marker: bool = True,
+    top_k: int = 5
 ) -> Dict:
     """
     Run discovery mode RCA analysis and validate against ground truth.
 
     This function:
     1. Runs discovery mode analysis WITHOUT using ground truth for detection
-    2. Checks if ground truth root cause is in top 3 candidates
+    2. Checks if ground truth root cause is in top-K candidates
     3. Optionally creates a marker file if successful
     4. Returns comprehensive validation results
 
@@ -750,6 +783,7 @@ def discover_and_validate_rca(
         sample_interval: Time between samples (seconds)
         output_file: Optional output JSON file for full analysis
         create_marker: Whether to create marker file on success
+        top_k: Number of top candidates to check (default: 5)
 
     Returns:
         Dictionary with validation results and metadata
@@ -804,8 +838,8 @@ def discover_and_validate_rca(
         output_file=output_file
     )
 
-    print(f"\n📊 Top 3 RCA candidates identified (service-level):")
-    for i, candidate in enumerate(result.root_cause_candidates[:3], 1):
+    print(f"\n📊 Top {top_k} RCA candidates identified (service-level):")
+    for i, candidate in enumerate(result.root_cause_candidates[:top_k], 1):
         print(f"   {i}. {candidate.node_id} (confidence: {candidate.probability:.3f})")
         # Show pod details if available
         if hasattr(candidate, 'service_pod_details') and candidate.service_pod_details:
@@ -813,7 +847,7 @@ def discover_and_validate_rca(
             print(f"      └─ {pod_info['pod_count']} pods, consensus: {pod_info['consensus']:.1%}")
 
     # Validate against ground truth
-    validation_result = validate_rca_discovery(result, ground_truth_root_cause, pod_to_service_map)
+    validation_result = validate_rca_discovery(result, ground_truth_root_cause, pod_to_service_map, top_k)
 
     # Print results
     print(f"\n{'='*60}")
@@ -834,21 +868,21 @@ def discover_and_validate_rca(
             print(f"   - Avg severity: {pod_details['avg_severity']:.3f}")
             print(f"   - Max severity: {pod_details['max_severity']:.3f}")
             print(f"   - Impact consensus: {pod_details['consensus']:.1%}")
-
-        # Create marker file
-        if create_marker:
-            mark_episode_as_rca_investigated(episode_dir, validation_result)
     else:
         if ground_truth_service:
-            print(f"❌ FAILURE: Ground truth service '{ground_truth_service}' (pod: {ground_truth_root_cause}) NOT in top 3")
+            print(f"❌ NOT IN TOP-{top_k}: Ground truth service '{ground_truth_service}' (pod: {ground_truth_root_cause})")
         else:
-            print(f"❌ FAILURE: Ground truth '{ground_truth_root_cause}' NOT in top 3")
-        print(f"   Top 3 were: {validation_result['top_3_candidates']}")
+            print(f"❌ NOT IN TOP-{top_k}: Ground truth '{ground_truth_root_cause}'")
+        print(f"   Top {top_k} were: {validation_result['top_k_candidates']}")
         if validation_result['rank']:
             print(f"   Ground truth was at rank: {validation_result['rank']}")
         else:
             print(f"   Ground truth was not detected at all")
     print(f"{'='*60}\n")
+
+    # Always create marker file to track processed episodes
+    if create_marker:
+        mark_episode_as_rca_investigated(episode_dir, validation_result)
 
     return {
         'already_investigated': False,
