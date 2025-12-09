@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, asdict
 
 from .pod_analysis import PodAnalyzer, ServicePodAnalysis
@@ -110,6 +110,20 @@ class SOTAPropagationAnalyzer:
         self.fault_start_time = label_data.get('fault_start_time', 0)
         self.ground_truth_root_cause = label_data.get('root_cause_node')
         self.fault_type = label_data.get('fault_type', 'unknown')
+
+        # Build pod-to-service mapping
+        self.pod_to_service = {}
+        self.service_to_pods = {}
+        for node in topology_data['nodes']:
+            if node['type'] == 'Pod':
+                pod_id = node['id']
+                # Try both 'parent_service' and 'service_name' for compatibility
+                service_name = node.get('parent_service') or node.get('service_name')
+                if service_name:
+                    self.pod_to_service[pod_id] = service_name
+                    if service_name not in self.service_to_pods:
+                        self.service_to_pods[service_name] = []
+                    self.service_to_pods[service_name].append(pod_id)
 
         # Initialize sub-analyzers
         self.base_analyzer = FaultPropagationAnalyzer(
@@ -281,6 +295,88 @@ class SOTAPropagationAnalyzer:
 
         return classifications
 
+    def _aggregate_pods_to_services(
+        self,
+        node_reports: List[NodeImpactReport],
+        health_classifications: List[HealthClassification]
+    ) -> Tuple[Dict, Dict, Dict]:
+        """
+        Aggregate pod-level data to service level.
+
+        Returns:
+            (service_severity_scores, service_health_map, service_to_pod_details)
+        """
+        service_severity_scores = {}
+        service_health_levels = {}
+        service_to_pod_details = {}
+
+        # Health level ordering
+        health_order = {'HEALTHY': 0, 'DEGRADED': 1, 'IMPACTED': 2, 'CRITICAL': 3}
+
+        # Build health map
+        health_map = {hc.node_id: hc.health_status for hc in health_classifications}
+
+        # Aggregate pods to services
+        for service_name, pod_ids in self.service_to_pods.items():
+            pod_severities = []
+            pod_healths = []
+            pod_details = []
+
+            for pod_id in pod_ids:
+                # Find pod report
+                pod_report = next((r for r in node_reports if r.node_id == pod_id), None)
+                if pod_report:
+                    pod_severities.append(pod_report.overall_severity_score)
+                    pod_healths.append(health_map.get(pod_id, 'HEALTHY'))
+                    pod_details.append({
+                        'pod_id': pod_id,
+                        'severity': pod_report.overall_severity_score,
+                        'health': health_map.get(pod_id, 'HEALTHY'),
+                        'first_impact_time': pod_report.first_impact_time
+                    })
+
+            if pod_severities:
+                # Aggregate severity: use max (worst pod)
+                service_severity_scores[service_name] = max(pod_severities)
+
+                # Aggregate health: use worst health level
+                worst_health = max(pod_healths, key=lambda h: health_order.get(h, 0))
+                service_health_levels[service_name] = worst_health
+
+                service_to_pod_details[service_name] = {
+                    'pods': pod_details,
+                    'pod_count': len(pod_ids),
+                    'avg_severity': np.mean(pod_severities),
+                    'max_severity': max(pod_severities),
+                    'consensus': sum(1 for h in pod_healths if h != 'HEALTHY') / len(pod_healths)
+                }
+
+        return service_severity_scores, service_health_levels, service_to_pod_details
+
+    def _map_nodes_to_services(
+        self,
+        node_list: List[str]
+    ) -> List[str]:
+        """
+        Map a list of nodes to service-level identifiers.
+
+        - Pods get mapped to their service name
+        - Non-pods keep their original ID
+
+        Returns unique service-level nodes.
+        """
+        service_level_nodes = set()
+
+        for node_id in node_list:
+            if node_id in self.pod_to_service:
+                # This is a pod, map to service
+                service_level_nodes.add(self.pod_to_service[node_id])
+            else:
+                # Keep original (database, cache, external service, etc.)
+                service_level_nodes.add(node_id)
+
+        return list(service_level_nodes)
+
     def _detect_root_causes(
         self,
         node_reports: List[NodeImpactReport],
@@ -288,30 +384,60 @@ class SOTAPropagationAnalyzer:
         healthy_nodes: List[str],
         health_classifications: List[HealthClassification]
     ) -> List[RootCauseCandidate]:
-        """Detect and rank root cause candidates."""
+        """
+        Detect and rank root cause candidates at SERVICE level.
+
+        For pods, aggregates to service level first to avoid dilution.
+        Then drills down to identify outlier pods within root cause services.
+        """
         # Build health map
         health_map = {
             hc.node_id: hc.health_status
             for hc in health_classifications
         }
 
-        # Identify candidates
+        # Aggregate pods to services
+        service_severity_scores, service_health_map, service_pod_details = \
+            self._aggregate_pods_to_services(node_reports, health_classifications)
+
+        # Map impacted/healthy nodes to service level
+        service_level_impacted = self._map_nodes_to_services(impacted_nodes)
+        service_level_healthy = self._map_nodes_to_services(healthy_nodes)
+
+        # Merge service-level health with node-level health
+        combined_health_map = {**health_map, **service_health_map}
+
+        # Identify candidates at service level
         candidates = self.root_cause_detector.identify_root_cause_candidates(
-            impacted_nodes, healthy_nodes, health_map
+            service_level_impacted, service_level_healthy, combined_health_map
         )
 
         if not candidates:
             return []
 
-        # Compute shortest paths
+        # Compute shortest paths (using service-level nodes for pods)
         candidate_paths = self.root_cause_detector.compute_shortest_paths(
-            impacted_nodes, candidates
+            service_level_impacted, candidates
         )
 
-        # Get severity scores and impact times
+        # Get severity scores and impact times (service-level)
         node_severity_scores = {r.node_id: r.overall_severity_score for r in node_reports}
+        # Merge with service-level severity
+        combined_severity_scores = {**node_severity_scores, **service_severity_scores}
+
         node_first_impact_times = {r.node_id: r.first_impact_time for r in node_reports}
+        # For services, use earliest pod impact time
+        for service_name, details in service_pod_details.items():
+            pod_times = [p['first_impact_time'] for p in details['pods'] if p['first_impact_time']]
+            if pod_times:
+                node_first_impact_times[service_name] = min(pod_times)
+
         node_ranked_metrics = {r.node_id: r.ranked_metrics for r in node_reports}
+        # For services, use worst pod's metrics
+        for service_name, details in service_pod_details.items():
+            worst_pod = max(details['pods'], key=lambda p: p['severity'])
+            worst_pod_metrics = node_ranked_metrics.get(worst_pod['pod_id'], [])
+            node_ranked_metrics[service_name] = worst_pod_metrics
 
         # Compute centrality
         centrality_scores = self.root_cause_detector.compute_centrality_scores()
@@ -320,13 +446,20 @@ class SOTAPropagationAnalyzer:
         ranked_candidates = self.root_cause_detector.rank_root_cause_candidates(
             candidates=candidates,
             candidate_paths=candidate_paths,
-            node_severity_scores=node_severity_scores,
+            node_severity_scores=combined_severity_scores,
             node_first_impact_times=node_first_impact_times,
             node_ranked_metrics=node_ranked_metrics,
             centrality_scores=centrality_scores,
-            impacted_node_count=len(impacted_nodes),
+            impacted_node_count=len(service_level_impacted),
             expected_fault_type=self.fault_type
         )
+
+        # Enhance candidates with pod-level details if they're services
+        for candidate in ranked_candidates:
+            if candidate.node_id in service_pod_details:
+                candidate.service_pod_details = service_pod_details[candidate.node_id]
+            else:
+                candidate.service_pod_details = None
 
         return ranked_candidates
 
@@ -504,3 +637,223 @@ def analyze_episode_sota(
         result.to_json(output_file)
 
     return result
+
+
+def validate_rca_discovery(
+    result: SOTAAnalysisResult,
+    ground_truth_root_cause: str,
+    pod_to_service_map: Optional[Dict[str, str]] = None
+) -> Dict:
+    """
+    Validate if ground truth root cause is in top 3 candidates from discovery mode.
+
+    Handles service-level RCA: if ground truth is a pod, checks if its service is in top 3.
+
+    Args:
+        result: SOTAAnalysisResult from discovery mode
+        ground_truth_root_cause: The actual root cause node (might be a pod)
+        pod_to_service_map: Optional mapping of pod IDs to service names
+
+    Returns:
+        Dictionary with validation results
+    """
+    top_3_candidates = [c.node_id for c in result.root_cause_candidates[:3]]
+
+    # Check if ground truth is a pod that should be mapped to service
+    ground_truth_service = None
+    if pod_to_service_map and ground_truth_root_cause in pod_to_service_map:
+        ground_truth_service = pod_to_service_map[ground_truth_root_cause]
+
+    # Check if ground truth (or its service) is in top 3
+    found_in_top_3 = (
+        ground_truth_root_cause in top_3_candidates or
+        (ground_truth_service and ground_truth_service in top_3_candidates)
+    )
+
+    # Find rank if present (check both pod ID and service name)
+    rank = None
+    confidence = None
+    matched_as = None  # 'direct' or 'service'
+
+    for i, candidate in enumerate(result.root_cause_candidates, 1):
+        if candidate.node_id == ground_truth_root_cause:
+            rank = i
+            confidence = candidate.probability
+            matched_as = 'direct'
+            break
+        elif ground_truth_service and candidate.node_id == ground_truth_service:
+            rank = i
+            confidence = candidate.probability
+            matched_as = 'service'
+            break
+
+    # If matched as service, include pod details
+    pod_details = None
+    if matched_as == 'service' and rank and rank <= 3:
+        matched_candidate = result.root_cause_candidates[rank - 1]
+        if hasattr(matched_candidate, 'service_pod_details') and matched_candidate.service_pod_details:
+            pod_details = matched_candidate.service_pod_details
+
+    validation_result = {
+        'success': found_in_top_3,
+        'ground_truth': ground_truth_root_cause,
+        'ground_truth_service': ground_truth_service,
+        'top_3_candidates': top_3_candidates,
+        'rank': rank,
+        'confidence': confidence,
+        'matched_as': matched_as,
+        'pod_details': pod_details,
+        'total_candidates': len(result.root_cause_candidates)
+    }
+
+    return validation_result
+
+
+def mark_episode_as_rca_investigated(
+    episode_dir: str,
+    validation_result: Dict
+) -> None:
+    """
+    Create a marker file to indicate RCA has been investigated.
+
+    Args:
+        episode_dir: Path to episode directory
+        validation_result: Validation results from validate_rca_discovery
+    """
+    episode_path = Path(episode_dir)
+    marker_file = episode_path / 'RCAInvestigated.marker'
+
+    # Write validation results to marker file
+    with open(marker_file, 'w') as f:
+        json.dump(validation_result, f, indent=2)
+
+    print(f"✅ Created RCA investigation marker: {marker_file}")
+
+
+def discover_and_validate_rca(
+    episode_dir: str,
+    sample_interval: int = 5,
+    output_file: Optional[str] = None,
+    create_marker: bool = True
+) -> Dict:
+    """
+    Run discovery mode RCA analysis and validate against ground truth.
+
+    This function:
+    1. Runs discovery mode analysis WITHOUT using ground truth for detection
+    2. Checks if ground truth root cause is in top 3 candidates
+    3. Optionally creates a marker file if successful
+    4. Returns comprehensive validation results
+
+    Args:
+        episode_dir: Path to episode directory
+        sample_interval: Time between samples (seconds)
+        output_file: Optional output JSON file for full analysis
+        create_marker: Whether to create marker file on success
+
+    Returns:
+        Dictionary with validation results and metadata
+    """
+    episode_path = Path(episode_dir)
+
+    # Check if already investigated
+    marker_file = episode_path / 'RCAInvestigated.marker'
+    if marker_file.exists():
+        print(f"⏭️  Episode already investigated: {episode_dir}")
+        with open(marker_file, 'r') as f:
+            existing_result = json.load(f)
+        return {
+            'already_investigated': True,
+            'validation_result': existing_result
+        }
+
+    # Load ground truth
+    with open(episode_path / 'label.json') as f:
+        label_data = json.load(f)
+
+    ground_truth_root_cause = label_data.get('root_cause_node')
+
+    if not ground_truth_root_cause:
+        raise ValueError(f"No root_cause_node found in label.json for {episode_dir}")
+
+    # Load topology to build pod-to-service mapping
+    with open(episode_path / 'topology.json') as f:
+        topology_data = json.load(f)
+
+    pod_to_service_map = {}
+    for node in topology_data['nodes']:
+        if node['type'] == 'Pod':
+            # Try both 'parent_service' and 'service_name' for compatibility
+            service_name = node.get('parent_service') or node.get('service_name')
+            if service_name:
+                pod_to_service_map[node['id']] = service_name
+
+    # Check if ground truth is a pod
+    ground_truth_service = pod_to_service_map.get(ground_truth_root_cause)
+
+    print(f"🔍 Running discovery mode RCA analysis on: {episode_dir}")
+    print(f"   Ground truth (hidden from analyzer): {ground_truth_root_cause}")
+    if ground_truth_service:
+        print(f"   Ground truth service: {ground_truth_service}")
+
+    # Run discovery mode analysis
+    result = analyze_episode_sota(
+        episode_dir=episode_dir,
+        mode='discovery',  # Discovery mode doesn't use ground truth for detection
+        sample_interval=sample_interval,
+        output_file=output_file
+    )
+
+    print(f"\n📊 Top 3 RCA candidates identified (service-level):")
+    for i, candidate in enumerate(result.root_cause_candidates[:3], 1):
+        print(f"   {i}. {candidate.node_id} (confidence: {candidate.probability:.3f})")
+        # Show pod details if available
+        if hasattr(candidate, 'service_pod_details') and candidate.service_pod_details:
+            pod_info = candidate.service_pod_details
+            print(f"      └─ {pod_info['pod_count']} pods, consensus: {pod_info['consensus']:.1%}")
+
+    # Validate against ground truth
+    validation_result = validate_rca_discovery(result, ground_truth_root_cause, pod_to_service_map)
+
+    # Print results
+    print(f"\n{'='*60}")
+    if validation_result['success']:
+        matched_as = validation_result.get('matched_as', 'unknown')
+        if matched_as == 'service' and ground_truth_service:
+            print(f"✅ SUCCESS: Ground truth service '{ground_truth_service}' found at rank {validation_result['rank']}")
+            print(f"   Ground truth pod: {ground_truth_root_cause}")
+        else:
+            print(f"✅ SUCCESS: Ground truth '{ground_truth_root_cause}' found at rank {validation_result['rank']}")
+        print(f"   Confidence: {validation_result['confidence']:.3f}")
+
+        # Show pod details if matched as service
+        if matched_as == 'service' and validation_result.get('pod_details'):
+            pod_details = validation_result['pod_details']
+            print(f"\n   Pod Analysis for {ground_truth_service}:")
+            print(f"   - Total pods: {pod_details['pod_count']}")
+            print(f"   - Avg severity: {pod_details['avg_severity']:.3f}")
+            print(f"   - Max severity: {pod_details['max_severity']:.3f}")
+            print(f"   - Impact consensus: {pod_details['consensus']:.1%}")
+
+        # Create marker file
+        if create_marker:
+            mark_episode_as_rca_investigated(episode_dir, validation_result)
+    else:
+        if ground_truth_service:
+            print(f"❌ FAILURE: Ground truth service '{ground_truth_service}' (pod: {ground_truth_root_cause}) NOT in top 3")
+        else:
+            print(f"❌ FAILURE: Ground truth '{ground_truth_root_cause}' NOT in top 3")
+        print(f"   Top 3 were: {validation_result['top_3_candidates']}")
+        if validation_result['rank']:
+            print(f"   Ground truth was at rank: {validation_result['rank']}")
+        else:
+            print(f"   Ground truth was not detected at all")
+    print(f"{'='*60}\n")
+
+    return {
+        'already_investigated': False,
+        'validation_result': validation_result,
+        'episode_dir': episode_dir,
+        'analysis_mode': result.analysis_mode,
+        'total_candidates': len(result.root_cause_candidates)
+    }
