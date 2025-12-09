@@ -26,6 +26,7 @@ from charts.forensic_analysis import create_forensic_analysis
 from charts.failure_analysis import (create_failure_analysis_view,
                                       create_rca_not_run_message,
                                       create_rca_success_message)
+from charts.batch_analysis import create_batch_analysis_view
 
 # Add parent directory to path for analysis imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -217,6 +218,9 @@ def create_metadata_card(label_data):
 
 # App layout
 app.layout = dbc.Container([
+    # URL location component for handling URL parameters
+    dcc.Location(id='url', refresh=False),
+
     # Header
     dbc.Row([
         dbc.Col([
@@ -466,6 +470,83 @@ app.layout = dbc.Container([
                 ], id="replay-collapse", is_open=False),
                 # Interval for polling replay status
                 dcc.Interval(id='replay-poll-interval', interval=2000, disabled=True)
+            ], className="mb-4 shadow-sm")
+        ])
+    ]),
+
+    # Batch Analysis Section (Collapsible)
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader([
+                    html.H5("📊 Batch RCA Analysis", className="mb-0 d-inline-block"),
+                    dbc.Button("Toggle", id="batch-analysis-collapse-button", size="sm", className="float-end", color="secondary")
+                ]),
+                dbc.Collapse([
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("Analysis Folder:", html_for="batch-folder-input"),
+                                dbc.InputGroup([
+                                    dbc.Input(
+                                        id='batch-folder-input',
+                                        type='text',
+                                        value='data/batch_run',
+                                        placeholder="Path to folder (e.g., data/batch_run)"
+                                    ),
+                                    dbc.Button(
+                                        "📁",
+                                        id="batch-folder-browse-button",
+                                        color="secondary",
+                                        outline=True
+                                    )
+                                ]),
+                                html.Small("Path relative to project root. Can be a batch folder or single dataset.", className="text-muted")
+                            ], width=6),
+                            dbc.Col([
+                                dbc.Button(
+                                    "🔄 Refresh Folders",
+                                    id="batch-refresh-button",
+                                    color="secondary",
+                                    outline=True,
+                                    className="mt-4",
+                                    style={'width': '100%'}
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Button(
+                                    "📊 Analyze Folder",
+                                    id="batch-analyze-button",
+                                    color="info",
+                                    className="mt-4",
+                                    style={'width': '100%'}
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Spinner(html.Div(id='batch-analysis-status'), size="sm", spinner_class_name="mt-4"),
+                            ], width=2),
+                        ]),
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("Quick Select:", html_for="batch-quick-select"),
+                                dcc.Dropdown(
+                                    id='batch-quick-select',
+                                    options=[],
+                                    value=None,
+                                    placeholder="Choose from available folders...",
+                                    clearable=True
+                                ),
+                                html.Small("Common folders in data/ directory", className="text-muted")
+                            ], width=12)
+                        ], className="mt-2"),
+                        html.Hr(),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div(id='batch-analysis-results')
+                            ])
+                        ])
+                    ])
+                ], id="batch-analysis-collapse", is_open=False)
             ], className="mb-4 shadow-sm")
         ])
     ]),
@@ -720,6 +801,73 @@ app.layout = dbc.Container([
 
 # Callbacks
 # NOTE: Data run and episode dropdowns are populated by RCA failure analysis callbacks below
+
+# URL Parameter Handler - Load episode from URL
+@app.callback(
+    [Output('scope-dropdown', 'value', allow_duplicate=True),
+     Output('datarun-dropdown', 'value', allow_duplicate=True),
+     Output('episode-dropdown', 'value', allow_duplicate=True),
+     Output('load-button', 'n_clicks', allow_duplicate=True)],
+    [Input('url', 'search')],
+    prevent_initial_call='initial_duplicate'
+)
+def load_episode_from_url(search):
+    """
+    Parse URL parameters and load episode if specified.
+
+    URL format: ?scope=batch_run&datarun=data_20251208_105225&episode=ep_0
+
+    Note: datarun is just the dataset ID, not the full path.
+    The scope dropdown callback will resolve it to the full path.
+    """
+    import dash
+    from urllib.parse import parse_qs
+
+    if not search:
+        raise dash.exceptions.PreventUpdate
+
+    # Parse query string (remove leading '?')
+    params = parse_qs(search.lstrip('?'))
+
+    # Check if episode parameters are present
+    if 'datarun' not in params or 'episode' not in params:
+        raise dash.exceptions.PreventUpdate
+
+    scope = params.get('scope', [''])[0]
+    datarun_id = params.get('datarun', [None])[0]
+    episode = params.get('episode', [None])[0]
+
+    if not datarun_id or not episode:
+        raise dash.exceptions.PreventUpdate
+
+    # Look up the full path for this datarun ID
+    from data_loader import list_data_runs
+    runs = list_data_runs(BASE_DATA_DIR, scope_dir=scope if scope else None)
+
+    # Find the run that matches the datarun_id
+    datarun_path = None
+    for run in runs:
+        # Check if the run ID matches (could be just the dataset name or include parent)
+        if run['id'] == datarun_id or run['id'].endswith(f"/{datarun_id}") or run['id'].endswith(datarun_id):
+            datarun_path = run['path']
+            break
+
+    if not datarun_path:
+        # Fallback: try to construct the path
+        if scope:
+            datarun_path = os.path.join(BASE_DATA_DIR, scope, datarun_id)
+        else:
+            datarun_path = os.path.join(BASE_DATA_DIR, datarun_id)
+
+        # Check if it exists
+        if not os.path.exists(datarun_path):
+            print(f"Warning: Could not find datarun path for {datarun_id} in scope {scope}")
+            raise dash.exceptions.PreventUpdate
+
+    # Return values to load the episode
+    # Trigger load button by setting n_clicks to 1
+    return scope, datarun_path, episode, 1
+
 
 @app.callback(
     Output('datarun-path-text', 'children'),
@@ -2728,6 +2876,211 @@ def run_rca_failure_analysis(n_clicks, datarun, episode):
 def reset_rca_failure_analysis(_):
     """Hide RCA failure analysis when episode changes."""
     return None, {'display': 'none'}
+
+
+# ============================================================================
+# BATCH ANALYSIS CALLBACKS
+# ============================================================================
+
+@app.callback(
+    Output('batch-analysis-collapse', 'is_open'),
+    [Input('batch-analysis-collapse-button', 'n_clicks')],
+    [State('batch-analysis-collapse', 'is_open')],
+    prevent_initial_call=True
+)
+def toggle_batch_analysis_collapse(n_clicks, is_open):
+    """Toggle batch analysis section visibility."""
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+@app.callback(
+    Output('batch-quick-select', 'options'),
+    [Input('batch-refresh-button', 'n_clicks'),
+     Input('batch-analysis-collapse', 'is_open')],
+    prevent_initial_call=False
+)
+def update_batch_folder_options(n_clicks, is_open):
+    """Discover folders in data directory that contain episodes or datasets."""
+    import os
+    from pathlib import Path
+
+    folders = []
+
+    # Add batch_run if it exists
+    batch_run_path = os.path.join(BASE_DATA_DIR, 'batch_run')
+    if os.path.exists(batch_run_path):
+        # Count total episodes in batch_run
+        total_eps = len(list(Path(batch_run_path).rglob('ep_*')))
+        folders.append({
+            'label': f'📁 batch_run (all datasets, {total_eps} episodes)',
+            'value': 'data/batch_run'
+        })
+
+        # Add individual batch datasets
+        for item in sorted(os.listdir(batch_run_path), reverse=True):
+            item_path = os.path.join(batch_run_path, item)
+            if os.path.isdir(item_path):
+                ep_dirs = [d for d in os.listdir(item_path) if d.startswith('ep_') and os.path.isdir(os.path.join(item_path, d))]
+                if ep_dirs:
+                    folders.append({
+                        'label': f'  └─ {item} ({len(ep_dirs)} episodes)',
+                        'value': f'data/batch_run/{item}'
+                    })
+
+    # Add test_batch if it exists
+    test_batch_path = os.path.join(BASE_DATA_DIR, 'test_batch')
+    if os.path.exists(test_batch_path):
+        total_eps = len(list(Path(test_batch_path).rglob('ep_*')))
+        if total_eps > 0:
+            folders.append({
+                'label': f'📁 test_batch ({total_eps} episodes)',
+                'value': 'data/test_batch'
+            })
+
+    # Add other top-level dataset folders
+    if os.path.exists(BASE_DATA_DIR):
+        for item in os.listdir(BASE_DATA_DIR):
+            if item in ['batch_run', 'test_batch']:
+                continue
+            item_path = os.path.join(BASE_DATA_DIR, item)
+            if os.path.isdir(item_path) and not item.startswith('.'):
+                # Check if it contains episodes directly
+                ep_dirs = [d for d in os.listdir(item_path) if d.startswith('ep_') and os.path.isdir(os.path.join(item_path, d))]
+                if ep_dirs:
+                    folders.append({
+                        'label': f'📁 {item} ({len(ep_dirs)} episodes)',
+                        'value': f'data/{item}'
+                    })
+
+    return folders
+
+
+@app.callback(
+    Output('batch-folder-input', 'value'),
+    [Input('batch-quick-select', 'value')],
+    prevent_initial_call=True
+)
+def update_folder_input_from_dropdown(selected_folder):
+    """Update the folder input when quick select dropdown changes."""
+    if selected_folder:
+        return selected_folder
+    raise dash.exceptions.PreventUpdate
+
+
+@app.callback(
+    [Output('batch-analysis-results', 'children'),
+     Output('batch-analysis-status', 'children')],
+    [Input('batch-analyze-button', 'n_clicks')],
+    [State('batch-folder-input', 'value')],
+    prevent_initial_call=True
+)
+def analyze_batch_folder(n_clicks, folder_path):
+    """Run analyze_failures.py on specified folder and display results."""
+    if not n_clicks:
+        return html.Div(), ""
+
+    import os
+    from pathlib import Path
+    from analyze_failures import analyze_all_failures
+
+    if not folder_path:
+        return dbc.Alert("Please specify a folder path to analyze", color="warning"), ""
+
+    # Resolve path - handle both absolute and relative paths
+    if os.path.isabs(folder_path):
+        # Absolute path - use as-is
+        analysis_path = folder_path
+        folder_display = os.path.basename(folder_path)
+    else:
+        # Relative path - resolve relative to BASE_DATA_DIR
+        relative_path = folder_path
+        if relative_path.startswith('data/'):
+            # Remove 'data/' prefix since BASE_DATA_DIR already points to data/
+            relative_path = relative_path[5:]  # Remove 'data/'
+
+        analysis_path = os.path.join(BASE_DATA_DIR, relative_path)
+        folder_display = folder_path.replace('data/', '').replace('\\', '/')
+
+    if not os.path.exists(analysis_path):
+        return dbc.Alert(f"Folder not found: {analysis_path}\n(BASE_DATA_DIR: {BASE_DATA_DIR})", color="danger"), ""
+
+    try:
+
+        # Run failure analysis
+        status = html.Div([
+            dbc.Spinner(size="sm", color="primary"),
+            html.Span(f" Analyzing {folder_display}...", className="ms-2")
+        ])
+
+        # Analyze all failures in this folder
+        results = []
+        total_markers = 0
+        errors = []
+
+        # Find all RCA failures in the folder
+        for marker_file in Path(analysis_path).rglob('RCAInvestigated.marker'):
+            total_markers += 1
+            import json
+            with open(marker_file) as f:
+                marker = json.load(f)
+
+            # Only include failures
+            if not marker.get('success'):
+                from analyze_failures import FailureAnalyzer
+                episode_dir = marker_file.parent
+                try:
+                    analyzer = FailureAnalyzer(str(episode_dir))
+                    result = analyzer.analyze()
+                    results.append(result)
+                except Exception as e:
+                    error_msg = f"{episode_dir.name}: {str(e)}"
+                    errors.append(error_msg)
+                    print(f"Error analyzing {episode_dir}: {e}")
+
+        # Create visualization
+        if results:
+            view = html.Div([
+                create_batch_analysis_view(results),
+                # Show errors if any
+                html.Div([
+                    html.Hr(),
+                    dbc.Alert([
+                        html.H6(f"⚠️ {len(errors)} episodes failed to analyze:", className="alert-heading"),
+                        html.Ul([html.Li(err, className="small") for err in errors[:10]])
+                    ], color="warning")
+                ]) if errors else html.Div()
+            ])
+            success_rate = len(results) / (len(results) + len(errors)) * 100 if (len(results) + len(errors)) > 0 else 0
+            status = html.Span(
+                f"✅ Analyzed {len(results)} failures from {folder_display} ({success_rate:.0f}% success)",
+                className="text-success"
+            )
+        else:
+            if total_markers == 0:
+                view = dbc.Alert([
+                    html.H5("📂 No RCA Results Found", className="alert-heading"),
+                    html.P(f"No RCAInvestigated.marker files found in {folder_display}"),
+                    html.P("Make sure this folder contains episodes with RCA analysis results.", className="mb-0 small")
+                ], color="info")
+                status = html.Span(f"No RCA data in {folder_display}", className="text-muted")
+            else:
+                view = dbc.Alert([
+                    html.H5("✅ No Failures Found!", className="alert-heading"),
+                    html.P(f"All {total_markers} RCA cases in {folder_display} succeeded!")
+                ], color="success")
+                status = html.Span(f"✅ Complete - No failures in {folder_display}", className="text-success")
+
+        return view, status
+
+    except Exception as e:
+        import traceback
+        error_msg = f"Error analyzing folder: {str(e)}\n\n{traceback.format_exc()}"
+        return dbc.Alert([
+            html.H5("❌ Analysis Error", className="alert-heading"),
+            html.Pre(error_msg, style={'fontSize': '0.8em', 'maxHeight': '300px', 'overflow': 'auto'})
+        ], color="danger"), html.Span("❌ Error", className="text-danger")
 
 
 if __name__ == '__main__':
