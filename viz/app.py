@@ -534,17 +534,6 @@ app.layout = dbc.Container([
         ], width=2),
         dbc.Col([
             dbc.Button(
-                "🔬 Run Forensics",
-                id="analyze-forensic-button",
-                color="info",
-                outline=True,
-                className="mt-4",
-                disabled=True,  # Enabled when episode loaded
-                style={'width': '100%'}
-            ),
-        ], width=2),
-        dbc.Col([
-            dbc.Button(
                 "🚨 RCA Failure Analysis",
                 id="analyze-rca-failure-button",
                 color="danger",
@@ -710,13 +699,6 @@ app.layout = dbc.Container([
         ])
     ], className="mb-3"),
 
-    # Forensic Analysis Container
-    dbc.Row([
-        dbc.Col([
-            html.Div(id='forensic-analysis-container', style={'display': 'none'})
-        ])
-    ], className="mb-3"),
-
     # RCA Failure Analysis Container
     dbc.Row([
         dbc.Col([
@@ -788,13 +770,12 @@ def load_episode_data(n_clicks, data_run_path, episode_id):
 
 @app.callback(
     Output('analyze-fault-button', 'disabled'),
-    Output('analyze-forensic-button', 'disabled'),
     [Input('episode-data-store', 'data')]
 )
 def enable_analysis_buttons(episode_data):
     """Enable analysis buttons when episode is loaded"""
     disabled = episode_data is None or len(episode_data) == 0
-    return disabled, disabled
+    return disabled
 
 
 @app.callback(
@@ -885,15 +866,17 @@ def reset_fault_analysis_on_load(episode_id):
     return [], {'display': 'none'}
 
 
-@app.callback(
-    [Output('forensic-analysis-container', 'children'),
-     Output('forensic-analysis-container', 'style')],
-    [Input('analyze-forensic-button', 'n_clicks')],
-    [State('datarun-dropdown', 'value'),
-     State('episode-dropdown', 'value')],
-    prevent_initial_call=True
-)
-def run_forensic_analysis(n_clicks, datarun, episode):
+# Forensic analysis callbacks removed - use RCA Failure Analysis instead
+
+# @app.callback(
+#     [Output('forensic-analysis-container', 'children'),
+#      Output('forensic-analysis-container', 'style')],
+#     [Input('analyze-forensic-button', 'n_clicks')],
+#     [State('datarun-dropdown', 'value'),
+#      State('episode-dropdown', 'value')],
+#     prevent_initial_call=True
+# )
+def _disabled_run_forensic_analysis(n_clicks, datarun, episode):
     """Run forensic analysis and display results"""
     if not n_clicks or not datarun or not episode:
         return [], {'display': 'none'}
@@ -935,15 +918,15 @@ def run_forensic_analysis(n_clicks, datarun, episode):
         return error_alert, {'display': 'block'}
 
 
-@app.callback(
-    [Output('forensic-analysis-container', 'children', allow_duplicate=True),
-     Output('forensic-analysis-container', 'style', allow_duplicate=True)],
-    [Input('episode-data-store', 'data')],
-    [State('datarun-dropdown', 'value'),
-     State('episode-dropdown', 'value')],
-    prevent_initial_call=True
-)
-def auto_load_forensic_analysis(episode_id, datarun, episode):
+# @app.callback(
+#     [Output('forensic-analysis-container', 'children', allow_duplicate=True),
+#      Output('forensic-analysis-container', 'style', allow_duplicate=True)],
+#     [Input('episode-data-store', 'data')],
+#     [State('datarun-dropdown', 'value'),
+#      State('episode-dropdown', 'value')],
+#     prevent_initial_call=True
+# )
+def _disabled_auto_load_forensic_analysis(episode_id, datarun, episode):
     """Automatically load existing forensic analysis when episode is loaded."""
     if not episode_id or not datarun or not episode:
         return [], {'display': 'none'}
@@ -2539,10 +2522,27 @@ def populate_episodes_with_filter(data_run_path, failed_filter):
     if not data_run_path:
         return [], None
 
-    failed_only = 'failed' in failed_filter if failed_filter else False
+    # Check if filter is enabled
+    failed_only = failed_filter and 'failed' in failed_filter
+
+    print(f"Populating episodes: data_run={data_run_path}, failed_only={failed_only}, filter_value={failed_filter}")
+
     episodes = list_episodes(data_run_path, failed_only=failed_only)
-    options = [{'label': ep, 'value': ep} for ep in episodes]
-    default_value = episodes[0] if episodes else None
+
+    print(f"  Found {len(episodes)} episodes")
+
+    if len(episodes) == 0 and failed_only:
+        # Show a message in the dropdown
+        options = [{'label': '⚠️ No failed RCA episodes found - uncheck filter', 'value': ''}]
+        default_value = None
+    elif len(episodes) == 0:
+        # No episodes at all
+        options = [{'label': 'No episodes available', 'value': ''}]
+        default_value = None
+    else:
+        options = [{'label': ep, 'value': ep} for ep in episodes]
+        default_value = episodes[0] if episodes else None
+
     return options, default_value
 
 
