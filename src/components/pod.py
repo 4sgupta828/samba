@@ -813,6 +813,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
                 except Exception as e:
                     # Record error metrics (only if metrics are initialized and not skipped)
+                    # Database errors, network errors, and other failures should fail the request gracefully
+                    # without crashing the simulation
                     latency_ms = (self.env.now - start_time) * 1000
                     if not skip_metrics and self.request_counter and self.request_duration and self.request_errors and self.parent_service:
                         self.request_counter.add(1, {
@@ -835,7 +837,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             "service.name": self.parent_service.service_name,
                             "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                         })
-                    raise  # Re-raise the exception
+                    # Don't re-raise - let the request fail gracefully without crashing the simulation
         finally:
             # Remove from tracking AFTER the with block's __exit__ completes
             # This prevents conflicts with SimPy's resource cleanup
