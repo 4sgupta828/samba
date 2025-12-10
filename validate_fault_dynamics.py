@@ -270,18 +270,83 @@ class FaultValidator:
         print("\n[Test] Memory Pressure")
         print("  Expected: Memory↑ → CPU↑ (overhead), Latency spikes, Bimodal distribution")
 
-        return FaultProfile(
-            fault_type='memory_pressure',
-            fault_severity=severity,
-            baseline_metrics=[],
-            fault_metrics=[],
-            recovery_metrics=[],
-            primary_effect={'memory': 0.90},
-            secondary_effects={'cpu': 1.3, 'latency_variance': 3.0},
-            unexpected_effects=[],
-            passed=False,
-            failed_validations=['Not yet implemented']
-        )
+        try:
+            baseline_metrics, fault_metrics, recovery_metrics = self._run_fault_simulation(
+                fault_type='memory_pressure',
+                severity=severity,
+                duration=180
+            )
+
+            baseline_avg = self._average_metrics(baseline_metrics)
+            fault_avg = self._average_metrics(fault_metrics)
+            recovery_avg = self._average_metrics(recovery_metrics)
+
+            validations = []
+            passed = True
+
+            # Primary effect: Memory should increase
+            memory_ratio = fault_avg.memory_utilization / max(baseline_avg.memory_utilization, 1.0)
+            if memory_ratio < 1.5:  # Should increase by at least 1.5x
+                validations.append(f"Memory didn't increase enough: {memory_ratio:.2f}x (expected >1.5x)")
+                passed = False
+            else:
+                print(f"  ✓ PRIMARY: Memory {baseline_avg.memory_utilization:.1f}% → {fault_avg.memory_utilization:.1f}% ({memory_ratio:.2f}x)")
+
+            # Secondary effect: CPU should increase due to overhead
+            cpu_ratio = fault_avg.cpu_utilization / max(baseline_avg.cpu_utilization, 1.0)
+            if cpu_ratio < 1.2 or cpu_ratio > 1.5:
+                validations.append(f"CPU overhead out of range: {cpu_ratio:.2f}x (expected 1.2-1.5x)")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: CPU {baseline_avg.cpu_utilization:.1f}% → {fault_avg.cpu_utilization:.1f}% ({cpu_ratio:.2f}x)")
+
+            # Check latency variance (P99/P50 ratio)
+            p50_baseline = baseline_avg.avg_latency_ms
+            p99_baseline = baseline_avg.p99_latency_ms
+            p50_fault = fault_avg.avg_latency_ms
+            p99_fault = fault_avg.p99_latency_ms
+
+            variance_baseline = p99_baseline / max(p50_baseline, 1.0)
+            variance_fault = p99_fault / max(p50_fault, 1.0)
+
+            if variance_fault / max(variance_baseline, 1.0) < 2.0:
+                validations.append(f"Latency variance didn't increase enough (bimodal distribution expected)")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: Latency variance P99/P50: {variance_baseline:.2f} → {variance_fault:.2f}")
+
+            return FaultProfile(
+                fault_type='memory_pressure',
+                fault_severity=severity,
+                baseline_metrics=baseline_metrics,
+                fault_metrics=fault_metrics,
+                recovery_metrics=recovery_metrics,
+                primary_effect={'memory': fault_avg.memory_utilization},
+                secondary_effects={
+                    'cpu_ratio': cpu_ratio,
+                    'latency_variance': variance_fault
+                },
+                unexpected_effects=[],
+                passed=passed,
+                failed_validations=validations
+            )
+
+        except Exception as e:
+            print(f"  ❌ ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            return FaultProfile(
+                fault_type='memory_pressure',
+                fault_severity=severity,
+                baseline_metrics=[],
+                fault_metrics=[],
+                recovery_metrics=[],
+                primary_effect={},
+                secondary_effects={},
+                unexpected_effects=[],
+                passed=False,
+                failed_validations=[f"Exception during validation: {e}"]
+            )
 
     def _validate_thread_exhaustion(self, severity: float) -> FaultProfile:
         """
@@ -297,18 +362,75 @@ class FaultValidator:
         print("\n[Test] Thread Exhaustion")
         print("  Expected: Threads full → Queue↑, Latency↑, Rejections")
 
-        return FaultProfile(
-            fault_type='thread_exhaustion',
-            fault_severity=severity,
-            baseline_metrics=[],
-            fault_metrics=[],
-            recovery_metrics=[],
-            primary_effect={'threads_active': 0.95},
-            secondary_effects={'queue_depth': 100, 'latency': 5.0, 'errors': 0.1},
-            unexpected_effects=[],
-            passed=False,
-            failed_validations=['Not yet implemented']
-        )
+        try:
+            baseline_metrics, fault_metrics, recovery_metrics = self._run_fault_simulation(
+                fault_type='thread_exhaustion',
+                severity=severity,
+                duration=180
+            )
+
+            baseline_avg = self._average_metrics(baseline_metrics)
+            fault_avg = self._average_metrics(fault_metrics)
+            recovery_avg = self._average_metrics(recovery_metrics)
+
+            validations = []
+            passed = True
+
+            # Primary effect: Thread saturation
+            thread_saturation = fault_avg.active_threads / 50.0  # Default thread pool size
+            if thread_saturation < 0.7:
+                validations.append(f"Thread saturation too low: {thread_saturation:.2f} (expected >0.7)")
+                passed = False
+            else:
+                print(f"  ✓ PRIMARY: Thread saturation {thread_saturation:.1%}")
+
+            # Secondary effect: Queue depth should increase
+            if fault_avg.queue_depth <= baseline_avg.queue_depth:
+                validations.append(f"Queue depth didn't increase: {fault_avg.queue_depth} vs baseline {baseline_avg.queue_depth}")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: Queue depth {baseline_avg.queue_depth} → {fault_avg.queue_depth}")
+
+            # Secondary effect: Latency should increase
+            latency_ratio = fault_avg.avg_latency_ms / max(baseline_avg.avg_latency_ms, 1.0)
+            if latency_ratio < 1.5:
+                validations.append(f"Latency didn't increase enough: {latency_ratio:.2f}x (expected >1.5x)")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: Latency {baseline_avg.avg_latency_ms:.1f}ms → {fault_avg.avg_latency_ms:.1f}ms ({latency_ratio:.2f}x)")
+
+            return FaultProfile(
+                fault_type='thread_exhaustion',
+                fault_severity=severity,
+                baseline_metrics=baseline_metrics,
+                fault_metrics=fault_metrics,
+                recovery_metrics=recovery_metrics,
+                primary_effect={'thread_saturation': thread_saturation},
+                secondary_effects={
+                    'queue_depth': fault_avg.queue_depth,
+                    'latency_ratio': latency_ratio
+                },
+                unexpected_effects=[],
+                passed=passed,
+                failed_validations=validations
+            )
+
+        except Exception as e:
+            print(f"  ❌ ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            return FaultProfile(
+                fault_type='thread_exhaustion',
+                fault_severity=severity,
+                baseline_metrics=[],
+                fault_metrics=[],
+                recovery_metrics=[],
+                primary_effect={},
+                secondary_effects={},
+                unexpected_effects=[],
+                passed=False,
+                failed_validations=[f"Exception during validation: {e}"]
+            )
 
     def _validate_io_bottleneck(self, severity: float) -> FaultProfile:
         """
@@ -326,18 +448,76 @@ class FaultValidator:
         print("\n[Test] I/O Bottleneck")
         print("  Expected: I/O wait↑ → Latency↑, CPU↓ (waiting)")
 
-        return FaultProfile(
-            fault_type='io_bottleneck',
-            fault_severity=severity,
-            baseline_metrics=[],
-            fault_metrics=[],
-            recovery_metrics=[],
-            primary_effect={'io_wait': 0.80},
-            secondary_effects={'latency': 4.0, 'cpu': 0.6, 'throughput': 0.5},
-            unexpected_effects=[],
-            passed=False,
-            failed_validations=['Not yet implemented']
-        )
+        try:
+            baseline_metrics, fault_metrics, recovery_metrics = self._run_fault_simulation(
+                fault_type='io_bottleneck',
+                severity=severity,
+                duration=180
+            )
+
+            baseline_avg = self._average_metrics(baseline_metrics)
+            fault_avg = self._average_metrics(fault_metrics)
+            recovery_avg = self._average_metrics(recovery_metrics)
+
+            validations = []
+            passed = True
+
+            # Primary effect: Latency should increase significantly
+            latency_ratio = fault_avg.avg_latency_ms / max(baseline_avg.avg_latency_ms, 1.0)
+            if latency_ratio < 3.0:
+                validations.append(f"Latency increase too small: {latency_ratio:.2f}x (expected >3x)")
+                passed = False
+            else:
+                print(f"  ✓ PRIMARY: Latency {baseline_avg.avg_latency_ms:.1f}ms → {fault_avg.avg_latency_ms:.1f}ms ({latency_ratio:.2f}x)")
+
+            # KEY VALIDATION: CPU should NOT increase much (I/O bound, not CPU bound)
+            cpu_ratio = fault_avg.cpu_utilization / max(baseline_avg.cpu_utilization, 1.0)
+            if cpu_ratio > 1.3:  # CPU shouldn't increase much for I/O bottleneck
+                validations.append(f"CPU increased too much: {cpu_ratio:.2f}x (expected <1.3x for I/O bottleneck)")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: CPU relatively stable {baseline_avg.cpu_utilization:.1f}% → {fault_avg.cpu_utilization:.1f}% ({cpu_ratio:.2f}x)")
+
+            # Throughput should decrease
+            throughput_ratio = fault_avg.throughput_rps / max(baseline_avg.throughput_rps, 1.0)
+            if throughput_ratio > 0.7:
+                validations.append(f"Throughput didn't decrease enough: {throughput_ratio:.2f}x (expected <0.7x)")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: Throughput {baseline_avg.throughput_rps:.1f} → {fault_avg.throughput_rps:.1f} RPS ({throughput_ratio:.2f}x)")
+
+            return FaultProfile(
+                fault_type='io_bottleneck',
+                fault_severity=severity,
+                baseline_metrics=baseline_metrics,
+                fault_metrics=fault_metrics,
+                recovery_metrics=recovery_metrics,
+                primary_effect={'latency_ratio': latency_ratio},
+                secondary_effects={
+                    'cpu_ratio': cpu_ratio,
+                    'throughput_ratio': throughput_ratio
+                },
+                unexpected_effects=[],
+                passed=passed,
+                failed_validations=validations
+            )
+
+        except Exception as e:
+            print(f"  ❌ ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            return FaultProfile(
+                fault_type='io_bottleneck',
+                fault_severity=severity,
+                baseline_metrics=[],
+                fault_metrics=[],
+                recovery_metrics=[],
+                primary_effect={},
+                secondary_effects={},
+                unexpected_effects=[],
+                passed=False,
+                failed_validations=[f"Exception during validation: {e}"]
+            )
 
     def _validate_network_partition(self, severity: float) -> FaultProfile:
         """
@@ -353,18 +533,76 @@ class FaultValidator:
         print("\n[Test] Network Partition")
         print("  Expected: Partition → Timeouts, Split state")
 
-        return FaultProfile(
-            fault_type='network_partition',
-            fault_severity=severity,
-            baseline_metrics=[],
-            fault_metrics=[],
-            recovery_metrics=[],
-            primary_effect={'packet_loss': 1.0},
-            secondary_effects={'errors': 0.9, 'latency': float('inf')},
-            unexpected_effects=[],
-            passed=False,
-            failed_validations=['Not yet implemented']
-        )
+        try:
+            baseline_metrics, fault_metrics, recovery_metrics = self._run_fault_simulation(
+                fault_type='network_partition',
+                severity=severity,
+                duration=180
+            )
+
+            baseline_avg = self._average_metrics(baseline_metrics)
+            fault_avg = self._average_metrics(fault_metrics)
+            recovery_avg = self._average_metrics(recovery_metrics)
+
+            validations = []
+            passed = True
+
+            # Primary effect: Errors should spike dramatically
+            error_ratio = fault_avg.error_rate / max(baseline_avg.error_rate, 0.01)
+            if error_ratio < 10.0:  # Should increase by at least 10x
+                validations.append(f"Error rate didn't spike enough: {error_ratio:.2f}x (expected >10x)")
+                passed = False
+            else:
+                print(f"  ✓ PRIMARY: Error rate {baseline_avg.error_rate:.2f}% → {fault_avg.error_rate:.2f}% ({error_ratio:.2f}x)")
+
+            # Secondary effect: Latency should increase significantly (timeouts)
+            latency_ratio = fault_avg.avg_latency_ms / max(baseline_avg.avg_latency_ms, 1.0)
+            if latency_ratio < 5.0:
+                validations.append(f"Latency didn't spike enough: {latency_ratio:.2f}x (expected >5x for timeouts)")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: Latency {baseline_avg.avg_latency_ms:.1f}ms → {fault_avg.avg_latency_ms:.1f}ms ({latency_ratio:.2f}x)")
+
+            # Throughput should collapse
+            throughput_ratio = fault_avg.throughput_rps / max(baseline_avg.throughput_rps, 1.0)
+            if throughput_ratio > 0.3:
+                validations.append(f"Throughput didn't collapse: {throughput_ratio:.2f}x (expected <0.3x)")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: Throughput {baseline_avg.throughput_rps:.1f} → {fault_avg.throughput_rps:.1f} RPS ({throughput_ratio:.2f}x)")
+
+            return FaultProfile(
+                fault_type='network_partition',
+                fault_severity=severity,
+                baseline_metrics=baseline_metrics,
+                fault_metrics=fault_metrics,
+                recovery_metrics=recovery_metrics,
+                primary_effect={'error_ratio': error_ratio},
+                secondary_effects={
+                    'latency_ratio': latency_ratio,
+                    'throughput_ratio': throughput_ratio
+                },
+                unexpected_effects=[],
+                passed=passed,
+                failed_validations=validations
+            )
+
+        except Exception as e:
+            print(f"  ❌ ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            return FaultProfile(
+                fault_type='network_partition',
+                fault_severity=severity,
+                baseline_metrics=[],
+                fault_metrics=[],
+                recovery_metrics=[],
+                primary_effect={},
+                secondary_effects={},
+                unexpected_effects=[],
+                passed=False,
+                failed_validations=[f"Exception during validation: {e}"]
+            )
 
     def _validate_dependency_timeout(self, severity: float) -> FaultProfile:
         """
@@ -381,18 +619,74 @@ class FaultValidator:
         print("\n[Test] Dependency Timeout")
         print("  Expected: Timeouts → Retries, Amplified load, Errors↑")
 
-        return FaultProfile(
-            fault_type='dependency_timeout',
-            fault_severity=severity,
-            baseline_metrics=[],
-            fault_metrics=[],
-            recovery_metrics=[],
-            primary_effect={'timeout_rate': 0.3},
-            secondary_effects={'errors': 0.3, 'retry_traffic': 1.6, 'latency': 2.0},
-            unexpected_effects=[],
-            passed=False,
-            failed_validations=['Not yet implemented']
-        )
+        try:
+            baseline_metrics, fault_metrics, recovery_metrics = self._run_fault_simulation(
+                fault_type='dependency_timeout',
+                severity=severity,
+                duration=180
+            )
+
+            baseline_avg = self._average_metrics(baseline_metrics)
+            fault_avg = self._average_metrics(fault_metrics)
+            recovery_avg = self._average_metrics(recovery_metrics)
+
+            validations = []
+            passed = True
+
+            # Primary effect: Latency should increase (timeouts)
+            latency_ratio = fault_avg.avg_latency_ms / max(baseline_avg.avg_latency_ms, 1.0)
+            if latency_ratio < 1.5:
+                validations.append(f"Latency didn't increase enough: {latency_ratio:.2f}x (expected >1.5x)")
+                passed = False
+            else:
+                print(f"  ✓ PRIMARY: Latency {baseline_avg.avg_latency_ms:.1f}ms → {fault_avg.avg_latency_ms:.1f}ms ({latency_ratio:.2f}x)")
+
+            # Secondary effect: Errors should increase proportionally
+            error_increase = fault_avg.error_rate - baseline_avg.error_rate
+            expected_error_increase = severity * 30.0  # 30% at severity=1.0
+            if abs(error_increase - expected_error_increase) > 15.0:  # ±15% tolerance
+                validations.append(f"Error rate increase doesn't match severity: {error_increase:.2f}% vs expected {expected_error_increase:.2f}%")
+                passed = False
+            else:
+                print(f"  ✓ SECONDARY: Error rate {baseline_avg.error_rate:.2f}% → {fault_avg.error_rate:.2f}% (+{error_increase:.2f}%)")
+
+            # Check that errors are reasonable for dependency timeouts
+            if fault_avg.error_rate > 50.0:
+                validations.append(f"Error rate too high: {fault_avg.error_rate:.2f}% (partial timeout should not cause 100% errors)")
+                passed = False
+
+            return FaultProfile(
+                fault_type='dependency_timeout',
+                fault_severity=severity,
+                baseline_metrics=baseline_metrics,
+                fault_metrics=fault_metrics,
+                recovery_metrics=recovery_metrics,
+                primary_effect={'latency_ratio': latency_ratio},
+                secondary_effects={
+                    'error_increase': error_increase,
+                    'error_rate': fault_avg.error_rate
+                },
+                unexpected_effects=[],
+                passed=passed,
+                failed_validations=validations
+            )
+
+        except Exception as e:
+            print(f"  ❌ ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            return FaultProfile(
+                fault_type='dependency_timeout',
+                fault_severity=severity,
+                baseline_metrics=[],
+                fault_metrics=[],
+                recovery_metrics=[],
+                primary_effect={},
+                secondary_effects={},
+                unexpected_effects=[],
+                passed=False,
+                failed_validations=[f"Exception during validation: {e}"]
+            )
 
     def _generate_summary_report(self):
         """Generate a summary report of all validation results."""
@@ -445,55 +739,159 @@ class FaultValidator:
         """
         print(f"  Running isolated simulation for {fault_type}...")
 
-        # For now, return synthetic data until we integrate with actual simulation
-        # TODO: Integrate with generate_dataset.py to run real simulations
+        # Create a minimal test topology
+        env = simpy.Environment()
 
+        # Import required components
+        from src.components.pod import Pod
+        from src.components.compute_node import ComputeNode
+        from src.components.service import Service
+        from src.dynamics.metrics_dynamics_engine import MetricsDynamicsEngine, DynamicsConfig
+
+        # Create a simple service with a pod for testing
+        compute_node = ComputeNode(env, "node_0", cpu_cores=4, memory_gb=8)
+
+        # Create a pod with dynamics engine enabled
+        pod = Pod(
+            env=env,
+            component_id="pod_test_0",
+            compute_node=compute_node
+        )
+
+        # Override the pod's dynamics config for testing
+        if pod.dynamics:
+            pod.dynamics.config.latency_base = 50.0
+            pod.dynamics.config.cpu_from_concurrent_coef = 0.5
+            pod.dynamics.config.memory_base = 200.0
+            pod.dynamics.config.memory_per_request_mb = 5.0
+            pod.dynamics.config.throughput_capacity = 100.0
+
+        # Mark pod as RUNNING (needed for service routing)
+        pod.state.operational = "RUNNING"
+
+        # Create service
+        service = Service(
+            env=env,
+            component_id="service_test",
+            service_name="test_service",
+            supported_request_types=["GET"],
+            desired_replicas=1
+        )
+        service.pods = [pod]
+        pod.parent_service = service
+
+        # Component registry
+        component_registry = {
+            "node_0": compute_node,
+            "pod_test_0": pod,
+            "service_test": service
+        }
+
+        # Metric collection containers
         baseline = []
         fault = []
         recovery = []
 
-        # Synthetic baseline metrics (will be replaced with real sim data)
-        for t in range(0, 60, 10):
-            baseline.append(MetricSnapshot(
-                timestamp=float(t),
-                cpu_utilization=0.3 + (t * 0.001),  # 30% baseline
-                memory_utilization=0.5,
-                avg_latency_ms=50.0,
-                p99_latency_ms=80.0,
-                throughput_rps=100.0,
-                error_rate=0.01,
-                active_threads=30,
-                queue_depth=0
-            ))
+        # Workload process to generate requests
+        def workload_generator():
+            """Generate constant workload throughout simulation."""
+            request_interval = 1.0 / 50.0  # 50 RPS
+            while True:
+                try:
+                    # Make request to service
+                    yield from service.handle_request("GET", should_trace=False)
+                except Exception as e:
+                    pass  # Ignore errors for validation
+                yield env.timeout(request_interval)
 
-        # Synthetic fault metrics (simulating cpu_cost_multiplier effect)
-        for t in range(60, 120, 10):
-            # Simulate CPU increasing to ~70% and latency increasing proportionally
-            fault.append(MetricSnapshot(
-                timestamp=float(t),
-                cpu_utilization=0.65 + (t - 60) * 0.003,  # Ramps to ~75%
-                memory_utilization=0.5,
-                avg_latency_ms=120.0 + (t - 60) * 2.0,  # Latency increases
-                p99_latency_ms=200.0 + (t - 60) * 3.0,
-                throughput_rps=75.0 - (t - 60) * 0.3,  # Throughput decreases
-                error_rate=0.02,
-                active_threads=50,
-                queue_depth=5
-            ))
+        # Metrics collection process
+        def collect_metrics(phase: str, collection_list: List[MetricSnapshot], start: float, end: float):
+            """Collect metrics every 10 seconds."""
+            t = start
+            while t < end:
+                yield env.timeout(min(10.0, end - t))
+                t = env.now
 
-        # Synthetic recovery metrics
-        for t in range(120, 180, 10):
-            recovery.append(MetricSnapshot(
-                timestamp=float(t),
-                cpu_utilization=0.32,  # Returns to baseline
-                memory_utilization=0.5,
-                avg_latency_ms=52.0,
-                p99_latency_ms=82.0,
-                throughput_rps=98.0,
-                error_rate=0.01,
-                active_threads=30,
-                queue_depth=0
-            ))
+                # Collect metrics from pod's dynamics engine
+                if pod.dynamics:
+                    snapshot = MetricSnapshot(
+                        timestamp=t,
+                        cpu_utilization=pod.dynamics.get_cpu_percent(),
+                        memory_utilization=pod.dynamics.get_memory() / pod.memory_capacity_mb * 100.0,  # Convert MB to %
+                        avg_latency_ms=pod.dynamics.get_latency(),
+                        p99_latency_ms=pod.dynamics.get_latency_percentile(99),
+                        throughput_rps=pod.dynamics.get_throughput(),
+                        error_rate=pod.dynamics.get_error_rate() * 100.0,  # Convert to %
+                        active_threads=int(pod.dynamics.concurrent_requests),
+                        queue_depth=pod.dynamics.queue_depth
+                    )
+                    collection_list.append(snapshot)
+                    if self.verbose:
+                        print(f"    [{phase} {t:.0f}s] CPU={snapshot.cpu_utilization:.1f}% Latency={snapshot.avg_latency_ms:.1f}ms Throughput={snapshot.throughput_rps:.1f}rps")
+
+        # Fault injection process
+        def inject_fault():
+            """Inject fault at t=60s."""
+            yield env.timeout(60.0)
+
+            # Apply fault based on type
+            if fault_type == 'cpu_saturation':
+                # Inject CPU saturation via cpu_cost_multiplier
+                target_cpu = 0.85  # Target 85% CPU
+                baseline_cpu = pod.dynamics.get_cpu_percent() / 100.0
+                cpu_multiplier = (target_cpu / max(baseline_cpu, 0.1)) * severity
+                pod.dynamics.cpu_multiplier = max(1.0, cpu_multiplier)
+                print(f"  → Injected cpu_saturation: cpu_multiplier={cpu_multiplier:.2f}")
+
+            elif fault_type == 'memory_pressure':
+                # Inject memory pressure via increased memory per request
+                pod.dynamics.config.memory_per_request_mb *= (1.0 + severity * 3.0)
+                print(f"  → Injected memory_pressure: memory_per_request={pod.dynamics.config.memory_per_request_mb:.1f}MB")
+
+            elif fault_type == 'thread_exhaustion':
+                # Inject thread exhaustion by limiting thread pool
+                pod.dynamics.thread_pool_size = max(10, int(pod.dynamics.thread_pool_size * (1.0 - severity)))
+                print(f"  → Injected thread_exhaustion: thread_pool_size={pod.dynamics.thread_pool_size}")
+
+            elif fault_type == 'io_bottleneck':
+                # Inject I/O bottleneck via latency increase
+                pod.dynamics.latency_multiplier = 1.0 + severity * 4.0
+                print(f"  → Injected io_bottleneck: latency_multiplier={pod.dynamics.latency_multiplier:.2f}")
+
+            elif fault_type == 'network_partition':
+                # Inject network partition via error injection
+                pod.dynamics.fault_error_additive = severity * 0.9
+                pod.dynamics.fault_latency_additive_ms = 5000  # Timeout delay
+                print(f"  → Injected network_partition: error_rate={pod.dynamics.fault_error_additive:.2f}")
+
+            elif fault_type == 'dependency_timeout':
+                # Inject dependency timeout via latency and errors
+                pod.dynamics.fault_latency_additive_ms = severity * 3000
+                pod.dynamics.fault_error_additive = severity * 0.3
+                print(f"  → Injected dependency_timeout: latency_additive={pod.dynamics.fault_latency_additive_ms:.0f}ms")
+
+            # Wait for fault duration (60s)
+            yield env.timeout(60.0)
+
+            # Revert fault at t=120s
+            pod.dynamics.cpu_multiplier = 1.0
+            pod.dynamics.latency_multiplier = 1.0
+            pod.dynamics.error_rate_multiplier = 1.0
+            pod.dynamics.fault_latency_additive_ms = 0.0
+            pod.dynamics.fault_error_additive = 0.0
+            pod.dynamics.fault_cpu_floor_percent = None
+            pod.dynamics.fault_latency_floor_ms = None
+            print(f"  → Reverted fault at t={env.now:.0f}s")
+
+        # Start all processes
+        env.process(workload_generator())
+        env.process(collect_metrics("BASELINE", baseline, 0, 60))
+        env.process(inject_fault())
+        env.process(collect_metrics("FAULT", fault, 60, 120))
+        env.process(collect_metrics("RECOVERY", recovery, 120, 180))
+
+        # Run simulation
+        env.run(until=duration)
 
         print(f"  Collected {len(baseline)} baseline, {len(fault)} fault, {len(recovery)} recovery snapshots")
         return baseline, fault, recovery
