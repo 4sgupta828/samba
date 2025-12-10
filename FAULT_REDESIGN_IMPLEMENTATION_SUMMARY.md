@@ -98,23 +98,25 @@ Successfully upgraded the fault injection system to be **state-of-the-art and re
 
 - **Generic:** Models any thread blocking (deadlocks, slow I/O, slow dependencies)
 
-### ✅ 4. Deprecated Redundant Faults
+### ✅ 4. Removed Redundant Faults
 
-**Marked as deprecated with migration path:**
+**Completely removed redundant faults (clean break):**
 
-| Deprecated Fault | Replacement | Reason |
-|------------------|-------------|--------|
+| Removed Fault | Replacement | Reason |
+|---------------|-------------|--------|
 | `slow_queries` | `disk_io_saturation` | Same observable effect: HIGH latency from I/O wait |
 | `connection_exhaustion` | `thread_exhaustion` | Same mechanism: Pool saturation causing queue buildup |
 | `start_db_background_job` | `cpu_saturation` | Same effect: CPU contention from background work |
 | `enable_background_job` | `cpu_saturation` | Same effect: CPU contention from background work |
 | `inject_db_wear` | `disk_io_saturation` | Same effect: Slow I/O from fragmentation |
 
-**Deprecation strategy:**
-- ✅ Functions still work (backward compatible)
-- ✅ Log deprecation warnings when used
-- ✅ Docstrings explain why deprecated and what to use instead
-- ✅ Registry marked with comments
+**Removal strategy (2025-12-10):**
+- ✅ Functions removed from `modes.py`
+- ✅ Removed from `FAILURE_MODES` and `REVERT_MODES` registries
+- ✅ Removed from `training_injector.py` revert logic
+- ✅ Migration comments added in place
+- ⚠️ **Breaking change:** Code using these faults will fail with clear error
+- 📖 **Migration guide:** See below for replacement mapping
 
 ---
 
@@ -142,9 +144,10 @@ Successfully upgraded the fault injection system to be **state-of-the-art and re
 | `cache_failure` | ✅ Exists | Cache degradation (hit rate, latency, errors) |
 | `queue_consumer_slowdown` | ✅ Exists | Message processing slowdown |
 
-### Deprecated Faults ⚠️
+### Removed Faults ❌
 
-All deprecated faults still work but log warnings. Users should migrate to the new equivalents.
+These redundant faults have been completely removed from the codebase (2025-12-10).
+Using them will result in a KeyError with a clear migration path in comments.
 
 ---
 
@@ -210,8 +213,12 @@ Fault impact scales based on system capacity:
 1. **`src/failures/modes.py`** - Core fault functions
    - Refactored: `cpu_saturation`, `memory_pressure`
    - Added: `memory_thrashing`, `disk_io_saturation`, `thread_exhaustion`
-   - Deprecated: `slow_queries`, `connection_exhaustion`, `start_db_background_job`, `inject_db_wear`
+   - **Removed:** `slow_queries`, `connection_exhaustion`, `start_db_background_job`, `enable_background_job`, `inject_db_wear`, and their revert functions
    - Updated: `FAILURE_MODES` and `REVERT_MODES` registries
+
+2. **`src/failures/training_injector.py`** - Training failure injector
+   - Removed: Revert logic for deprecated faults
+   - Added: Migration comments in place
 
 ### New Files
 
@@ -378,17 +385,18 @@ tuned_params = fault_tuner.tune_fault_parameters(
 | No language-specific assumptions | ✅ PASS | Generic memory model |
 | Capacity-relative tuning | ✅ PASS | FaultParameterTuner integration |
 | Dynamics engine validated | ✅ PASS | Cross-metric effects work |
-| Backward compatible | ✅ PASS | Deprecated faults still work |
+| No redundant faults | ✅ PASS | Removed 5 deprecated faults completely |
 
 ---
 
 ## Code Statistics
 
-- **Lines modified:** ~400 lines in `modes.py`
+- **Lines modified:** ~400 lines in `modes.py`, ~30 lines in `training_injector.py`
 - **New functions added:** 6 (3 faults + 3 revert functions)
 - **Functions refactored:** 4 (cpu_saturation, memory_pressure + revert)
-- **Functions deprecated:** 5 (with migration warnings)
-- **Registry entries:** +6 new faults, +5 deprecation comments
+- **Functions removed:** 10 (5 deprecated faults + 5 revert functions)
+- **Registry entries:** +6 new faults, -10 deprecated faults
+- **Net result:** Cleaner codebase, -150 lines of redundant code
 
 ---
 

@@ -91,40 +91,60 @@ replay_state = {
     'output': []
 }
 
-# Valid fault type and role combinations based on scenario library
+# Valid fault type and role combinations based on redesigned fault catalog (2025-12-10)
+# Tier 1: Core Resource Saturation (unique signatures, capacity-relative, severity-based)
+# Tier 2: Interaction Failures (distributed system patterns)
 VALID_FAULT_COMBINATIONS = {
-    'cpu_saturation': ['service'],
-    'memory_leak': ['service'],
-    'inject_latency': ['service', 'cache', 'external'],
-    'slow_queries': ['database'],
-    'connection_exhaustion': ['database'],
-    'enable_background_job': ['database'],
-    'cache_failure': ['cache'],
-    'inject_errors': ['external'],
-    'queue_consumer_slowdown': ['queue'],
-    # Structural faults
-    'noisy_neighbor': ['service'],
-    'hot_shard': ['service'],
-    'force_deadlock': ['service'],
-    'network_partition': ['network'],
+    # Tier 1: Core Resource Saturation
+    'cpu_saturation': ['service', 'database'],  # High CPU → consistent slowdown
+    'memory_pressure': ['service', 'database'],  # Sustained high memory → allocation overhead
+    'memory_thrashing': ['service', 'database'],  # NEW: Memory bursts → bimodal latency
+    'thread_exhaustion': ['service', 'database', 'queue'],  # NEW: Pool saturation → queue buildup
+    'disk_io_saturation': ['service', 'database'],  # NEW: HIGH latency, LOW CPU
+    'memory_leak': ['service', 'database'],  # Gradual memory exhaustion
+
+    # Tier 2: Interaction Failures
+    'inject_latency': ['service', 'cache', 'external', 'database'],  # Generic latency injection
+    'inject_errors': ['service', 'cache', 'external', 'database'],  # Generic error injection
+    'cache_failure': ['cache'],  # Cache degradation (hit rate, latency, errors)
+    'queue_consumer_slowdown': ['queue'],  # Message processing slowdown
+
+    # Structural/Distributed Faults
+    'noisy_neighbor': ['service'],  # CPU steal from co-located pods
+    'hot_shard': ['service'],  # Traffic skew to single replica
+    'force_deadlock': ['service', 'database'],  # Alias for thread_exhaustion (backward compat)
+    'network_partition': ['network'],  # Total isolation between components
+
+    # Deprecated faults REMOVED (2025-12-10):
+    # - slow_queries → Use disk_io_saturation
+    # - connection_exhaustion → Use thread_exhaustion
+    # - enable_background_job → Use cpu_saturation
 }
 
-# Fault type durations (from scenario library)
+# Fault type durations (typical duration for visible impact)
 FAULT_DURATIONS = {
-    'cpu_saturation': 300,  # 5 min
-    'memory_leak': 300,  # 5 min
-    'inject_latency': 300,  # 5 min (service), 900 (cache), 600 (external)
-    'slow_queries': 600,  # 10 min
-    'connection_exhaustion': 600,  # 10 min
-    'enable_background_job': 600,  # 10 min
-    'cache_failure': 900,  # 15 min
-    'inject_errors': 600,  # 10 min
-    'queue_consumer_slowdown': 900,  # 15 min
-    # Structural faults
-    'noisy_neighbor': 900,  # 15 min
-    'hot_shard': 900,  # 15 min
-    'force_deadlock': 900,  # 15 min
-    'network_partition': 600,  # 10 min
+    # Tier 1: Core Resource Saturation
+    'cpu_saturation': 300,  # 5 min - consistent slowdown
+    'memory_pressure': 300,  # 5 min - sustained high memory
+    'memory_thrashing': 300,  # 5 min - NEW: bimodal latency spikes
+    'thread_exhaustion': 600,  # 10 min - NEW: queue buildup (takes time to manifest)
+    'disk_io_saturation': 600,  # 10 min - NEW: I/O bottleneck
+    'memory_leak': 300,  # 5 min - gradual exhaustion
+
+    # Tier 2: Interaction Failures
+    'inject_latency': 300,  # 5 min - generic latency
+    'inject_errors': 600,  # 10 min - error propagation
+    'cache_failure': 900,  # 15 min - cascading cache misses
+    'queue_consumer_slowdown': 900,  # 15 min - queue accumulation
+
+    # Structural/Distributed Faults
+    'noisy_neighbor': 900,  # 15 min - CPU steal accumulation
+    'hot_shard': 900,  # 15 min - traffic skew impact
+    'force_deadlock': 900,  # 15 min - thread blocking (alias for thread_exhaustion)
+    'network_partition': 600,  # 10 min - isolation impact
+
+    # Deprecated faults REMOVED (2025-12-10):
+    # - slow_queries, connection_exhaustion, enable_background_job
 }
 
 # Reverse mapping: role -> valid fault types
@@ -1977,19 +1997,28 @@ def update_fault_dropdowns(fault_type, fault_role):
 
     fault_type_labels = {
         'no_fault': 'No Fault (Baseline)',
-        'cpu_saturation': 'CPU Saturation (5min)',
-        'memory_leak': 'Memory Leak (5min)',
-        'inject_latency': 'Inject Latency (5-15min)',
-        'slow_queries': 'Slow Queries (10min)',
-        'connection_exhaustion': 'Connection Exhaustion (10min)',
-        'enable_background_job': 'Enable Background Job (10min)',
-        'cache_failure': 'Cache Failure (15min)',
-        'inject_errors': 'Inject Errors (10min)',
+
+        # Tier 1: Core Resource Saturation
+        'cpu_saturation': 'CPU Saturation (5min) - Consistent slowdown',
+        'memory_pressure': 'Memory Pressure (5min) - Sustained high memory',
+        'memory_thrashing': '🆕 Memory Thrashing (5min) - Bimodal latency spikes',
+        'thread_exhaustion': '🆕 Thread Exhaustion (10min) - Queue buildup',
+        'disk_io_saturation': '🆕 Disk I/O Saturation (10min) - High latency, low CPU',
+        'memory_leak': 'Memory Leak (5min) - Gradual exhaustion',
+
+        # Tier 2: Interaction Failures
+        'inject_latency': 'Inject Latency (5min) - Generic latency',
+        'inject_errors': 'Inject Errors (10min) - Generic errors',
+        'cache_failure': 'Cache Failure (15min) - Cache degradation',
         'queue_consumer_slowdown': 'Queue Consumer Slowdown (15min)',
-        'noisy_neighbor': 'Noisy Neighbor (15min)',
-        'hot_shard': 'Hot Shard (15min)',
-        'force_deadlock': 'Force Deadlock (15min)',
-        'network_partition': 'Network Partition (10min)',
+
+        # Structural/Distributed Faults
+        'noisy_neighbor': 'Noisy Neighbor (15min) - CPU steal',
+        'hot_shard': 'Hot Shard (15min) - Traffic skew',
+        'force_deadlock': 'Force Deadlock (15min) - Thread blocking',
+        'network_partition': 'Network Partition (10min) - Isolation',
+
+        # Deprecated faults REMOVED: slow_queries, connection_exhaustion, enable_background_job
     }
 
     # Default: show all options

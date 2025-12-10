@@ -476,12 +476,7 @@ class TrainingFailureInjector:
                 )
                 print(f"   Memory leak stopped (leaked memory remains until restart)")
 
-        elif failure_mode == 'slow_queries':
-            # Remove query latency floor
-            # Note: This is inherently instant (can't gradually remove a constraint)
-            if hasattr(target, 'dynamics') and target.dynamics:
-                target.dynamics.fault_latency_floor_ms = None
-                print(f"   Query latency floor removed (instant - constraint removal)")
+        # slow_queries removed (2025-12-10) → Use disk_io_saturation instead
 
         elif failure_mode == 'cache_failure':
             # Cache failure: GRADUALLY restore cache health
@@ -522,12 +517,7 @@ class TrainingFailureInjector:
                 )
                 print(f"   Memory pressure reduced (instant)")
 
-        elif failure_mode == 'connection_exhaustion':
-            # Restore connection pool capacity
-            # This is instant in current implementation
-            if hasattr(target, 'connection_pool_exhaustion_rate'):
-                target.connection_pool_exhaustion_rate = 0.0
-                print(f"   Connection pool capacity restored (instant)")
+        # connection_exhaustion removed (2025-12-10) → Use thread_exhaustion instead
 
         elif failure_mode == 'queue_consumer_slowdown':
             # Remove consumer slowdown immediately (MessageQueue doesn't support gradual changes)
@@ -535,26 +525,9 @@ class TrainingFailureInjector:
             revert_queue_consumer_slowdown(target, params)
             print(f"   Consumer slowdown removed (instant)")
 
-        elif failure_mode == 'enable_background_job':
-            # Stop background job
-            # This is instant (can't gradually stop a background process)
-            if hasattr(target, 'background_job_enabled'):
-                target.background_job_enabled = False
-                print(f"   Background job stopped (instant)")
-
-        elif failure_mode == 'start_db_background_job':
-            # Stop DB background job
-            # This is instant (can't gradually stop a background process)
-            if hasattr(target, 'background_job_enabled'):
-                target.background_job_enabled = False
-                print(f"   DB background job stopped (instant)")
-
-        elif failure_mode == 'inject_db_wear':
-            # Reset DB wear
-            # This is instant (wear factor is a single value)
-            if hasattr(target, 'wear_factor'):
-                target.wear_factor = 0.0
-                print(f"   DB wear reset to 0 (instant)")
+        # enable_background_job removed (2025-12-10) → Use cpu_saturation instead
+        # start_db_background_job removed (2025-12-10) → Use cpu_saturation instead
+        # inject_db_wear removed (2025-12-10) → Use disk_io_saturation instead
 
         else:
             print(f"WARNING: Revert logic not implemented for '{failure_mode}'")

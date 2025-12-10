@@ -94,82 +94,11 @@ def stop_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     else:
         component._emit_log("WARN", "Component does not have dynamics engine")
 
-def start_db_background_job(component: SqlDatabase, params: Dict[str, Any]):
-    """
-    ⚠️  DEPRECATED: Use 'cpu_saturation' instead.
-
-    REASON FOR DEPRECATION: Redundant with cpu_saturation.
-    Background jobs (VACUUM, cleanup) consume CPU and compete for resources.
-    cpu_saturation models this generically.
-
-    Migration: Replace with cpu_saturation on database component.
-
-    Starts the database background job (VACUUM/cleanup) which competes for CPU resources.
-    """
-    component._emit_log("WARN", "⚠️  start_db_background_job is DEPRECATED. Use 'cpu_saturation' instead.")
-    if not isinstance(component, SqlDatabase):
-        component._emit_log("WARN", "start_db_background_job can only be applied to SqlDatabase components.")
-        return
-
-    # Start the background job process
-    component.env.process(component._run_background_job())
-    component._emit_log("WARN", "Started background job (VACUUM/cleanup) - may increase DB CPU and query latency.")
-
-def stop_db_background_job(component: SqlDatabase, params: Dict[str, Any]):
-    """
-    Stops the database background job.
-    Note: Due to SimPy's process model, we can't easily stop a running background process.
-    Instead, we add a flag that the background job checks.
-    """
-    if not isinstance(component, SqlDatabase):
-        component._emit_log("WARN", "stop_db_background_job can only be applied to SqlDatabase components.")
-        return
-
-    # Set a flag to stop the background job
-    component.background_job_enabled = False
-    component._emit_log("INFO", "Background job disabled - DB should return to baseline performance.")
-
-def inject_db_wear(component: SqlDatabase, params: Dict[str, Any]):
-    """
-    ⚠️  DEPRECATED: Use 'disk_io_saturation' instead.
-
-    REASON FOR DEPRECATION: Too specific, indirect mechanism.
-    Database wear (index bloat, fragmentation) causes slow I/O.
-    disk_io_saturation models this more directly with I/O wait.
-
-    Migration: Replace with disk_io_saturation on database component.
-
-    Inject database degradation (simulates index bloat, fragmentation, etc.)
-    This increases query latency via the dynamics engine wear_factor.
-    """
-    component._emit_log("WARN", "⚠️  inject_db_wear is DEPRECATED. Use 'disk_io_saturation' instead.")
-    if not isinstance(component, SqlDatabase):
-        component._emit_log("WARN", "inject_db_wear can only be applied to SqlDatabase components.")
-        return
-
-    if not hasattr(component, 'dynamics') or component.dynamics is None:
-        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject wear")
-        return
-
-    wear_amount = params.get("wear_factor", 0.1)
-    component.dynamics.wear_factor += wear_amount
-    # Wear affects latency through dynamics: latency *= (1 + wear_factor * latency_wear_coef)
-    wear_coef = component.dynamics.config.latency_wear_coef
-    added_latency_factor = wear_amount * wear_coef
-    component._emit_log("WARN", f"Injected DB wear (+{wear_amount:.3f}), latency multiplier: {1 + added_latency_factor:.3f}x")
-
-def reset_db_wear(component: SqlDatabase, params: Dict[str, Any]):
-    """Reset database wear to pristine state via dynamics engine."""
-    if not isinstance(component, SqlDatabase):
-        component._emit_log("WARN", "reset_db_wear can only be applied to SqlDatabase components.")
-        return
-
-    if hasattr(component, 'dynamics') and component.dynamics is not None:
-        old_wear = component.dynamics.wear_factor
-        component.dynamics.wear_factor = 0.0
-        component._emit_log("INFO", f"Reset DB wear (was {old_wear:.3f}) - DB optimized/rebuilt (dynamics)")
-    else:
-        component._emit_log("WARN", "Component does not have dynamics engine")
+# Deprecated database-specific faults removed (2025-12-10)
+# - start_db_background_job → Use cpu_saturation instead
+# - stop_db_background_job → Removed (use revert_cpu_saturation)
+# - inject_db_wear → Use disk_io_saturation instead
+# - reset_db_wear → Removed (use revert_disk_io_saturation)
 
 
 def cpu_saturation(component: ComputeAgent, params: Dict[str, Any]):
@@ -728,134 +657,14 @@ def revert_queue_consumer_slowdown(component: MessageQueue, params: Dict[str, An
     component.consumer_processing_latency_ms = 0
     component._emit_log("INFO", "Queue consumer slowdown reverted")
 
-def slow_queries(component: SqlDatabase, params: Dict[str, Any]):
-    """
-    ⚠️  DEPRECATED: Use 'disk_io_saturation' instead.
-
-    REASON FOR DEPRECATION: Redundant with disk_io_saturation.
-    Both cause high latency with I/O wait. disk_io_saturation is more generic
-    and has the unique signature: HIGH latency + LOW CPU.
-
-    Migration: Replace with disk_io_saturation on database component.
-
-    FLOOR FAULT: Sets minimum query latency regardless of load.
-    Models inherently slow queries (table scans, missing indexes).
-    """
-    component._emit_log("WARN", "⚠️  slow_queries is DEPRECATED. Use 'disk_io_saturation' instead.")
-    if not isinstance(component, SqlDatabase):
-        component._emit_log("WARN", "slow_queries can only be applied to SqlDatabase components.")
-        return
-
-    if not hasattr(component, 'dynamics') or component.dynamics is None:
-        component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject slow queries")
-        return
-
-    # Map wear_factor parameter to meaningful latency floor
-    # wear_factor 0.3 -> 56ms floor, 0.5 -> 80ms floor, 1.0 -> 140ms floor
-    wear_factor = params.get("wear_factor", 0.3)
-    slowdown_factor = 1.0 + (wear_factor * 6.0)
-    base_latency = component.dynamics.config.latency_base
-    latency_floor = base_latency * slowdown_factor
-
-    # Set FLOOR: queries never faster than this (CRITICAL FIX)
-    component.dynamics.fault_latency_floor_ms = latency_floor
-    component._emit_log("WARN", f"Slow queries: {slowdown_factor:.1f}x floor ({latency_floor:.0f}ms min, wear={wear_factor})")
-
-def revert_slow_queries(component: SqlDatabase, params: Dict[str, Any]):
-    """Revert slow queries by removing latency floor."""
-    if not isinstance(component, SqlDatabase):
-        return
-
-    if hasattr(component, 'dynamics') and component.dynamics is not None:
-        component.dynamics.fault_latency_floor_ms = None
-        component._emit_log("INFO", "Slow queries reverted (floor removed)")
-    else:
-        component._emit_log("WARN", "Component does not have dynamics engine")
-
-def connection_exhaustion(component: SqlDatabase, params: Dict[str, Any]):
-    """
-    ⚠️  DEPRECATED: Use 'thread_exhaustion' instead.
-
-    REASON FOR DEPRECATION: Redundant with thread_exhaustion.
-    Connection pool exhaustion is a specific case of thread pool exhaustion.
-    Both cause queue buildup and latency growth.
-
-    Migration: Replace with thread_exhaustion on database component.
-
-    Simulates database connection pool exhaustion by holding connections.
-
-    Creates dummy/leaked connections that occupy slots in the pool, causing:
-    - New requests to queue waiting for available connections
-    - Increased latency due to queueing
-    - Potential connection rejections if pool fills completely
-    """
-    component._emit_log("WARN", "⚠️  connection_exhaustion is DEPRECATED. Use 'thread_exhaustion' instead.")
-    if not isinstance(component, SqlDatabase):
-        component._emit_log("WARN", "connection_exhaustion can only be applied to SqlDatabase components.")
-        return
-
-    if not hasattr(component, 'connection_pool'):
-        component._emit_log("ERROR", "Component does not have connection_pool - cannot inject connection exhaustion")
-        return
-
-    exhaustion_rate = params.get("exhaustion_rate", 0.7)  # Default: exhaust 70% of pool
-    pool_capacity = component.connection_pool.capacity
-    num_to_hold = int(pool_capacity * exhaustion_rate)
-
-    # Store leaked connection requests on the component for revert
-    if not hasattr(component, '_leaked_connections'):
-        component._leaked_connections = []
-
-    # Acquire connections and hold them (simulating leaked/stuck connections)
-    for i in range(num_to_hold):
-        conn_req = component.connection_pool.request()
-        component._leaked_connections.append(conn_req)
-        # Trigger the request to actually acquire the connection
-        conn_req.__enter__()
-
-    available = pool_capacity - component.connection_pool.count
-    component._emit_log("WARN", f"Connection exhaustion: {num_to_hold}/{pool_capacity} connections held (leaked), {available} available")
-
-def revert_connection_exhaustion(component: SqlDatabase, params: Dict[str, Any]):
-    """Revert connection exhaustion by releasing held connections."""
-    if not isinstance(component, SqlDatabase):
-        return
-
-    if not hasattr(component, '_leaked_connections'):
-        component._emit_log("INFO", "No leaked connections to revert")
-        return
-
-    # Release all held connections
-    num_released = len(component._leaked_connections)
-    for conn_req in component._leaked_connections:
-        try:
-            conn_req.__exit__(None, None, None)
-        except Exception as e:
-            component._emit_log("WARN", f"Error releasing connection: {e}")
-
-    component._leaked_connections = []
-    component._emit_log("INFO", f"Connection exhaustion reverted: {num_released} connections released")
-
-def enable_background_job(component: SqlDatabase, params: Dict[str, Any]):
-    """
-    ⚠️  DEPRECATED: Use 'cpu_saturation' instead.
-
-    REASON FOR DEPRECATION: Redundant with cpu_saturation.
-    Background jobs consume CPU, causing resource contention. cpu_saturation
-    models this more generically.
-
-    Migration: Replace with cpu_saturation on database component.
-
-    Alias for start_db_background_job for consistency with scenario naming.
-    """
-    component._emit_log("WARN", "⚠️  enable_background_job is DEPRECATED. Use 'cpu_saturation' instead.")
-    start_db_background_job(component, params)
-
-def disable_background_job(component: SqlDatabase, params: Dict[str, Any]):
-    """
-    Alias for stop_db_background_job for consistency.
-    """
-    stop_db_background_job(component, params)
+# Deprecated redundant faults removed (2025-12-10)
+# These faults had identical observable effects to existing faults:
+# - slow_queries → Use disk_io_saturation instead (same: HIGH latency from I/O wait)
+# - revert_slow_queries → Use revert_disk_io_saturation
+# - connection_exhaustion → Use thread_exhaustion instead (same: pool saturation, queue buildup)
+# - revert_connection_exhaustion → Use revert_thread_exhaustion
+# - enable_background_job → Use cpu_saturation instead (same: CPU contention)
+# - disable_background_job → Use revert_cpu_saturation
 
 def noisy_neighbor(component, params: Dict[str, Any]):
     """
@@ -1307,18 +1116,13 @@ FAILURE_MODES = {
     "disk_io_saturation": disk_io_saturation,  # NEW: Tier 1 fault
     "revert_disk_io_saturation": revert_disk_io_saturation,
 
-    # Database failures
-    # ⚠️  DEPRECATED (Redundant):
-    "slow_queries": slow_queries,  # → Use disk_io_saturation
-    "revert_slow_queries": revert_slow_queries,
-    "connection_exhaustion": connection_exhaustion,  # → Use thread_exhaustion
-    "revert_connection_exhaustion": revert_connection_exhaustion,
-    "enable_background_job": enable_background_job,  # → Use cpu_saturation
-    "disable_background_job": disable_background_job,
-    "start_db_background_job": start_db_background_job,  # → Use cpu_saturation
-    "stop_db_background_job": stop_db_background_job,
-    "inject_db_wear": inject_db_wear,  # → Use disk_io_saturation
-    "reset_db_wear": reset_db_wear,
+    # Database-specific faults removed (2025-12-10)
+    # Deprecated redundant faults that duplicated existing functionality:
+    # - slow_queries/revert_slow_queries → Use disk_io_saturation (HIGH latency, LOW CPU)
+    # - connection_exhaustion/revert_connection_exhaustion → Use thread_exhaustion (pool saturation)
+    # - enable_background_job/disable_background_job → Use cpu_saturation (CPU contention)
+    # - start_db_background_job/stop_db_background_job → Use cpu_saturation (CPU contention)
+    # - inject_db_wear/reset_db_wear → Use disk_io_saturation (I/O slowdown)
 
     # Cache failures
     "cache_failure": cache_failure,
@@ -1358,13 +1162,8 @@ REVERT_MODES = {
     "thread_exhaustion": revert_thread_exhaustion,  # NEW: Tier 1 fault
     "disk_io_saturation": revert_disk_io_saturation,  # NEW: Tier 1 fault
 
-    # Database faults
-    # ⚠️  DEPRECATED (Redundant):
-    "slow_queries": revert_slow_queries,  # → Use disk_io_saturation
-    "connection_exhaustion": revert_connection_exhaustion,  # → Use thread_exhaustion
-    "enable_background_job": stop_db_background_job,  # → Use cpu_saturation
-    "start_db_background_job": stop_db_background_job,  # → Use cpu_saturation
-    "inject_db_wear": reset_db_wear,  # → Use disk_io_saturation
+    # Database-specific faults removed (2025-12-10)
+    # See FAILURE_MODES registry for migration guide
 
     # Cache faults
     "cache_failure": revert_cache_failure,
