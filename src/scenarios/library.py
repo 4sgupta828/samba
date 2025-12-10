@@ -215,6 +215,26 @@ class ScenarioLibrary:
                 description="Single service latency spike",
                 progression="linear"
             ),
+            EpisodeConfig(
+                level=1,
+                topology_size=5,
+                duration=300,
+                fault_type="thread_exhaustion",
+                fault_target_role="service",
+                export_interval=5,
+                description="Single service thread pool exhaustion",
+                progression="step"  # Thread exhaustion often happens suddenly
+            ),
+            EpisodeConfig(
+                level=1,
+                topology_size=5,
+                duration=300,
+                fault_type="inject_errors",
+                fault_target_role="service",
+                export_interval=5,
+                description="Single service error rate increase",
+                progression="linear"
+            ),
         ]
 
     def _get_level2_scenarios(self) -> List[EpisodeConfig]:
@@ -250,6 +270,66 @@ class ScenarioLibrary:
                 description="Database CPU saturation (background job contention)",
                 progression="step"  # Background jobs often start suddenly
             ),
+            EpisodeConfig(
+                level=2,
+                topology_size=10,
+                duration=600,
+                fault_type="memory_leak",
+                fault_target_role="database",
+                export_interval=5,
+                description="Database memory leak",
+                progression="exponential"
+            ),
+            EpisodeConfig(
+                level=2,
+                topology_size=10,
+                duration=600,
+                fault_type="memory_pressure",
+                fault_target_role="database",
+                export_interval=5,
+                description="Database memory pressure (sustained high memory)",
+                progression="linear"
+            ),
+            EpisodeConfig(
+                level=2,
+                topology_size=10,
+                duration=600,
+                fault_type="memory_thrashing",
+                fault_target_role="database",
+                export_interval=5,
+                description="Database memory thrashing (allocation bursts)",
+                progression="step"
+            ),
+            EpisodeConfig(
+                level=2,
+                topology_size=10,
+                duration=600,
+                fault_type="inject_latency",
+                fault_target_role="database",
+                export_interval=5,
+                description="Database latency spike",
+                progression="linear"
+            ),
+            EpisodeConfig(
+                level=2,
+                topology_size=10,
+                duration=600,
+                fault_type="inject_errors",
+                fault_target_role="database",
+                export_interval=5,
+                description="Database error rate increase",
+                progression="step"
+            ),
+            EpisodeConfig(
+                level=2,
+                topology_size=10,
+                duration=600,
+                fault_type="force_deadlock",
+                fault_target_role="database",
+                export_interval=5,
+                description="Database deadlock (transaction blocking)",
+                progression="step"
+            ),
         ]
 
     def _get_level3_scenarios(self) -> List[EpisodeConfig]:
@@ -274,6 +354,16 @@ class ScenarioLibrary:
                 export_interval=10,
                 description="Cache latency spike",
                 progression="linear"
+            ),
+            EpisodeConfig(
+                level=3,
+                topology_size=20,
+                duration=900,
+                fault_type="inject_errors",
+                fault_target_role="cache",
+                export_interval=10,
+                description="Cache error rate increase",
+                progression="step"
             ),
             EpisodeConfig(
                 level=3,

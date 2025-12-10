@@ -99,8 +99,8 @@ VALID_FAULT_COMBINATIONS = {
     'cpu_saturation': ['service', 'database'],  # High CPU → consistent slowdown
     'memory_pressure': ['service', 'database'],  # Sustained high memory → allocation overhead
     'memory_thrashing': ['service', 'database'],  # NEW: Memory bursts → bimodal latency
-    'thread_exhaustion': ['service', 'database', 'queue'],  # NEW: Pool saturation → queue buildup
-    'disk_io_saturation': ['service', 'database'],  # NEW: HIGH latency, LOW CPU
+    'thread_exhaustion': ['service', 'database'],  # NEW: Pool saturation → queue buildup
+    'disk_io_saturation': ['database'],  # NEW: HIGH latency, LOW CPU (database-specific)
     'memory_leak': ['service', 'database'],  # Gradual memory exhaustion
 
     # Tier 2: Interaction Failures

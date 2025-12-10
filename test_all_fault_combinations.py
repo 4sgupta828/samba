@@ -19,18 +19,18 @@ import tempfile
 # Valid fault type and role combinations
 VALID_COMBINATIONS = {
     'cpu_saturation': ['service', 'database'],
-    'memory_leak': ['service'],
-    'memory_pressure': ['service'],
-    'memory_thrashing': ['service'],
-    'inject_latency': ['service', 'cache', 'external'],
+    'memory_leak': ['service', 'database'],
+    'memory_pressure': ['service', 'database'],
+    'memory_thrashing': ['service', 'database'],
+    'inject_latency': ['service', 'cache', 'external', 'database'],
     'disk_io_saturation': ['database'],
-    'thread_exhaustion': ['database', 'service'],
+    'thread_exhaustion': ['service', 'database'],
     'cache_failure': ['cache'],
-    'inject_errors': ['external'],
+    'inject_errors': ['service', 'cache', 'external', 'database'],
     'queue_consumer_slowdown': ['queue'],
     'hot_shard': ['service'],
     'noisy_neighbor': ['service'],
-    'force_deadlock': ['service'],
+    'force_deadlock': ['service', 'database'],
     'network_partition': ['network'],
 }
 

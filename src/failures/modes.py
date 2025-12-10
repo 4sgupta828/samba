@@ -919,133 +919,159 @@ def revert_network_partition(component: NetworkLink, params: Dict[str, Any]):
 
 def force_deadlock(component, params: Dict[str, Any]):
     """
-    Simulates logical deadlock by consuming threads without consuming CPU.
+    Simulates logical deadlock by consuming threads/connections without consuming CPU.
     This models lock waits or circular dependencies.
 
     Args:
-        component: The Pod or Service to deadlock (if Service, picks a random pod)
+        component: The Pod, Service, or Database to deadlock
         params:
-            - locked_threads (int, optional): Absolute number of threads to lock
-            - thread_percentage (float, optional): Percentage of threads to lock (0.0-1.0)
-            - duration (float, seconds): How long to hold threads
+            - locked_threads (int, optional): Absolute number of threads/connections to lock
+            - thread_percentage (float, optional): Percentage of threads/connections to lock (0.0-1.0)
+            - duration (float, seconds): How long to hold threads/connections
 
     If both locked_threads and thread_percentage are provided, locked_threads takes precedence.
-    If neither is provided, defaults to 70% of thread pool (enough to cause degradation).
+    If neither is provided, defaults to 70% of thread/connection pool (enough to cause degradation).
     """
-    # If component is a Service, pick a random pod for diversity
+    from src.components.database import SqlDatabase
+
+    # Determine target component and resource pool
+    target = None
+    resource_pool = None
+    resource_type = "threads"
+
     if isinstance(component, Service):
         if not component.pods:
             component._emit_log("WARN", "force_deadlock: Service has no pods")
             return
         import random
-        target_pod = random.choice(component.pods)
+        target = random.choice(component.pods)
+        resource_pool = target.thread_pool
+        resource_type = "threads"
         # Store the affected pod ID on the Service for robust revert
-        component._force_deadlock_pod_id = target_pod.id
-        component._emit_log("INFO", f"force_deadlock: Applying to randomly selected pod {target_pod.id} (out of {len(component.pods)} pods)")
+        component._force_deadlock_pod_id = target.id
+        component._emit_log("INFO", f"force_deadlock: Applying to randomly selected pod {target.id} (out of {len(component.pods)} pods)")
     elif isinstance(component, Pod):
-        target_pod = component
+        target = component
+        resource_pool = target.thread_pool
+        resource_type = "threads"
         # Store pod ID on itself for consistency
-        component._force_deadlock_pod_id = target_pod.id
+        component._force_deadlock_pod_id = target.id
+    elif isinstance(component, SqlDatabase):
+        target = component
+        resource_pool = target.connection_pool
+        resource_type = "connections"
+        # Store component ID for revert
+        component._force_deadlock_component_id = target.id
     else:
-        component._emit_log("WARN", f"force_deadlock can only be applied to Pod or Service components (got {type(component).__name__})")
+        component._emit_log("WARN", f"force_deadlock can only be applied to Pod, Service, or Database components (got {type(component).__name__})")
         return
 
-    # Determine how many threads to lock
+    # Determine how many threads/connections to lock
     if "locked_threads" in params:
-        # Explicit thread count provided
-        locked_threads = params["locked_threads"]
+        # Explicit count provided
+        locked_resources = params["locked_threads"]
     elif "thread_percentage" in params:
         # Percentage-based approach
         thread_percentage = params["thread_percentage"]
-        pool_size = target_pod.thread_pool.capacity
-        locked_threads = max(1, int(pool_size * thread_percentage))
-        target_pod._emit_log("INFO", f"force_deadlock: Locking {thread_percentage*100:.0f}% of {pool_size} threads = {locked_threads} threads")
+        pool_size = resource_pool.capacity
+        locked_resources = max(1, int(pool_size * thread_percentage))
+        target._emit_log("INFO", f"force_deadlock: Locking {thread_percentage*100:.0f}% of {pool_size} {resource_type} = {locked_resources} {resource_type}")
     else:
-        # Default: Lock 70% of threads (enough to cause issues but not total failure)
-        pool_size = target_pod.thread_pool.capacity
-        locked_threads = max(1, int(pool_size * 0.7))
-        target_pod._emit_log("INFO", f"force_deadlock: Using default 70% of {pool_size} threads = {locked_threads} threads")
+        # Default: Lock 70% (enough to cause issues but not total failure)
+        pool_size = resource_pool.capacity
+        locked_resources = max(1, int(pool_size * 0.7))
+        target._emit_log("INFO", f"force_deadlock: Using default 70% of {pool_size} {resource_type} = {locked_resources} {resource_type}")
 
     duration = params.get("duration", 300.0)  # 5 minutes default
 
-    # Validate: Can't lock more threads than pool capacity
-    pool_capacity = target_pod.thread_pool.capacity
-    if locked_threads > pool_capacity:
-        target_pod._emit_log("WARN", f"force_deadlock: Requested {locked_threads} threads but pool only has {pool_capacity}. Capping to {pool_capacity}.")
-        locked_threads = pool_capacity
+    # Validate: Can't lock more than pool capacity
+    pool_capacity = resource_pool.capacity
+    if locked_resources > pool_capacity:
+        target._emit_log("WARN", f"force_deadlock: Requested {locked_resources} {resource_type} but pool only has {pool_capacity}. Capping to {pool_capacity}.")
+        locked_resources = pool_capacity
 
-    # Validate: Need at least 1 thread to deadlock
-    if locked_threads < 1:
-        target_pod._emit_log("WARN", f"force_deadlock: Cannot lock {locked_threads} threads. Must lock at least 1.")
+    # Validate: Need at least 1 resource to lock
+    if locked_resources < 1:
+        target._emit_log("WARN", f"force_deadlock: Cannot lock {locked_resources} {resource_type}. Must lock at least 1.")
         return
 
     # Initialize zombie process tracking if not exists
-    if not hasattr(target_pod, '_zombie_processes'):
-        target_pod._zombie_processes = []
+    if not hasattr(target, '_zombie_processes'):
+        target._zombie_processes = []
 
-    # Spawn zombie processes that acquire threads but don't do work
+    # Spawn zombie processes that acquire resources but don't do work
     def _zombie_task():
         try:
-            with target_pod.thread_pool.request() as req:
-                yield req  # Acquire thread
-                target_pod._emit_log("DEBUG", "Deadlock: thread locked (zombie task)")
+            with resource_pool.request() as req:
+                yield req  # Acquire resource
+                target._emit_log("DEBUG", f"Deadlock: {resource_type[:-1]} locked (zombie task)")
                 # Just sleep - no CPU consumption, no dynamics update
-                yield target_pod.env.timeout(duration)
-                target_pod._emit_log("DEBUG", "Deadlock: thread released (duration expired)")
+                yield target.env.timeout(duration)
+                target._emit_log("DEBUG", f"Deadlock: {resource_type[:-1]} released (duration expired)")
         except Exception as e:
             # Handle interruption (from revert_force_deadlock)
-            target_pod._emit_log("DEBUG", f"Deadlock: thread released (interrupted: {e})")
+            target._emit_log("DEBUG", f"Deadlock: {resource_type[:-1]} released (interrupted: {e})")
 
     # Spawn the zombie tasks and track them
-    for _ in range(locked_threads):
-        zombie_proc = target_pod.env.process(_zombie_task())
-        target_pod._zombie_processes.append(zombie_proc)
+    for _ in range(locked_resources):
+        zombie_proc = target.env.process(_zombie_task())
+        target._zombie_processes.append(zombie_proc)
 
-    target_pod._emit_log("WARN", f"Force deadlock: {locked_threads} threads locked for {duration}s")
+    target._emit_log("WARN", f"Force deadlock: {locked_resources} {resource_type} locked for {duration}s")
 
 def revert_force_deadlock(component, params: Dict[str, Any]):
     """
-    Revert force deadlock by interrupting all zombie processes on the originally affected pod.
+    Revert force deadlock by interrupting all zombie processes on the originally affected component.
 
-    This allows threads to be released early before the deadlock duration expires.
+    This allows threads/connections to be released early before the deadlock duration expires.
     """
-    # Get the originally affected pod ID
-    if not hasattr(component, '_force_deadlock_pod_id'):
-        component._emit_log("WARN", "No force_deadlock pod ID tracked - cannot revert")
-        return
+    from src.components.database import SqlDatabase
 
-    affected_pod_id = component._force_deadlock_pod_id
+    # Determine target component
+    target = None
+    tracking_attr = None
 
-    # Find the pod by ID
-    if isinstance(component, Service):
-        # Look up pod in service's current pod list
-        target_pod = None
-        for pod in component.pods:
-            if pod.id == affected_pod_id:
-                target_pod = pod
-                break
+    if hasattr(component, '_force_deadlock_pod_id'):
+        # Pod or Service
+        affected_pod_id = component._force_deadlock_pod_id
+        tracking_attr = '_force_deadlock_pod_id'
 
-        if target_pod is None:
-            component._emit_log("WARN", f"force_deadlock: Original pod {affected_pod_id} no longer exists (may have been replaced)")
-            # Clean up tracking
-            del component._force_deadlock_pod_id
+        if isinstance(component, Service):
+            # Look up pod in service's current pod list
+            for pod in component.pods:
+                if pod.id == affected_pod_id:
+                    target = pod
+                    break
+
+            if target is None:
+                component._emit_log("WARN", f"force_deadlock: Original pod {affected_pod_id} no longer exists (may have been replaced)")
+                del component._force_deadlock_pod_id
+                return
+
+            component._emit_log("INFO", f"force_deadlock: Reverting on pod {target.id}")
+        elif isinstance(component, Pod):
+            target = component
+        else:
             return
 
-        component._emit_log("INFO", f"force_deadlock: Reverting on pod {target_pod.id}")
-    elif isinstance(component, Pod):
-        target_pod = component
+    elif hasattr(component, '_force_deadlock_component_id'):
+        # Database
+        target = component
+        tracking_attr = '_force_deadlock_component_id'
     else:
+        component._emit_log("WARN", "No force_deadlock tracking found - cannot revert")
         return
 
-    if not hasattr(target_pod, '_zombie_processes') or not target_pod._zombie_processes:
-        target_pod._emit_log("INFO", "No zombie processes to revert")
+    if not hasattr(target, '_zombie_processes') or not target._zombie_processes:
+        target._emit_log("INFO", "No zombie processes to revert")
         # Clean up tracking
-        del component._force_deadlock_pod_id
+        if tracking_attr:
+            delattr(component, tracking_attr)
         return
 
     # Interrupt all zombie processes
     interrupted_count = 0
-    for zombie_proc in target_pod._zombie_processes:
+    for zombie_proc in target._zombie_processes:
         if zombie_proc.is_alive:
             try:
                 zombie_proc.interrupt("Deadlock reverted")
@@ -1055,24 +1081,13 @@ def revert_force_deadlock(component, params: Dict[str, Any]):
                 pass
 
     # Clear the zombie process list
-    target_pod._zombie_processes = []
+    target._zombie_processes = []
 
-    target_pod._emit_log("INFO", f"Force deadlock reverted: {interrupted_count} threads released early")
-
-    # Validation: Check that threads were actually released
-    # Schedule a validation check after a short delay to allow interrupts to propagate
-    def validate_release():
-        yield target_pod.env.timeout(0.1)  # Small delay for interrupt propagation
-        active_count = target_pod.thread_pool.count
-        if active_count > 0:
-            target_pod._emit_log("ERROR", f"Deadlock revert validation FAILED: {active_count} threads still held after revert")
-        else:
-            target_pod._emit_log("INFO", f"Deadlock revert validation PASSED: All threads released")
-
-    target_pod.env.process(validate_release())
+    target._emit_log("INFO", f"Force deadlock reverted: {interrupted_count} resources released early")
 
     # Clean up tracking
-    del component._force_deadlock_pod_id
+    if tracking_attr:
+        delattr(component, tracking_attr)
 
 
 def no_fault(component: SimulatedComponent, params: Dict[str, Any]):
