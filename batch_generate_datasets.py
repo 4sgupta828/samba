@@ -24,27 +24,38 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple
 
-# Fault type configurations from src/scenarios/library.py
+# Fault type configurations - synchronized with viz/app.py VALID_FAULT_COMBINATIONS
 FAULT_CONFIGS = [
-    # Level 1: Simple service failures
+    # Level 1: Simple service failures (Tier 1: Core Resource Saturation)
     {'fault_type': 'cpu_saturation', 'fault_role': 'service', 'level': 1},
     {'fault_type': 'memory_leak', 'fault_role': 'service', 'level': 1},
+    {'fault_type': 'memory_pressure', 'fault_role': 'service', 'level': 1},
+    {'fault_type': 'memory_thrashing', 'fault_role': 'service', 'level': 1},
+    {'fault_type': 'thread_exhaustion', 'fault_role': 'service', 'level': 1},
     {'fault_type': 'inject_latency', 'fault_role': 'service', 'level': 1},
+    {'fault_type': 'inject_errors', 'fault_role': 'service', 'level': 1},
 
-    # Level 2: Database bottlenecks
-    {'fault_type': 'disk_io_saturation', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'thread_exhaustion', 'fault_role': 'database', 'level': 2},
+    # Level 2: Database bottlenecks (Tier 1: Core Resource Saturation)
     {'fault_type': 'cpu_saturation', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'memory_leak', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'memory_pressure', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'memory_thrashing', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'thread_exhaustion', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'disk_io_saturation', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'inject_latency', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'inject_errors', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'force_deadlock', 'fault_role': 'database', 'level': 2},
 
-    # Level 3: Complex interactions
+    # Level 3: Complex interactions (Tier 2: Interaction Failures + Structural)
     {'fault_type': 'cache_failure', 'fault_role': 'cache', 'level': 3},
     {'fault_type': 'inject_latency', 'fault_role': 'cache', 'level': 3},
+    {'fault_type': 'inject_errors', 'fault_role': 'cache', 'level': 3},
     {'fault_type': 'queue_consumer_slowdown', 'fault_role': 'queue', 'level': 3},
     {'fault_type': 'hot_shard', 'fault_role': 'service', 'level': 3},
     {'fault_type': 'force_deadlock', 'fault_role': 'service', 'level': 3},
     {'fault_type': 'noisy_neighbor', 'fault_role': 'service', 'level': 3},
 
-    # Level 4: External dependencies and network
+    # Level 4: External dependencies and network (Tier 2: Interaction Failures)
     {'fault_type': 'inject_latency', 'fault_role': 'external', 'level': 4},
     {'fault_type': 'inject_errors', 'fault_role': 'external', 'level': 4},
     {'fault_type': 'network_partition', 'fault_role': 'network', 'level': 4},
