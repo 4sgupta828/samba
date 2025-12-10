@@ -27,6 +27,9 @@ class WorkloadGenerator:
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
 
+        # Dynamic RPS multiplier (can be adjusted during runtime for workload tuning)
+        self.rps_multiplier = 1.0
+
         # Pre-process the request mix for weighted random choice
         self.request_types: List[str] = [item['type'] for item in self.config['request_mix']]
         self.request_weights: List[int] = [item['weight'] for item in self.config['request_mix']]
@@ -203,7 +206,11 @@ class WorkloadGenerator:
                 yield self.env.timeout(60) # Check again in 60s
                 continue
 
-            yield self.env.timeout(inter_arrival_time)
+            # Apply dynamic RPS multiplier (for workload tuning)
+            # Multiplier < 1.0 reduces traffic, > 1.0 increases traffic
+            adjusted_inter_arrival_time = inter_arrival_time / self.rps_multiplier if self.rps_multiplier > 0 else inter_arrival_time
+
+            yield self.env.timeout(adjusted_inter_arrival_time)
 
             # 2. Choose what kind of request to send based on the mix weights
             selected_request_type = random.choices(self.request_types, self.request_weights, k=1)[0]

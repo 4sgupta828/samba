@@ -86,6 +86,7 @@ class SimulatedComponent:
 
         # --- NEW: Attributes for Failure Injection ---
         self.injected_latency_ms: float = config.fault_injection.default_injected_latency_ms
+        self.cpu_cost_multiplier: float = 1.0  # Multiplier for CPU required per request (for cpu_saturation fault)
         self.forced_error_rate: float = config.fault_injection.default_forced_error_rate
 
         # --- NEW: Component-level error metrics ---
@@ -396,6 +397,7 @@ class SimulatedComponent:
         param_mapping = {
             'latency_ms': 'injected_latency_ms',
             'error_rate': 'forced_error_rate',
+            'cpu_cost_multiplier': 'cpu_cost_multiplier',
             # Add more mappings as needed
         }
 

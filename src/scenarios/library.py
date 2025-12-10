@@ -21,6 +21,10 @@ class EpisodeConfig:
     description: str             # Human-readable description
     progression: str = "linear"  # How failure progresses: linear, exponential, step
     fault_params: dict = None    # Failure-specific parameters
+    fault_severity: float = 0.5  # NEW: Fault intensity [0.0-1.0], default 0.5 (balanced)
+                                 # 0.0-0.3: Subtle (mild issues)
+                                 # 0.3-0.7: Moderate (typical prod issues)
+                                 # 0.7-1.0: Severe (cascading failures)
 
     def get_failure_params(self) -> dict:
         """

@@ -174,9 +174,12 @@ class TrainingFailureInjector:
             parameter = 'error_rate'
             delta = params.get('error_rate', 0.5)
         elif failure_mode == 'cpu_saturation':
-            # For CPU saturation, we increase injected latency to simulate processing slowdown
-            parameter = 'latency_ms'
-            delta = params.get('cpu_latency_ms', 500)
+            # For CPU saturation, we increase the CPU cost per request (first principles)
+            # This models the actual increased computational work needed
+            parameter = 'cpu_cost_multiplier'
+            # Start from 1.0 (normal) and increase by cpu_multiplier - 1.0
+            # e.g., cpu_multiplier=3.0 means requests need 3x CPU → delta = 2.0
+            delta = params.get('cpu_multiplier', 3.0) - 1.0
         elif failure_mode == 'memory_pressure':
             parameter = 'latency_ms'
             delta = params.get('memory_latency_ms', 300)
@@ -238,13 +241,46 @@ class TrainingFailureInjector:
             return
 
         # Apply the change gradually
-        target.apply_infrastructure_change(
-            parameter=parameter,
-            delta=delta,
-            duration=duration,
-            progression=progression,
-            start_time=self.env.now
-        )
+        # For pod-level faults (cpu_saturation, memory_leak), apply to all pods if target is a service
+        pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
+
+        if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
+            # Apply gradual change to all pods of the service
+            print(f"   Applying gradual '{failure_mode}' to {len(target.pods)} pods of {target_id}")
+            for pod in target.pods:
+                pod.apply_infrastructure_change(
+                    parameter=parameter,
+                    delta=delta,
+                    duration=duration,
+                    progression=progression,
+                    start_time=self.env.now
+                )
+
+                # Special handling for cpu_saturation: also set CPU floor to show high utilization
+                if failure_mode == 'cpu_saturation' and hasattr(pod, 'dynamics') and pod.dynamics:
+                    # Calculate target CPU based on params
+                    cpu_multiplier = params.get('cpu_multiplier', 3.0)
+                    # Set CPU floor to show saturation (80-95% utilization)
+                    target_cpu_percent = min(95.0, 50.0 + (cpu_multiplier * 15.0))
+                    pod.dynamics.fault_cpu_floor_percent = target_cpu_percent
+                    print(f"      [{pod.id}] Setting CPU floor: {target_cpu_percent:.1f}%")
+
+        else:
+            # Apply to target directly
+            target.apply_infrastructure_change(
+                parameter=parameter,
+                delta=delta,
+                duration=duration,
+                progression=progression,
+                start_time=self.env.now
+            )
+
+            # Special handling for cpu_saturation on non-service targets
+            if failure_mode == 'cpu_saturation' and hasattr(target, 'dynamics') and target.dynamics:
+                cpu_multiplier = params.get('cpu_multiplier', 3.0)
+                target_cpu_percent = min(95.0, 50.0 + (cpu_multiplier * 15.0))
+                target.dynamics.fault_cpu_floor_percent = target_cpu_percent
+                print(f"      [{target.id}] Setting CPU floor: {target_cpu_percent:.1f}%")
 
         # Wait for the change to complete
         yield self.env.timeout(duration)
@@ -376,35 +412,56 @@ class TrainingFailureInjector:
 
         # Apply GRADUAL revert using infrastructure change mechanism
         # Use negative deltas to reverse the fault
+        # For pod-level faults, apply to all pods if target is a service
+        pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
+        is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
+        targets_to_revert = target.pods if is_pod_level_fault else [target]
+
         if failure_mode == 'inject_latency':
             # Gradually remove injected latency
-            target.apply_infrastructure_change(
-                parameter='latency_ms',
-                delta=-params.get('latency_ms', 1000),  # Negative delta removes latency
-                duration=duration,
-                progression='linear',
-                start_time=self.env.now
-            )
-            print(f"   Gradual latency removal scheduled")
+            for t in targets_to_revert:
+                t.apply_infrastructure_change(
+                    parameter='latency_ms',
+                    delta=-params.get('latency_ms', 1000),  # Negative delta removes latency
+                    duration=duration,
+                    progression='linear',
+                    start_time=self.env.now
+                )
+            print(f"   Gradual latency removal scheduled for {len(targets_to_revert)} target(s)")
 
         elif failure_mode == 'inject_errors':
             # Gradually remove error rate
-            target.apply_infrastructure_change(
-                parameter='error_rate',
-                delta=-params.get('error_rate', 0.5),  # Negative delta removes errors
-                duration=duration,
-                progression='linear',
-                start_time=self.env.now
-            )
-            print(f"   Gradual error rate reduction scheduled")
+            for t in targets_to_revert:
+                t.apply_infrastructure_change(
+                    parameter='error_rate',
+                    delta=-params.get('error_rate', 0.5),  # Negative delta removes errors
+                    duration=duration,
+                    progression='linear',
+                    start_time=self.env.now
+                )
+            print(f"   Gradual error rate reduction scheduled for {len(targets_to_revert)} target(s)")
 
         elif failure_mode == 'cpu_saturation':
-            # Remove CPU floor constraint
-            # Note: This is inherently instant (can't gradually remove a constraint)
-            # But we call it anyway for consistency
-            if hasattr(target, 'dynamics') and target.dynamics:
-                target.dynamics.fault_cpu_floor_percent = None
-                print(f"   CPU floor removed (instant - constraint removal)")
+            # Gradually reduce CPU cost multiplier back to 1.0 (normal)
+            for t in targets_to_revert:
+                current_multiplier = getattr(t, 'cpu_cost_multiplier', 1.0)
+                # Delta to return to 1.0: -(current - 1.0)
+                delta_to_normal = -(current_multiplier - 1.0)
+
+                t.apply_infrastructure_change(
+                    parameter='cpu_cost_multiplier',
+                    delta=delta_to_normal,
+                    duration=duration,
+                    progression='linear',
+                    start_time=self.env.now
+                )
+
+                # Remove CPU floor constraint
+                if hasattr(t, 'dynamics') and t.dynamics:
+                    t.dynamics.fault_cpu_floor_percent = None
+                    print(f"      [{t.id}] Removed CPU floor")
+
+            print(f"   Gradual CPU cost reduction scheduled for {len(targets_to_revert)} target(s)")
 
         elif failure_mode == 'memory_leak':
             # Stop the leak - prevents further memory accumulation

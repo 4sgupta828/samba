@@ -28,6 +28,8 @@ from src.topology.semantic_mapper import SemanticMapper
 from src.scenarios.library import ScenarioLibrary, EpisodeConfig
 from src.simulation import Simulation
 from src.failures.training_injector import TrainingFailureInjector
+from src.failures.fault_tuner import FaultParameterTuner
+from src.workloads.tuner import WorkloadTuner
 from src.telemetry.topology_state_exporter import TopologyStateExporter
 from src.components.service import Service
 from src.components.pod import Pod
@@ -340,7 +342,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                             export_interval=scenario.export_interval,
                             description=scenario.description,
                             progression=scenario.progression,
-                            fault_params=scenario.fault_params
+                            fault_params=scenario.fault_params,
+                            fault_severity=scenario.fault_severity
                         )
                         break
                 if cfg:
@@ -407,7 +410,8 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                             export_interval=scenario.export_interval,
                             description=scenario.description,
                             progression=scenario.progression,
-                            fault_params=scenario.fault_params
+                            fault_params=scenario.fault_params,
+                            fault_severity=scenario.fault_severity
                         )
                         break
                 if cfg:
@@ -848,6 +852,27 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         actual_target_id = target_id
         params = cfg.get_failure_params()
 
+    # === CAPACITY-AWARE FAULT TUNING ===
+    # Tune fault parameters based on node capacity, replicas, and topology position
+    # This ensures faults are strong enough to cause visible impact regardless of scale
+    # NOTE: No phi parameter! Phi is already factored into capacity planning.
+    fault_tuner = FaultParameterTuner(
+        nx_graph=nx_graph,
+        capacity_configs=tuned_configs,
+        target_rps=target_rps
+    )
+
+    tuned_params = fault_tuner.tune_fault_parameters(
+        target_node_id=actual_target_id,
+        fault_type=cfg.fault_type,
+        baseline_params=params,
+        severity=cfg.fault_severity,
+        verbose=verbose
+    )
+
+    # Use tuned parameters for fault injection
+    params = tuned_params
+
     # Calculate A-B-A timeline (Healthy -> Fault -> Recovery):
     # - Warmup: 0 to warmup_period (no metrics collected)
     # - Healthy Baseline: warmup_period to fault_start (healthy system with metrics)
@@ -988,6 +1013,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             }
         },
         'fault_params': params,
+        'fault_params_baseline': cfg.get_failure_params(),  # Original params from scenario library
+        'fault_params_tuned': params,  # Capacity-aware tuned params
+        'fault_tuning_applied': True,
         'topology': {
             'nodes': len(nx_graph.nodes),
             'edges': len(nx_graph.edges),

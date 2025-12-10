@@ -767,9 +767,22 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     latency_multiplier = get_profile_multiplier(self.resource_profile)
                     service_latency = base_latency * latency_multiplier
 
+                    # Apply CPU cost multiplier (first principles CPU saturation)
+                    # When CPU is saturated, requests need more CPU cycles, so they take longer
+                    # This models the actual computational work increase
+                    service_latency *= self.cpu_cost_multiplier
+
+                    # Add injected latency (for other fault types like inject_latency)
+                    if self.injected_latency_ms > 0:
+                        service_latency += self.injected_latency_ms / 1000.0  # Convert ms to seconds
+
                     if span:
                         span.set_attribute("resource.profile", self.resource_profile)
                         span.set_attribute("profile.latency_multiplier", latency_multiplier)
+                        if self.cpu_cost_multiplier != 1.0:
+                            span.set_attribute("cpu.cost_multiplier", self.cpu_cost_multiplier)
+                        if self.injected_latency_ms > 0:
+                            span.set_attribute("injected.latency_ms", self.injected_latency_ms)
 
                     yield self.env.timeout(service_latency)
 
@@ -1421,6 +1434,14 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         # Default processing work
         config = get_simulation_config().compute
         work_time = random.gauss(config.request_default_time_mean_seconds, config.request_default_time_stdev_seconds)
+
+        # Apply CPU cost multiplier (first principles CPU saturation)
+        work_time *= self.cpu_cost_multiplier
+
+        # Add injected latency (for other fault types)
+        if self.injected_latency_ms > 0:
+            work_time += self.injected_latency_ms / 1000.0  # Convert ms to seconds
+
         yield self.env.timeout(work_time)
 
     def _calculate_memory_pressure_delay(self, current_memory_mb: float) -> float:

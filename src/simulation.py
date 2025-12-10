@@ -165,7 +165,28 @@ class Simulation:
         self.logger.info("[Phase 4/5] Initializing workload generator...")
         workload_path = self.config.get('workload', {}).get('path')
         workload_generator = WorkloadGenerator(self.env, workload_path, component_registry)
+        self.workload_generator = workload_generator  # Store for workload tuning
         self.env.process(workload_generator.run())
+
+        # 4.5. Initialize Workload Tuner (dynamic traffic adjustment during warmup)
+        # This ensures we start with a healthy baseline by finding the maximum
+        # sustainable load during warmup (30-60s)
+        if warmup_period > 30.0:
+            self.logger.info("[Phase 4.5/5] Initializing workload tuner...")
+            from src.workloads.tuner import WorkloadTuner
+            workload_tuner = WorkloadTuner(
+                env=self.env,
+                workload_generator=workload_generator,
+                tuning_start=30.0,  # Start tuning at 30s (after initial warmup)
+                tuning_duration=min(30.0, warmup_period - 30.0),  # Tune for up to 30s
+                check_interval=5.0,
+                error_rate_threshold=0.02,  # 2% error rate threshold
+                utilization_threshold=0.70  # Target 70% utilization
+            )
+            self.workload_tuner = workload_tuner
+            self.env.process(workload_tuner.run())
+        else:
+            self.workload_tuner = None
 
         # 5. Note: Failure injection is now handled externally via TrainingFailureInjector
         # in generate_dataset.py for procedural training data generation.
@@ -232,6 +253,18 @@ class Simulation:
 
         # Store simulation configs for reproducibility
         self._store_configs(output_dir)
+
+        # Save workload tuning results if available
+        if self.workload_tuner:
+            try:
+                tuning_results = self.workload_tuner.get_tuning_results()
+                tuning_results_path = os.path.join(output_dir, 'workload_tuning.json')
+                with open(tuning_results_path, 'w') as f:
+                    import json
+                    json.dump(tuning_results, f, indent=2)
+                self.logger.info(f"Workload tuning results saved to: {tuning_results_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to save workload tuning results: {e}")
 
         # Run telemetry validation
         self._run_validation(output_dir)
