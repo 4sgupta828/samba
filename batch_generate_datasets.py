@@ -39,17 +39,13 @@ FAULT_CONFIGS = [
     {'fault_type': 'cpu_saturation', 'fault_role': 'database', 'level': 2},
     {'fault_type': 'memory_leak', 'fault_role': 'database', 'level': 2},
     {'fault_type': 'memory_pressure', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'memory_thrashing', 'fault_role': 'database', 'level': 2},
     {'fault_type': 'thread_exhaustion', 'fault_role': 'database', 'level': 2},
     {'fault_type': 'disk_io_saturation', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'inject_latency', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'inject_errors', 'fault_role': 'database', 'level': 2},
     {'fault_type': 'force_deadlock', 'fault_role': 'database', 'level': 2},
 
     # Level 3: Complex interactions (Tier 2: Interaction Failures + Structural)
     {'fault_type': 'cache_failure', 'fault_role': 'cache', 'level': 3},
     {'fault_type': 'inject_latency', 'fault_role': 'cache', 'level': 3},
-    {'fault_type': 'inject_errors', 'fault_role': 'cache', 'level': 3},
     {'fault_type': 'queue_consumer_slowdown', 'fault_role': 'queue', 'level': 3},
     {'fault_type': 'hot_shard', 'fault_role': 'service', 'level': 3},
     {'fault_type': 'force_deadlock', 'fault_role': 'service', 'level': 3},

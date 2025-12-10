@@ -98,15 +98,15 @@ VALID_FAULT_COMBINATIONS = {
     # Tier 1: Core Resource Saturation
     'cpu_saturation': ['service', 'database'],  # High CPU → consistent slowdown
     'memory_pressure': ['service', 'database'],  # Sustained high memory → allocation overhead
-    'memory_thrashing': ['service', 'database'],  # NEW: Memory bursts → bimodal latency
+    'memory_thrashing': ['service'],  # NEW: Memory bursts → bimodal latency (service-specific)
     'thread_exhaustion': ['service', 'database'],  # NEW: Pool saturation → queue buildup
     'disk_io_saturation': ['database'],  # NEW: HIGH latency, LOW CPU (database-specific)
     'memory_leak': ['service', 'database'],  # Gradual memory exhaustion
 
     # Tier 2: Interaction Failures
-    'inject_latency': ['service', 'cache', 'external', 'database'],  # Generic latency injection
-    'inject_errors': ['service', 'cache', 'external', 'database'],  # Generic error injection
-    'cache_failure': ['cache'],  # Cache degradation (hit rate, latency, errors)
+    'inject_latency': ['service', 'cache', 'external'],  # Generic latency injection
+    'inject_errors': ['service', 'external'],  # Generic error injection
+    'cache_failure': ['cache'],  # Cache degradation (hit rate, latency, errors - comprehensive)
     'queue_consumer_slowdown': ['queue'],  # Message processing slowdown
 
     # Structural/Distributed Faults

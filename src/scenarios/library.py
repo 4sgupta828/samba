@@ -294,36 +294,6 @@ class ScenarioLibrary:
                 level=2,
                 topology_size=10,
                 duration=600,
-                fault_type="memory_thrashing",
-                fault_target_role="database",
-                export_interval=5,
-                description="Database memory thrashing (allocation bursts)",
-                progression="step"
-            ),
-            EpisodeConfig(
-                level=2,
-                topology_size=10,
-                duration=600,
-                fault_type="inject_latency",
-                fault_target_role="database",
-                export_interval=5,
-                description="Database latency spike",
-                progression="linear"
-            ),
-            EpisodeConfig(
-                level=2,
-                topology_size=10,
-                duration=600,
-                fault_type="inject_errors",
-                fault_target_role="database",
-                export_interval=5,
-                description="Database error rate increase",
-                progression="step"
-            ),
-            EpisodeConfig(
-                level=2,
-                topology_size=10,
-                duration=600,
                 fault_type="force_deadlock",
                 fault_target_role="database",
                 export_interval=5,
@@ -354,16 +324,6 @@ class ScenarioLibrary:
                 export_interval=10,
                 description="Cache latency spike",
                 progression="linear"
-            ),
-            EpisodeConfig(
-                level=3,
-                topology_size=20,
-                duration=900,
-                fault_type="inject_errors",
-                fault_target_role="cache",
-                export_interval=10,
-                description="Cache error rate increase",
-                progression="step"
             ),
             EpisodeConfig(
                 level=3,
