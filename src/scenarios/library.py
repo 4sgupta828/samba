@@ -36,11 +36,16 @@ class EpisodeConfig:
         - Randomize within realistic bounds for diversity
         - Scale to component configuration (thread pools, capacity, etc.)
         - Parameters set here are defaults; they can be overridden at injection time
+        - Respects self.fault_severity if set (user override)
         """
         if self.fault_params:
             return self.fault_params
 
         import random
+
+        # Use user-specified severity if provided, otherwise randomize for diversity
+        # User-specified severity (via --fault-severity) should always take precedence
+        severity = self.fault_severity if self.fault_severity is not None else random.uniform(0.3, 0.7)
 
         # Default parameters for each failure type
         # Use ranges and percentages for more realistic, diverse scenarios
@@ -50,7 +55,7 @@ class EpisodeConfig:
                 'cpu_multiplier': random.uniform(2.5, 4.0),      # 2.5-4x CPU usage
                 'latency_multiplier': random.uniform(1.5, 3.0),  # 1.5-3x latency
                 'cpu_latency_ms': random.randint(300, 800),      # 300-800ms added latency
-                'severity': random.uniform(0.3, 0.7)             # 0.3-0.7 = moderate severity
+                'severity': severity  # Use user-specified or random
             },
             'memory_leak': {
                 # Randomize leak rate for different severities
@@ -58,15 +63,15 @@ class EpisodeConfig:
             },
             'memory_pressure': {
                 # Severity-based memory pressure (fault tuner calculates actual increase)
-                'severity': random.uniform(0.3, 0.7)  # 0.3-0.7 = moderate severity
+                'severity': severity  # Use user-specified or random
             },
             'memory_thrashing': {
                 # Severity-based thrashing (fault tuner calculates burst parameters)
-                'severity': random.uniform(0.3, 0.7)  # 0.3-0.7 = moderate severity
+                'severity': severity  # Use user-specified or random
             },
             'disk_io_saturation': {
                 # Severity-based I/O saturation (replaces slow_queries)
-                'severity': random.uniform(0.3, 0.7)  # 0.3-0.7 = moderate severity
+                'severity': severity  # Use user-specified or random
             },
             'thread_exhaustion': {
                 # Percentage-based thread blocking (replaces connection_exhaustion and force_deadlock)
