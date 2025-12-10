@@ -486,14 +486,21 @@ fault_injection:
   memory_leak:
     leak_mb_per_request: 0.5  # MB leaked per request
 
+  memory_pressure:
+    severity: 0.5  # Severity level (0.0-1.0), default moderate
+
+  memory_thrashing:
+    severity: 0.5  # Severity level (0.0-1.0), default moderate
+
   inject_latency:
     latency_ms: 2000  # Latency to inject (milliseconds)
 
-  slow_queries:
-    wear_factor: 0.5  # Database wear/degradation factor
+  disk_io_saturation:
+    severity: 0.5  # Severity level (0.0-1.0), replaces slow_queries
 
-  connection_exhaustion:
-    exhaustion_rate: 0.6  # Exhaust 60% of connection pool
+  thread_exhaustion:
+    thread_percentage: 0.7  # Percentage of threads to exhaust (70%)
+    duration: 300.0  # Duration to hold threads (seconds)
 
   cache_failure:
     max_error_rate: 0.30  # Maximum error rate to degrade to (30%)
@@ -507,7 +514,10 @@ fault_injection:
   queue_consumer_slowdown:
     latency_ms: 500  # Consumer processing delay (milliseconds)
 
-  enable_background_job: {}  # No parameters needed
+  # Deprecated faults removed (2025-12-10):
+  # - slow_queries → Use disk_io_saturation instead
+  # - connection_exhaustion → Use thread_exhaustion instead
+  # - enable_background_job → Use cpu_saturation instead
 
 # =============================================================================
 # NOTES FOR LLM AGENTS

@@ -11,16 +11,23 @@ TEST_DIR = "/var/folders/tx/9fmxvdwn3nsbr4jtn4mh_sl40000gn/T/fault_test_zd5wcm13
 
 COMBINATIONS = [
     ('cpu_saturation', 'service'),
+    ('cpu_saturation', 'database'),
     ('memory_leak', 'service'),
+    ('memory_pressure', 'service'),
+    ('memory_thrashing', 'service'),
     ('inject_latency', 'service'),
     ('inject_latency', 'cache'),
     ('inject_latency', 'external'),
-    ('slow_queries', 'database'),
-    ('connection_exhaustion', 'database'),
-    ('enable_background_job', 'database'),
+    ('disk_io_saturation', 'database'),
+    ('thread_exhaustion', 'database'),
+    ('thread_exhaustion', 'service'),
     ('cache_failure', 'cache'),
     ('inject_errors', 'external'),
     ('queue_consumer_slowdown', 'queue'),
+    ('hot_shard', 'service'),
+    ('noisy_neighbor', 'service'),
+    ('force_deadlock', 'service'),
+    ('network_partition', 'network'),
 ]
 
 

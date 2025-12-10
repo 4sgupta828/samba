@@ -49,25 +49,34 @@ class EpisodeConfig:
                 # Randomize multipliers for diversity
                 'cpu_multiplier': random.uniform(2.5, 4.0),      # 2.5-4x CPU usage
                 'latency_multiplier': random.uniform(1.5, 3.0),  # 1.5-3x latency
-                'cpu_latency_ms': random.randint(300, 800)       # 300-800ms added latency
+                'cpu_latency_ms': random.randint(300, 800),      # 300-800ms added latency
+                'severity': random.uniform(0.3, 0.7)             # 0.3-0.7 = moderate severity
             },
             'memory_leak': {
                 # Randomize leak rate for different severities
                 'leak_mb_per_request': random.uniform(0.3, 1.0)  # 0.3-1.0 MB per request
             },
+            'memory_pressure': {
+                # Severity-based memory pressure (fault tuner calculates actual increase)
+                'severity': random.uniform(0.3, 0.7)  # 0.3-0.7 = moderate severity
+            },
+            'memory_thrashing': {
+                # Severity-based thrashing (fault tuner calculates burst parameters)
+                'severity': random.uniform(0.3, 0.7)  # 0.3-0.7 = moderate severity
+            },
+            'disk_io_saturation': {
+                # Severity-based I/O saturation (replaces slow_queries)
+                'severity': random.uniform(0.3, 0.7)  # 0.3-0.7 = moderate severity
+            },
+            'thread_exhaustion': {
+                # Percentage-based thread blocking (replaces connection_exhaustion and force_deadlock)
+                'thread_percentage': random.uniform(0.6, 0.8),  # 60-80% of threads
+                'duration': 300.0  # 5 minutes (fixed duration for consistent observation window)
+            },
             'inject_latency': {
                 # Randomize latency for realistic variation
                 'latency_ms': random.randint(1500, 3000)  # 1.5-3 seconds
             },
-            'slow_queries': {
-                # Randomize wear factor
-                'wear_factor': random.uniform(0.4, 0.7)  # 40-70% wear
-            },
-            'connection_exhaustion': {
-                # Randomize added latency
-                'latency_ms': random.randint(800, 1500)  # 0.8-1.5 seconds
-            },
-            'enable_background_job': {},
             'cache_failure': {},
             'inject_errors': {
                 # Randomize error rate for different severities
@@ -96,7 +105,7 @@ class EpisodeConfig:
                 'bidirectional': True
             },
             'force_deadlock': {
-                # Percentage-based locking (adaptive to thread pool size)
+                # Alias for thread_exhaustion (deprecated, kept for backward compatibility)
                 'thread_percentage': random.uniform(0.6, 0.8),  # 60-80% of threads
                 'duration': 300.0  # 5 minutes (fixed duration for consistent observation window)
             }
@@ -175,6 +184,26 @@ class ScenarioLibrary:
                 level=1,
                 topology_size=5,
                 duration=300,
+                fault_type="memory_pressure",
+                fault_target_role="service",
+                export_interval=5,
+                description="Single service memory pressure (sustained high memory)",
+                progression="linear"
+            ),
+            EpisodeConfig(
+                level=1,
+                topology_size=5,
+                duration=300,
+                fault_type="memory_thrashing",
+                fault_target_role="service",
+                export_interval=5,
+                description="Single service memory thrashing (periodic allocation bursts)",
+                progression="step"  # Thrashing often starts suddenly
+            ),
+            EpisodeConfig(
+                level=1,
+                topology_size=5,
+                duration=300,
                 fault_type="inject_latency",
                 fault_target_role="service",
                 export_interval=5,
@@ -190,30 +219,30 @@ class ScenarioLibrary:
                 level=2,
                 topology_size=10,
                 duration=600,  # 10 minutes
-                fault_type="slow_queries",
+                fault_type="disk_io_saturation",
                 fault_target_role="database",
                 export_interval=5,
-                description="Database query slowdown",
+                description="Database I/O saturation (disk saturation causing query slowdown)",
                 progression="exponential"  # DB degradation often accelerates
             ),
             EpisodeConfig(
                 level=2,
                 topology_size=10,
                 duration=600,
-                fault_type="connection_exhaustion",
+                fault_type="thread_exhaustion",
                 fault_target_role="database",
                 export_interval=5,
-                description="Database connection pool exhaustion",
+                description="Database thread pool exhaustion (connection pool saturation)",
                 progression="linear"
             ),
             EpisodeConfig(
                 level=2,
                 topology_size=10,
                 duration=600,
-                fault_type="enable_background_job",
+                fault_type="cpu_saturation",
                 fault_target_role="database",
                 export_interval=5,
-                description="Database background job contention",
+                description="Database CPU saturation (background job contention)",
                 progression="step"  # Background jobs often start suddenly
             ),
         ]

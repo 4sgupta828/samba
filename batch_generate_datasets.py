@@ -32,9 +32,9 @@ FAULT_CONFIGS = [
     {'fault_type': 'inject_latency', 'fault_role': 'service', 'level': 1},
 
     # Level 2: Database bottlenecks
-    {'fault_type': 'slow_queries', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'connection_exhaustion', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'enable_background_job', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'disk_io_saturation', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'thread_exhaustion', 'fault_role': 'database', 'level': 2},
+    {'fault_type': 'cpu_saturation', 'fault_role': 'database', 'level': 2},
 
     # Level 3: Complex interactions
     {'fault_type': 'cache_failure', 'fault_role': 'cache', 'level': 3},
