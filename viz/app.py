@@ -267,11 +267,33 @@ app.layout = dbc.Container([
                                 ),
                             ], width=2),
                             dbc.Col([
+                                dbc.Label("Fault Severity:", html_for="fault-severity-slider"),
+                                html.Div([
+                                    dcc.Slider(
+                                        id='fault-severity-slider',
+                                        min=0.0,
+                                        max=1.0,
+                                        step=0.1,
+                                        value=0.5,
+                                        marks={
+                                            0.0: {'label': '0.0 (Subtle)', 'style': {'fontSize': '10px'}},
+                                            0.3: {'label': '0.3', 'style': {'fontSize': '10px'}},
+                                            0.5: {'label': '0.5 (Moderate)', 'style': {'fontSize': '10px'}},
+                                            0.7: {'label': '0.7', 'style': {'fontSize': '10px'}},
+                                            1.0: {'label': '1.0 (Severe)', 'style': {'fontSize': '10px'}}
+                                        },
+                                        tooltip={"placement": "bottom", "always_visible": False}
+                                    ),
+                                    html.Div(id='fault-severity-value', className='text-center small text-muted mt-1')
+                                ])
+                            ], width=2),
+                            dbc.Col([
                                 dbc.Label("Fault Type (optional):", html_for="fault-type-dropdown"),
                                 dcc.Dropdown(
                                     id='fault-type-dropdown',
                                     options=[
                                         {'label': 'Any (Random)', 'value': ''},
+                                        {'label': 'No Fault', 'value': 'no_fault'},
                                         {'label': 'CPU Saturation', 'value': 'cpu_saturation'},
                                         {'label': 'Memory Leak', 'value': 'memory_leak'},
                                         {'label': 'Inject Latency', 'value': 'inject_latency'},
@@ -1906,6 +1928,25 @@ def update_topology_controls(llm_topology_list):
 
 
 @app.callback(
+    Output('fault-severity-value', 'children'),
+    Input('fault-severity-slider', 'value')
+)
+def update_severity_display(severity):
+    """Update the display text for the fault severity slider."""
+    if severity is None:
+        severity = 0.5
+
+    if severity <= 0.3:
+        level = "Subtle"
+    elif severity <= 0.7:
+        level = "Moderate"
+    else:
+        level = "Severe"
+
+    return f"Severity: {severity:.1f} ({level})"
+
+
+@app.callback(
     Output('fault-role-dropdown', 'options'),
     Output('fault-type-dropdown', 'options'),
     Input('fault-type-dropdown', 'value'),
@@ -1935,6 +1976,7 @@ def update_fault_dropdowns(fault_type, fault_role):
     }
 
     fault_type_labels = {
+        'no_fault': 'No Fault (Baseline)',
         'cpu_saturation': 'CPU Saturation (5min)',
         'memory_leak': 'Memory Leak (5min)',
         'inject_latency': 'Inject Latency (5-15min)',
@@ -1991,6 +2033,7 @@ def update_fault_dropdowns(fault_type, fault_role):
     Input('generate-button', 'n_clicks'),
     State('episodes-input', 'value'),
     State('topology-size-input', 'value'),
+    State('fault-severity-slider', 'value'),
     State('fault-type-dropdown', 'value'),
     State('fault-role-dropdown', 'value'),
     State('output-dir-input', 'value'),
@@ -2002,7 +2045,7 @@ def update_fault_dropdowns(fault_type, fault_role):
     State('enable-llm-analysis-checkbox', 'value'),
     prevent_initial_call=True
 )
-def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_role, output_dir, seed, verbose_list, llm_topology_list, topology_name, enable_enhanced_analysis_list, enable_llm_analysis_list):
+def start_generation(n_clicks, num_episodes, topology_size, fault_severity, fault_type, fault_role, output_dir, seed, verbose_list, llm_topology_list, topology_name, enable_enhanced_analysis_list, enable_llm_analysis_list):
     """Start dataset generation in background when button is clicked."""
     import subprocess
     import sys
@@ -2025,19 +2068,24 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
     if (fault_type or fault_role) and num_episodes > 1:
         return dbc.Alert("Fault forcing only works with single episode generation. Please set episodes to 1.", color="danger"), True, False, True
 
-    # Validate that both fault type and role are provided together
-    if (fault_type and not fault_role) or (fault_role and not fault_type):
-        return dbc.Alert("Both fault type and fault role must be specified together.", color="danger"), True, False, True
+    # Special handling for no_fault: doesn't require a role
+    if fault_type == 'no_fault':
+        # Clear fault_role for no_fault type
+        fault_role = None
+    else:
+        # Validate that both fault type and role are provided together
+        if (fault_type and not fault_role) or (fault_role and not fault_type):
+            return dbc.Alert("Both fault type and fault role must be specified together.", color="danger"), True, False, True
 
-    # Validate that the fault type and role combination is valid
-    if fault_type and fault_role:
-        valid_roles = VALID_FAULT_COMBINATIONS.get(fault_type, [])
-        if fault_role not in valid_roles:
-            return dbc.Alert(
-                f"Invalid combination: '{fault_type}' cannot be applied to '{fault_role}'. "
-                f"Valid roles for {fault_type}: {', '.join(valid_roles)}",
-                color="danger"
-            ), True, False, True
+        # Validate that the fault type and role combination is valid
+        if fault_type and fault_role:
+            valid_roles = VALID_FAULT_COMBINATIONS.get(fault_type, [])
+            if fault_role not in valid_roles:
+                return dbc.Alert(
+                    f"Invalid combination: '{fault_type}' cannot be applied to '{fault_role}'. "
+                    f"Valid roles for {fault_type}: {', '.join(valid_roles)}",
+                    color="danger"
+                ), True, False, True
 
     if not output_dir:
         output_dir = 'data'
@@ -2063,11 +2111,9 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_type, fault_ro
     if seed:
         cmd.extend(['--seed', str(seed)])
 
-    if fault_type:
-        cmd.extend(['--fault-type', fault_type])
-
-    if fault_role:
-        cmd.extend(['--fault-role', fault_role])
+    # Add fault severity (default to 0.5 if not provided)
+    if fault_severity is not None:
+        cmd.extend(['--fault-severity', str(fault_severity)])
 
     verbose = 'verbose' in (verbose_list or [])
     if verbose:

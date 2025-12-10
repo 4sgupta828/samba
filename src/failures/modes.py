@@ -884,8 +884,24 @@ def revert_force_deadlock(component, params: Dict[str, Any]):
     # Clean up tracking
     del component._force_deadlock_pod_id
 
+
+def no_fault(component: SimulatedComponent, params: Dict[str, Any]):
+    """
+    No-op fault mode for running simulations without any fault injection.
+    This allows users to collect baseline performance data.
+
+    Args:
+        component: Target component (unused)
+        params: Fault parameters (unused)
+    """
+    pass
+
+
 # A registry mapping the 'mode' string to the actual function
 FAILURE_MODES = {
+    # No fault mode (baseline)
+    "no_fault": no_fault,
+
     # State manipulation
     "set_state": set_component_state,
 
@@ -938,6 +954,9 @@ FAILURE_MODES = {
 # Registry mapping fault injection modes to their revert functions
 # Used by the training injector for automatic fault recovery
 REVERT_MODES = {
+    # No fault mode (no revert needed)
+    "no_fault": None,
+
     # Generic faults
     "inject_latency": revert_latency,
     "inject_errors": revert_errors,

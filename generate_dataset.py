@@ -192,7 +192,7 @@ def serialize_topology_graph(nx_graph: nx.DiGraph) -> dict:
     }
 
 
-def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False, replay_params: dict = None, force_root_cause: str = None, force_phi: float = None):
+def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLibrary, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False, replay_params: dict = None, force_root_cause: str = None, force_phi: float = None, fault_severity: float = 0.5):
     """
     Generate a single training episode.
 
@@ -213,6 +213,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         replay_params: Dictionary of parameters to replay a previous run
         force_root_cause: Force a specific root cause component
         force_phi: Force a specific fragility index value
+        fault_severity: Fault injection severity scale (0.0-1.0)
 
     Returns:
         Dictionary with episode metadata
@@ -324,8 +325,25 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             print(f"  Nodes: {len(nx_graph.nodes)}, Edges: {len(nx_graph.edges)}")
             print(f"  Available roles: {', '.join(sorted(available_roles))}")
 
+        # Special handling for no_fault: create baseline episode without fault injection
+        if force_fault_type == 'no_fault':
+            cfg = EpisodeConfig(
+                level=1,
+                topology_size=len(nx_graph.nodes),
+                duration=600,
+                fault_type='no_fault',
+                fault_target_role='service',  # Dummy value, not used
+                export_interval=5,
+                description='Baseline episode without fault injection',
+                progression={'type': 'none'},
+                fault_params={},
+                fault_severity=0.0  # No fault
+            )
+            if verbose:
+                print(f"  No fault mode: Running baseline simulation without fault injection")
+
         # If force_fault_type and force_fault_role are specified, find matching scenario
-        if force_fault_type and force_fault_role:
+        elif force_fault_type and force_fault_role:
             # Find a scenario that matches the forced parameters
             cfg = None
             for level in [1, 2, 3, 4]:
@@ -392,8 +410,25 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             # Default: random number of nodes between 8-15
             actual_topology_size = random.randint(8, 15)
 
+        # Special handling for no_fault: create baseline episode without fault injection
+        if force_fault_type == 'no_fault':
+            cfg = EpisodeConfig(
+                level=1,
+                topology_size=actual_topology_size if actual_topology_size is not None else 10,
+                duration=600,
+                fault_type='no_fault',
+                fault_target_role='service',  # Dummy value, not used
+                export_interval=5,
+                description='Baseline episode without fault injection',
+                progression={'type': 'none'},
+                fault_params={},
+                fault_severity=0.0  # No fault
+            )
+            if verbose:
+                print(f"  No fault mode: Running baseline simulation without fault injection")
+
         # If force_fault_type and force_fault_role are specified, find matching scenario
-        if force_fault_type and force_fault_role:
+        elif force_fault_type and force_fault_role:
             # Find a scenario that matches the forced parameters by searching all levels directly
             cfg = None
             for level in [1, 2, 3, 4]:
@@ -468,6 +503,9 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
         phase_timings['topology_generation'] = time.time() - phase_start
         semantic_overlay = None  # Will be generated later
+
+    # Override fault severity with user-provided value
+    cfg.fault_severity = fault_severity
 
     if verbose:
         print(f"\n{'='*60}")
@@ -730,8 +768,15 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         print(f"  Registered {len([c for c in registry.values() if isinstance(c, DeploymentController)])} controllers")
 
     # 7. Inject Fault Programmatically (GRADUAL APPLICATION)
+    # Special handling for no_fault: skip all fault injection logic
+    if cfg.fault_type == 'no_fault':
+        actual_target_id = None
+        params = {}
+        if verbose:
+            print(f"\n[No Fault Mode]")
+            print(f"  Skipping fault injection - running baseline simulation")
     # Special handling for network_partition
-    if cfg.fault_type == 'network_partition':
+    elif cfg.fault_type == 'network_partition':
         # Network partition requires two components that COMMUNICATE with each other
         # Find all edges in the topology (communication paths)
         all_edges = list(nx_graph.edges())
@@ -913,37 +958,38 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         simulation_start_timestamp_ns=sim.simulation_start_timestamp_ns
     )
 
-    # Schedule GRADUAL fault injection (Phase A -> B)
-    injector.inject_gradual_failure(
-        target_id=actual_target_id,
-        failure_mode=cfg.fault_type,
-        start_time=fault_start_time,
-        duration=fault_ramp_duration,
-        params=params,
-        progression=cfg.progression,
-        episode_id=f'ep{episode_id}_fault'
-    )
-
-    # Schedule GRADUAL fault revert (Phase B -> A Recovery)
-    def schedule_revert():
-        """SimPy process to schedule the recovery phase."""
-        # Wait until recovery should start
-        yield sim.env.timeout(recovery_start_time)
-
-        # Apply gradual revert (which may or may not be a generator itself)
-        revert_result = injector.revert_gradual_failure(
+    # Schedule GRADUAL fault injection (Phase A -> B) - skip for no_fault
+    if actual_target_id is not None:
+        injector.inject_gradual_failure(
             target_id=actual_target_id,
             failure_mode=cfg.fault_type,
+            start_time=fault_start_time,
+            duration=fault_ramp_duration,
             params=params,
-            duration=fault_ramp_duration  # Symmetric recovery duration
+            progression=cfg.progression,
+            episode_id=f'ep{episode_id}_fault'
         )
 
-        # If revert_gradual_failure returned a generator (e.g., for cache_failure), yield from it
-        if revert_result is not None:
-            yield from revert_result
+        # Schedule GRADUAL fault revert (Phase B -> A Recovery)
+        def schedule_revert():
+            """SimPy process to schedule the recovery phase."""
+            # Wait until recovery should start
+            yield sim.env.timeout(recovery_start_time)
 
-    # Start the revert scheduling process
-    sim.env.process(schedule_revert())
+            # Apply gradual revert (which may or may not be a generator itself)
+            revert_result = injector.revert_gradual_failure(
+                target_id=actual_target_id,
+                failure_mode=cfg.fault_type,
+                params=params,
+                duration=fault_ramp_duration  # Symmetric recovery duration
+            )
+
+            # If revert_gradual_failure returned a generator (e.g., for cache_failure), yield from it
+            if revert_result is not None:
+                yield from revert_result
+
+        # Start the revert scheduling process
+        sim.env.process(schedule_revert())
 
     # 8. Save Ground Truth Label (WITH A-B-A TIMELINE)
     # IMPORTANT: All times in the label are in ADJUSTED sim.time (post-warmup)
@@ -1333,16 +1379,16 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
     }
 
 
-def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis, replay_params, force_root_cause, force_phi):
+def _generate_episode_process(episode_id, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis, replay_params, force_root_cause, force_phi, fault_severity):
     """
     Wrapper function to run generate_episode in a separate process.
     Each process has completely fresh global state (including OpenTelemetry).
     """
     lib = ScenarioLibrary()
-    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model, enable_enhanced_analysis=enable_enhanced_analysis, replay_params=replay_params, force_root_cause=force_root_cause, force_phi=force_phi)
+    return generate_episode(episode_id, run_dir, lib, verbose=verbose, topology_size=topology_size, force_fault_type=force_fault_type, force_fault_role=force_fault_role, use_llm_topologies=use_llm_topologies, topology_bank_dir=topology_bank_dir, topology_name=topology_name, skip_analysis=skip_analysis, llm_provider=llm_provider, llm_model=llm_model, enable_enhanced_analysis=enable_enhanced_analysis, replay_params=replay_params, force_root_cause=force_root_cause, force_phi=force_phi, fault_severity=fault_severity)
 
 
-def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False, replay_params: dict = None, force_root_cause: str = None, force_phi: float = None):
+def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, topology_size: int = None, force_fault_type: str = None, force_fault_role: str = None, use_llm_topologies: bool = False, topology_bank_dir: str = "data/topology_bank", topology_name: str = None, skip_analysis: bool = True, llm_provider: str = "openai", llm_model: str = None, enable_enhanced_analysis: bool = False, replay_params: dict = None, force_root_cause: str = None, force_phi: float = None, fault_severity: float = 0.5):
     """
     Generate a full training dataset with multiple episodes.
     Each episode runs in its own process for complete isolation.
@@ -1363,6 +1409,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
         replay_params: Dictionary of parameters to replay a previous run
         force_root_cause: Force a specific root cause component
         force_phi: Force a specific fragility index value
+        fault_severity: Fault injection severity scale (0.0-1.0)
     """
     print(f"\n{'='*60}")
     print(f"SPATIOTEMPORAL DATA FACTORY")
@@ -1402,7 +1449,7 @@ def generate_dataset(num_episodes: int, output_dir: str, verbose: bool = False, 
             # Run episode in a separate process for complete isolation
             process = Process(
                 target=_generate_episode_process,
-                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis, replay_params, force_root_cause, force_phi)
+                args=(i, run_dir, verbose, topology_size, force_fault_type, force_fault_role, use_llm_topologies, topology_bank_dir, topology_name, skip_analysis, llm_provider, llm_model, enable_enhanced_analysis, replay_params, force_root_cause, force_phi, fault_severity)
             )
             process.start()
             process.join()  # Wait for completion
@@ -1576,6 +1623,12 @@ def main():
         help='Specific LLM model to use (default: gpt-4o for openai, claude-opus-4-5-20251101 for anthropic)'
     )
     parser.add_argument(
+        '--fault-severity',
+        type=float,
+        default=0.5,
+        help='Fault injection severity scale (0.0-1.0): 0.0-0.3=Subtle, 0.3-0.7=Moderate, 0.7-1.0=Severe (default: 0.5)'
+    )
+    parser.add_argument(
         '--replay',
         type=str,
         default=None,
@@ -1628,7 +1681,8 @@ def main():
         enable_enhanced_analysis=args.enable_enhanced_analysis,
         replay_params=replay_params,
         force_root_cause=args.root_cause,
-        force_phi=args.phi
+        force_phi=args.phi,
+        fault_severity=args.fault_severity
     )
 
 
