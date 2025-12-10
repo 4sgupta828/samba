@@ -2,17 +2,24 @@
 Deterministic Capacity Planner.
 Right-sizes infrastructure based on semantic request flows and fragility.
 Handles Async Queues, Poisson Bursts, and Circular Dependencies.
+
+FIXED: Async consumer capacity now ensures queue stability using queueing theory.
+       Phi applies to headroom above stability threshold, not baseline capacity.
 """
 import math
 import networkx as nx
 from typing import Dict, Any, List, Tuple, Set
+import logging
 from src.validation.component_profiles import get_component_profile, get_network_latency
 from src.core.constants import get_profile_multiplier
+
+logger = logging.getLogger(__name__)
 
 class CapacityPlanner:
     def __init__(self, graph: nx.DiGraph, semantic_map: Dict = None):
         self.graph = graph
         self.semantic_map = semantic_map or {}
+        self.validation_warnings = []
 
     def plan_capacity(self, target_global_rps: float, phi: float) -> Dict[str, Dict[str, Any]]:
         """
@@ -36,7 +43,7 @@ class CapacityPlanner:
 
             role = self.graph.nodes[node_id].get('role', 'service')
             if role in client_roles:
-                tuned_configs[node_id] = self._tune_node(node_id, role, metrics, phi, tuned_configs)
+                tuned_configs[node_id] = self._tune_node(node_id, role, metrics, phi, tuned_configs, node_metrics)
 
         # PASS 2: Tune Infrastructure (Databases, Caches, Queues)
         # Now we can accurately sum up the upstream client demand
@@ -50,7 +57,46 @@ class CapacityPlanner:
                 # Pass the already-computed tuned_configs so DB can look up its clients
                 tuned_configs[node_id] = self._tune_node(node_id, role, metrics, phi, tuned_configs)
 
+        # ANALYTICAL VALIDATION: Check capacity is sufficient
+        validation_passed = self._validate_capacity(node_metrics, tuned_configs, phi)
+        if not validation_passed:
+            logger.error("Capacity validation failed! System may be unstable at baseline.")
+            for warning in self.validation_warnings:
+                logger.error(f"  - {warning}")
+
         return tuned_configs
+
+    def _is_async_consumer(self, node_id: str) -> bool:
+        """
+        Detect if a service is an async consumer (consumes from queue).
+        Returns True if node has incoming async_consume edges.
+        """
+        for pred, _, edge_data in self.graph.in_edges(node_id, data=True):
+            if edge_data.get('type') == 'async_consume':
+                return True
+        return False
+
+    def _get_upstream_queues(self, node_id: str) -> List[str]:
+        """Get list of queues this service consumes from."""
+        queues = []
+        for pred, _, edge_data in self.graph.in_edges(node_id, data=True):
+            if edge_data.get('type') == 'async_consume':
+                queues.append(pred)
+        return queues
+
+    def _calculate_production_rate_to_queue(self, queue_id: str, node_metrics: Dict) -> float:
+        """
+        Calculate total production rate to a queue from all producers.
+        Returns RPS that will be enqueued.
+        """
+        total_production = 0.0
+        for pred, _, edge_data in self.graph.in_edges(queue_id, data=True):
+            if edge_data.get('type') == 'async_produce':
+                # Get the calculated RPS for this producer
+                producer_rps = node_metrics.get(pred, {}).get('rps', 0.0)
+                total_production += producer_rps
+
+        return total_production
 
     def _calculate_deterministic_load(self, global_rps: float, phi: float) -> Dict[str, Any]:
         """Traverses flows to calculate RPS load."""
@@ -172,8 +218,137 @@ class CapacityPlanner:
 
         return total_dep_latency
 
-    def _tune_node(self, node_id: str, role: str, metrics: Dict, phi: float, existing_configs: Dict[str, Any]) -> Dict[str, Any]:
+    def _tune_async_consumer(
+        self,
+        node_id: str,
+        role: str,
+        metrics: Dict,
+        phi: float,
+        node_metrics: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Tune async consumer using queue stability theory.
+        Ensures consumer capacity exceeds production rate with margin for queue draining.
+        """
+        rps = metrics['rps']
+        if rps <= 0:
+            rps = 0.1
+
+        # Get production rate to queues this consumer reads from
+        queues = self._get_upstream_queues(node_id)
+        total_production_rps = 0.0
+        for queue_id in queues:
+            production = self._calculate_production_rate_to_queue(queue_id, node_metrics)
+            total_production_rps += production
+
+        # Use the higher of calculated RPS or production rate
+        # (flow calculation should match production, but be safe)
+        effective_rps = max(rps, total_production_rps)
+
+        logger.info(f"Async consumer {node_id}: flow_rps={rps:.1f}, production_rps={total_production_rps:.1f}, using={effective_rps:.1f}")
+
+        # Get component profiles
+        latency_prof, res_prof = get_component_profile(role)
+        base_processing_ms = latency_prof.p50
+
+        # Get semantic profile multiplier
+        resource_profile = "standard"
+        if self.semantic_map and 'services' in self.semantic_map:
+            svc_data = self.semantic_map['services'].get(node_id, {})
+            resource_profile = svc_data.get('profile', 'standard')
+        latency_multiplier = get_profile_multiplier(resource_profile)
+
+        effective_processing_ms = base_processing_ms * latency_multiplier
+
+        # BURST FACTOR: Account for P95 production spikes (not just mean)
+        # Workloads are bursty; P95 can be 1.3-1.5x mean
+        burst_factor = 1.3
+
+        # DRAIN MARGIN: Consumer must exceed production to drain queue
+        # Need 20% excess capacity to handle accumulated backlog
+        drain_margin = 1.2
+
+        # REQUIRED consumption rate for queue stability
+        required_consumer_rps = effective_rps * burst_factor * drain_margin
+
+        logger.info(f"  → Required consumer capacity: {required_consumer_rps:.1f} RPS (burst={burst_factor}, drain={drain_margin})")
+
+        # --- Horizontal Scaling: Calculate baseline stable replicas ---
+        cpu_per_req_ms = res_prof.cpu_ms_per_request * latency_multiplier
+        max_rps_per_pod = min(1000.0 / max(0.1, cpu_per_req_ms), 500.0)
+
+        # Minimum replicas for stability (no phi reduction here!)
+        baseline_stable_replicas = math.ceil(required_consumer_rps / max_rps_per_pod)
+        baseline_stable_replicas = max(1, baseline_stable_replicas)
+
+        # PHI ONLY AFFECTS HEADROOM ABOVE STABILITY
+        # phi=0.0 → 2.0x headroom above baseline
+        # phi=1.0 → 1.0x headroom (no extra, exactly at stability)
+        headroom_multiplier = 1.0 + (1.0 * (1.0 - phi))
+
+        final_replicas = max(1, int(baseline_stable_replicas * headroom_multiplier))
+
+        logger.info(f"  → Replicas: baseline_stable={baseline_stable_replicas}, with phi headroom={final_replicas}")
+
+        # --- Vertical Tuning: Thread Pool ---
+        pod_rps = required_consumer_rps / final_replicas
+
+        # For async consumers, use P95 latency (more variance than sync)
+        # Include dependency latency
+        chain_latency = self._estimate_dependency_latency(node_id, phi)
+        p95_latency_ms = (effective_processing_ms + chain_latency) * 1.5  # P95 ≈ 1.5x P50
+
+        # Little's Law with P95 latency
+        concurrency_per_pod = math.ceil(pod_rps * (p95_latency_ms / 1000.0))
+
+        # Pool headroom for async consumers: less aggressive reduction
+        # phi=0.0 → 1.5x, phi=1.0 → 1.1x (minimum margin for variance)
+        pool_headroom = 1.1 + (0.4 * (1.0 - phi))
+
+        threads = max(10, int(concurrency_per_pod * pool_headroom))
+
+        logger.info(f"  → Threads: {threads} (concurrency={concurrency_per_pod}, pool_headroom={pool_headroom:.2f})")
+
+        # DB connections
+        has_db_dependency = any(
+            self.graph.nodes[succ].get('role') == 'database'
+            for succ in self.graph.successors(node_id)
+        )
+        db_connections = max(5, int(threads * 0.8)) if has_db_dependency else 0
+
+        # Timeouts
+        total_expected_ms = effective_processing_ms + chain_latency
+        timeout_margin = 1.05 + (0.45 * (1.0 - phi))
+        timeout_sec = (total_expected_ms * timeout_margin) / 1000.0
+
+        config = {
+            'desired_replicas': final_replicas,
+            'thread_pool_size': threads,
+            'db_connection_pool_capacity': db_connections,
+            'timeouts': {
+                'database_call_seconds': max(0.2, timeout_sec),
+                'service_call_seconds': max(0.2, timeout_sec),
+                'external_api_seconds': max(1.0, timeout_sec * 2)
+            },
+            '_capacity_rationale': {
+                'archetype': 'async_consumer',
+                'production_rps': total_production_rps,
+                'required_consumer_rps': required_consumer_rps,
+                'baseline_stable_replicas': baseline_stable_replicas,
+                'burst_factor': burst_factor,
+                'drain_margin': drain_margin
+            }
+        }
+
+        return config
+
+    def _tune_node(self, node_id: str, role: str, metrics: Dict, phi: float, existing_configs: Dict[str, Any], node_metrics: Dict[str, Any] = None) -> Dict[str, Any]:
         """Calculates resource parameters."""
+        # ARCHETYPE DETECTION: Route async consumers to specialized handler
+        if role in ['service', 'gateway'] and self._is_async_consumer(node_id):
+            logger.info(f"Detected async consumer: {node_id}")
+            return self._tune_async_consumer(node_id, role, metrics, phi, node_metrics or {})
+
         rps = metrics['rps']
         if rps <= 0: rps = 0.1
 
@@ -201,8 +376,21 @@ class CapacityPlanner:
             cpu_per_req_ms = res_prof.cpu_ms_per_request * latency_multiplier
             max_rps_per_pod = min(1000.0 / max(0.1, cpu_per_req_ms), 500.0)
 
+            # Use original Poisson headroom for sync services (it was correct!)
+            # phi=0.0 → 4.0x, phi=1.0 → 1.15x
             tuned_replicas = math.ceil((rps / max_rps_per_pod) * headroom)
-            min_replicas = 2 if rps > 50 else 1
+
+            # FIXED: Improve min_replicas logic (remove hard 50 RPS cliff)
+            # Use gradual scaling based on RPS
+            if rps < 5:
+                min_replicas = 1  # Very low load
+            elif rps < 50:
+                min_replicas = 2  # Moderate load, need HA
+            else:
+                # High load: need more replicas for HA
+                # Scale gradually: 50-150 RPS → 3, 150+ → 4
+                min_replicas = min(4, 3 + int((rps - 50) / 100))
+
             config['desired_replicas'] = max(min_replicas, tuned_replicas)
 
             # --- Vertical Tuning (Threads per Pod) ---
@@ -282,3 +470,109 @@ class CapacityPlanner:
             config['cpu_cores'] = max(2, int(needed_cores))
 
         return config
+
+    def _validate_capacity(
+        self,
+        node_metrics: Dict[str, Any],
+        tuned_configs: Dict[str, Dict[str, Any]],
+        phi: float
+    ) -> bool:
+        """
+        Analytical validation using queueing theory (M/M/c model).
+        Checks if provisioned capacity is sufficient to avoid saturation.
+        Returns False if validation fails (system will be unstable at baseline).
+        """
+        self.validation_warnings = []
+        all_valid = True
+
+        for node_id, metrics in node_metrics.items():
+            if node_id == 'workload': continue
+            if node_id not in self.graph.nodes: continue
+            if node_id not in tuned_configs: continue
+
+            role = self.graph.nodes[node_id].get('role', 'service')
+            if role not in ['service', 'gateway']: continue
+
+            config = tuned_configs[node_id]
+            rps = metrics.get('rps', 0.0)
+            if rps <= 0: continue
+
+            # Get processing rate (mu = service rate per replica)
+            latency_prof, res_prof = get_component_profile(role)
+            base_processing_ms = latency_prof.p50
+
+            # Apply semantic profile
+            resource_profile = "standard"
+            if self.semantic_map and 'services' in self.semantic_map:
+                svc_data = self.semantic_map['services'].get(node_id, {})
+                resource_profile = svc_data.get('profile', 'standard')
+            latency_multiplier = get_profile_multiplier(resource_profile)
+
+            effective_processing_ms = base_processing_ms * latency_multiplier
+
+            # Service rate per replica (requests per second)
+            mu = 1000.0 / max(1.0, effective_processing_ms)
+
+            # Number of replicas (servers in M/M/c model)
+            c = config.get('desired_replicas', 1)
+
+            # Total system capacity
+            total_capacity = c * mu
+
+            # Utilization (rho)
+            rho = rps / total_capacity if total_capacity > 0 else 999.0
+
+            # Check stability
+            is_async_consumer = self._is_async_consumer(node_id)
+
+            if rho >= 1.0:
+                # Queue will grow unbounded - CRITICAL
+                self.validation_warnings.append(
+                    f"CRITICAL: {node_id} is UNSTABLE (rho={rho:.2f}≥1.0). "
+                    f"RPS={rps:.1f}, capacity={total_capacity:.1f} ({c} × {mu:.1f} req/s). "
+                    f"Queue will grow unbounded!"
+                )
+                all_valid = False
+
+            elif rho >= 0.9:
+                # Very high utilization - likely to saturate
+                self.validation_warnings.append(
+                    f"WARNING: {node_id} near saturation (rho={rho:.2f}). "
+                    f"RPS={rps:.1f}, capacity={total_capacity:.1f}. "
+                    f"Will likely fail under burst load."
+                )
+                all_valid = False
+
+            elif rho >= 0.8:
+                # High utilization - risky for phi > 0.5
+                if phi > 0.5 or is_async_consumer:
+                    self.validation_warnings.append(
+                        f"WARNING: {node_id} high utilization (rho={rho:.2f}) with phi={phi:.2f}. "
+                        f"{'Async consumer ' if is_async_consumer else ''}may struggle with bursts."
+                    )
+                    # Don't fail, just warn
+
+            else:
+                # Utilization is acceptable
+                logger.debug(f"✓ {node_id}: rho={rho:.2f}, capacity OK")
+
+            # Additional check for async consumers: thread pool saturation
+            if is_async_consumer:
+                threads = config.get('thread_pool_size', 10)
+                threads_per_replica = threads  # Each replica has full thread pool
+
+                # Thread utilization (using Little's Law)
+                chain_latency = self._estimate_dependency_latency(node_id, phi)
+                total_latency_sec = (effective_processing_ms + chain_latency) / 1000.0
+
+                required_threads_per_replica = (rps / c) * total_latency_sec
+                thread_util = required_threads_per_replica / threads_per_replica if threads_per_replica > 0 else 999.0
+
+                if thread_util >= 0.9:
+                    self.validation_warnings.append(
+                        f"WARNING: {node_id} thread pool near saturation (util={thread_util:.2f}). "
+                        f"Has {threads} threads, needs ~{required_threads_per_replica:.0f} per replica."
+                    )
+                    # Don't fail for thread saturation, queue will just grow
+
+        return all_valid
