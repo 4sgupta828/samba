@@ -281,23 +281,29 @@ class SelfHealthAnalyzer:
         Compute aggregate self-degradation score (0-1).
 
         Weights:
-        - Resource exhaustion: 40%
-        - Self latency: 30%
-        - Self errors: 30%
+        - Resource exhaustion: 60% (increased from 40% - primary indicator)
+        - Self latency: 20%
+        - Self errors: 20%
+
+        Resource exhaustion (CPU/memory/threads) is the PRIMARY indicator of
+        internal faults like memory pressure, CPU exhaustion, etc.
         """
         # Resource score (max of cpu, memory, threads)
         resource_score = max(cpu, memory, threads)
 
-        # Normalize to 0-1 (cap at 2x increase = 1.0)
-        resource_score = min(1.0, resource_score / 2.0)
+        # Normalize to 0-1
+        # FIXED: Cap at 1.0x (100%) for resource metrics - any 100% increase is critical
+        # For memory pressure faults, 100% memory increase should be score 1.0
+        resource_score = min(1.0, resource_score)
+        # Keep /2.0 for latency/errors as they can vary more widely
         latency_score = min(1.0, latency / 2.0)
         error_score = min(1.0, errors / 2.0)
 
-        # Weighted combination
+        # Weighted combination - resources dominate (60%)
         return (
-            resource_score * 0.4 +
-            latency_score * 0.3 +
-            error_score * 0.3
+            resource_score * 0.6 +
+            latency_score * 0.2 +
+            error_score * 0.2
         )
 
     def _compute_dependency_degradation_score(
