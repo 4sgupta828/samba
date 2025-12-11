@@ -199,7 +199,7 @@ def memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     """
     start_memory_leak(component, params)
 
-def memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
+def memory_pressure(component, params: Dict[str, Any]):
     """
     MEMORY PRESSURE FAULT: Increases baseline memory usage.
 
@@ -223,8 +223,11 @@ def memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
     - progress=1.0: Full fault applied
     - Intermediate values: Partial fault (for gradual ramp-up/ramp-down)
     """
-    if not isinstance(component, ComputeAgent):
-        component._emit_log("WARN", "memory_pressure can only be applied to ComputeAgent components.")
+    from src.components.compute import ComputeAgent
+    from src.components.pod import Pod
+    
+    if not isinstance(component, (ComputeAgent, Pod)):
+        component._emit_log("WARN", "memory_pressure can only be applied to ComputeAgent or Pod components.")
         return
 
     if not hasattr(component, 'dynamics') or component.dynamics is None:
@@ -289,9 +292,12 @@ def memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
             f"Memory pressure injected: +{current_memory_increase_mb:.0f}MB "
             f"(utilization: {memory_util_pct:.1f}%, severity={severity:.2f})")
 
-def revert_memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
+def revert_memory_pressure(component, params: Dict[str, Any]):
     """Revert memory pressure by restoring original baseline."""
-    if not isinstance(component, ComputeAgent):
+    from src.components.compute import ComputeAgent
+    from src.components.pod import Pod
+    
+    if not isinstance(component, (ComputeAgent, Pod)):
         return
 
     if hasattr(component, 'dynamics') and component.dynamics is not None:
