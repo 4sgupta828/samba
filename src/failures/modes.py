@@ -217,6 +217,11 @@ def memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
 
     Capacity-relative: Calculates increase based on available memory headroom.
     No GC assumptions: Works for Python, Go, Rust, Java, C++ alike.
+    
+    Supports gradual injection via 'progress' parameter (0.0-1.0):
+    - progress=0.0: No fault applied
+    - progress=1.0: Full fault applied
+    - Intermediate values: Partial fault (for gradual ramp-up/ramp-down)
     """
     if not isinstance(component, ComputeAgent):
         component._emit_log("WARN", "memory_pressure can only be applied to ComputeAgent components.")
@@ -228,13 +233,20 @@ def memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
 
     # Capacity-relative calculation
     severity = params.get('severity', 0.5)
+    progress = params.get('progress', 1.0)  # Support gradual injection
 
     # Get current memory state
+    # For gradual injection, we need to calculate based on original baseline, not current
+    if not hasattr(component, '_memory_pressure_original_base'):
+        component._memory_pressure_original_base = component.dynamics.config.memory_base
+        component._memory_pressure_target_increase = 0.0  # Track target increase
+    
+    original_base = component._memory_pressure_original_base
     current_memory_mb = component.dynamics.memory_percent  # Actually in MB despite name
     memory_capacity_mb = component.dynamics.config.memory_max  # Max capacity
 
-    # Calculate available headroom
-    available_headroom_mb = memory_capacity_mb - current_memory_mb
+    # Calculate available headroom based on original baseline
+    available_headroom_mb = memory_capacity_mb - original_base
 
     # Non-linear severity scaling (matches fault tuner)
     if severity < 0.3:
@@ -244,31 +256,38 @@ def memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
     else:
         scale = 1.0 + (((severity - 0.7) / 0.3) ** 1.5) * 0.3  # 100-130% of headroom
 
-    # Calculate memory increase (use 70% of available headroom by default, scaled by severity)
+    # Calculate target memory increase (use 70% of available headroom by default, scaled by severity)
     base_consumption = 0.70  # Consume 70% of available headroom
-    memory_increase_mb = available_headroom_mb * base_consumption * scale
+    target_memory_increase_mb = available_headroom_mb * base_consumption * scale
 
     # Fallback to provided parameter if severity not calculated properly
     if 'memory_increase_mb' in params:
-        memory_increase_mb = params['memory_increase_mb']
+        target_memory_increase_mb = params['memory_increase_mb']
 
     # Bounds check
-    memory_increase_mb = max(50.0, min(available_headroom_mb * 0.9, memory_increase_mb))
+    target_memory_increase_mb = max(50.0, min(available_headroom_mb * 0.9, target_memory_increase_mb))
+    
+    # Store target for revert
+    component._memory_pressure_target_increase = target_memory_increase_mb
 
-    # Store original for revert
-    if not hasattr(component, '_memory_pressure_original_base'):
-        component._memory_pressure_original_base = component.dynamics.config.memory_base
+    # Apply progress scaling for gradual injection
+    current_memory_increase_mb = target_memory_increase_mb * progress
 
-    # Increase baseline memory in dynamics engine
-    component.dynamics.config.memory_base += memory_increase_mb
+    # Set baseline to original + current increase (for gradual injection)
+    component.dynamics.config.memory_base = original_base + current_memory_increase_mb
 
     # Calculate resulting memory utilization percentage
-    new_memory_mb = component.dynamics.memory_percent + memory_increase_mb
+    new_memory_mb = original_base + current_memory_increase_mb
     memory_util_pct = (new_memory_mb / memory_capacity_mb) * 100.0
 
-    component._emit_log("WARN",
-        f"Memory pressure injected: +{memory_increase_mb:.0f}MB "
-        f"(utilization: {memory_util_pct:.1f}%, severity={severity:.2f})")
+    if progress < 1.0:
+        component._emit_log("WARN",
+            f"Memory pressure injected: +{current_memory_increase_mb:.0f}MB / {target_memory_increase_mb:.0f}MB "
+            f"(progress: {progress:.1%}, utilization: {memory_util_pct:.1f}%, severity={severity:.2f})")
+    else:
+        component._emit_log("WARN",
+            f"Memory pressure injected: +{current_memory_increase_mb:.0f}MB "
+            f"(utilization: {memory_util_pct:.1f}%, severity={severity:.2f})")
 
 def revert_memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
     """Revert memory pressure by restoring original baseline."""
@@ -280,13 +299,19 @@ def revert_memory_pressure(component: ComputeAgent, params: Dict[str, Any]):
         if hasattr(component, '_memory_pressure_original_base'):
             original_base = component._memory_pressure_original_base
             component.dynamics.config.memory_base = original_base
-            delattr(component, '_memory_pressure_original_base')
+            # Clean up tracking attributes
+            if hasattr(component, '_memory_pressure_original_base'):
+                delattr(component, '_memory_pressure_original_base')
+            if hasattr(component, '_memory_pressure_target_increase'):
+                delattr(component, '_memory_pressure_target_increase')
             component._emit_log("INFO", f"Memory pressure reverted (restored baseline: {original_base:.1f}MB)")
         else:
-            # Fallback to parameter-based revert
-            memory_increase_mb = params.get("memory_increase_mb", 300)
+            # Fallback: try to use stored target increase or parameter
+            memory_increase_mb = getattr(component, '_memory_pressure_target_increase', None)
+            if memory_increase_mb is None:
+                memory_increase_mb = params.get("memory_increase_mb", 300)
             component.dynamics.config.memory_base = max(10.0, component.dynamics.config.memory_base - memory_increase_mb)
-            component._emit_log("INFO", f"Memory pressure reverted (dynamics: memory_base={component.dynamics.config.memory_base:.1f}MB)")
+            component._emit_log("INFO", f"Memory pressure reverted (fallback: memory_base={component.dynamics.config.memory_base:.1f}MB)")
     else:
         component._emit_log("WARN", "Component does not have dynamics engine")
 

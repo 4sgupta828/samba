@@ -181,8 +181,50 @@ class TrainingFailureInjector:
             # e.g., cpu_multiplier=3.0 means requests need 3x CPU → delta = 2.0
             delta = params.get('cpu_multiplier', 3.0) - 1.0
         elif failure_mode == 'memory_pressure':
-            parameter = 'latency_ms'
-            delta = params.get('memory_latency_ms', 300)
+            # memory_pressure has custom gradual logic (like cache_failure)
+            # It needs to call the function directly with progress parameter
+            print(f"   Applying gradual memory pressure over {duration}s...")
+            failure_func = FAILURE_MODES.get(failure_mode)
+            if failure_func:
+                # For pod-level faults, apply to all pods
+                pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
+                is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
+                targets_to_apply = target.pods if is_pod_level_fault else [target]
+                
+                if progression == 'step':
+                    # Apply in 10% steps
+                    steps = 10
+                    step_duration = duration / steps
+                    for i in range(steps + 1):
+                        progress = i / steps
+                        params_with_progress = params.copy()
+                        params_with_progress['progress'] = progress
+                        for t in targets_to_apply:
+                            failure_func(t, params_with_progress)
+                        if i < steps:
+                            yield self.env.timeout(step_duration)
+                    return
+                elif progression == 'linear':
+                    # Apply continuously - sample at regular intervals
+                    num_updates = 20  # Update 20 times during the duration
+                    update_interval = duration / num_updates
+                    for i in range(num_updates + 1):
+                        progress = i / num_updates
+                        params_with_progress = params.copy()
+                        params_with_progress['progress'] = progress
+                        for t in targets_to_apply:
+                            failure_func(t, params_with_progress)
+                        if i < num_updates:
+                            yield self.env.timeout(update_interval)
+                    return
+                else:
+                    # Unknown progression type - apply instantly
+                    params_with_progress = params.copy()
+                    params_with_progress['progress'] = 1.0
+                    for t in targets_to_apply:
+                        failure_func(t, params_with_progress)
+                    yield self.env.timeout(duration)
+                    return
         elif failure_mode == 'cache_failure':
             # cache_failure has custom gradual logic with multiple parameters
             print(f"   Applying gradual cache degradation over {duration}s...")
@@ -242,7 +284,8 @@ class TrainingFailureInjector:
 
         # Apply the change gradually
         # For pod-level faults (cpu_saturation, memory_leak), apply to all pods if target is a service
-        pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
+        # Note: memory_pressure is handled separately above with custom gradual logic
+        pod_level_faults = ['cpu_saturation', 'memory_leak']
 
         if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
             # Apply gradual change to all pods of the service
@@ -507,15 +550,39 @@ class TrainingFailureInjector:
                 print(f"   Warning: Target doesn't support cache_failure revert")
 
         elif failure_mode == 'memory_pressure':
-            # Reduce memory pressure (baseline memory increase)
-            # This is instant in current implementation
-            if hasattr(target, 'dynamics') and target.dynamics:
-                memory_increase_mb = params.get("memory_increase_mb", 300)
-                target.dynamics.config.memory_base = max(
-                    10.0,
-                    target.dynamics.config.memory_base - memory_increase_mb
-                )
-                print(f"   Memory pressure reduced (instant)")
+            # Reduce memory pressure gradually (like injection, but in reverse)
+            # Use the same gradual mechanism as injection but with decreasing progress
+            pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
+            is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
+            targets_to_revert = target.pods if is_pod_level_fault else [target]
+            
+            failure_func = FAILURE_MODES.get(failure_mode)
+            if failure_func:
+                # Apply gradual revert by calling function with decreasing progress
+                num_updates = 20  # 20 updates over the duration
+                update_interval = duration / num_updates
+                
+                def gradual_memory_revert():
+                    for i in range(num_updates + 1):
+                        # Progress from 1.0 (full fault) to 0.0 (healthy)
+                        progress = 1.0 - (i / num_updates)
+                        params_with_progress = params.copy()
+                        params_with_progress['progress'] = progress
+                        for t in targets_to_revert:
+                            failure_func(t, params_with_progress)
+                        
+                        if i < num_updates:
+                            yield self.env.timeout(update_interval)
+                
+                # Return the generator so it can be yielded from in generate_dataset.py
+                print(f"   Gradual memory pressure reduction scheduled ({num_updates} steps over {duration:.1f}s)")
+                return gradual_memory_revert()
+            else:
+                # Fallback to instant revert
+                from src.failures.modes import revert_memory_pressure
+                for t in targets_to_revert:
+                    revert_memory_pressure(t, params)
+                print(f"   Memory pressure reduced (instant fallback)")
 
         # connection_exhaustion removed (2025-12-10) → Use thread_exhaustion instead
 
