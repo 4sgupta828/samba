@@ -91,6 +91,39 @@ replay_state = {
     'output': []
 }
 
+# Global state for batch dataset generation
+batch_generation_state = {
+    'running': False,
+    'process': None,
+    'start_time': None,
+    'config': None,
+    'output': [],
+    'error': None
+}
+
+
+def load_topology_bank_options():
+    """Load topology options from the topology bank directory."""
+    bank_dir = Path(__file__).parent.parent / 'data' / 'topology_bank'
+    if not bank_dir.exists():
+        return [], None
+
+    topologies = sorted([
+        d.name for d in bank_dir.iterdir()
+        if d.is_dir() and not d.name.startswith('.')
+    ])
+
+    if not topologies:
+        return [], None
+
+    options = [{'label': topo, 'value': topo} for topo in topologies]
+    default = random.choice(topologies)
+    return options, default
+
+
+# Preload topology options for batch generation (pick a random default)
+BATCH_TOPOLOGY_OPTIONS, DEFAULT_BATCH_TOPOLOGY = load_topology_bank_options()
+
 # Valid fault type and role combinations based on redesigned fault catalog (2025-12-10)
 # Tier 1: Core Resource Saturation (unique signatures, capacity-relative, severity-based)
 # Tier 2: Interaction Failures (distributed system patterns)
@@ -452,6 +485,90 @@ app.layout = dbc.Container([
                         ]),
                     ])
                 ], id="generator-collapse", is_open=False)
+            ], className="mb-4 shadow-sm")
+        ])
+    ]),
+
+    # Batch Dataset Generation Section
+    dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader([
+                    html.H5("🗂️ Batch Dataset Generation", className="mb-0 d-inline-block"),
+                    dbc.Button("Toggle", id="batch-generator-collapse-button", size="sm", className="float-end", color="secondary")
+                ]),
+                dbc.Collapse([
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("Topology Filter:", html_for="batch-topology-dropdown"),
+                                dcc.Dropdown(
+                                    id='batch-topology-dropdown',
+                                    options=BATCH_TOPOLOGY_OPTIONS,
+                                    value=DEFAULT_BATCH_TOPOLOGY,
+                                    placeholder="Select topology (uses topology bank)...",
+                                    clearable=False
+                                ),
+                            ], width=4),
+                            dbc.Col([
+                                dbc.Label("Episodes per config:", html_for="batch-episodes-input"),
+                                dbc.Input(
+                                    id='batch-episodes-input',
+                                    type='number',
+                                    value=1,
+                                    min=1,
+                                    max=50,
+                                    placeholder="Defaults to 1"
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Label("Timeout (seconds):", html_for="batch-timeout-input"),
+                                dbc.Input(
+                                    id='batch-timeout-input',
+                                    type='number',
+                                    value=600,
+                                    min=60,
+                                    max=3600,
+                                    placeholder="Defaults to 600"
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Run Batch",
+                                    id="batch-start-button",
+                                    color="primary",
+                                    className="mt-4",
+                                    style={'width': '100%'}
+                                ),
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Cancel",
+                                    id="batch-cancel-button",
+                                    color="danger",
+                                    outline=True,
+                                    className="mt-4",
+                                    style={'width': '100%'},
+                                    disabled=True
+                                ),
+                            ], width=2),
+                        ]),
+                        html.Div(
+                            "Runs batch_generate_datasets.py with --filter-topology plus defaults (-e 1, --timeout 600, -y).",
+                            className="text-muted small mt-2"
+                        ),
+                        html.Hr(),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div(id='batch-generation-status', children=[
+                                    html.Div("Ready to run batch dataset generation", className="text-muted")
+                                ])
+                            ])
+                        ]),
+                    ])
+                ], id="batch-generator-collapse", is_open=False),
+                # Interval for polling batch generation status
+                dcc.Interval(id='batch-generation-poll-interval', interval=2000, disabled=True)
             ], className="mb-4 shadow-sm")
         ])
     ]),
@@ -1977,6 +2094,18 @@ def toggle_generator_collapse(n_clicks, is_open):
 
 
 @app.callback(
+    Output('batch-generator-collapse', 'is_open'),
+    Input('batch-generator-collapse-button', 'n_clicks'),
+    State('batch-generator-collapse', 'is_open')
+)
+def toggle_batch_generator_collapse(n_clicks, is_open):
+    """Toggle batch dataset generator section."""
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+@app.callback(
     Output('topology-size-input', 'disabled'),
     Output('topology-name-dropdown', 'disabled'),
     Output('topology-name-dropdown', 'options'),
@@ -2468,6 +2597,231 @@ def cancel_generation(n_clicks):
         ], color="danger")
 
         return error_msg, True, False, True  # Disable polling, enable generate button, disable cancel button
+
+
+# Batch Dataset Generation Callbacks
+
+@app.callback(
+    Output('batch-generation-status', 'children'),
+    Output('batch-generation-poll-interval', 'disabled'),
+    Output('batch-start-button', 'disabled'),
+    Output('batch-cancel-button', 'disabled'),
+    Input('batch-start-button', 'n_clicks'),
+    State('batch-topology-dropdown', 'value'),
+    State('batch-episodes-input', 'value'),
+    State('batch-timeout-input', 'value'),
+    prevent_initial_call=True
+)
+def start_batch_generation(n_clicks, topology_name, episodes_per_config, timeout_seconds):
+    """Start batch dataset generation using batch_generate_datasets.py."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    import time
+
+    if not n_clicks:
+        return html.Div("Ready to run batch dataset generation", className="text-muted"), True, False, True
+
+    global batch_generation_state
+    if batch_generation_state['running']:
+        return dbc.Alert("Batch generation is already running", color="warning"), False, True, False
+
+    # Use provided topology or fall back to default
+    chosen_topology = topology_name or DEFAULT_BATCH_TOPOLOGY
+    if not chosen_topology:
+        return dbc.Alert("No topologies found in topology bank. Please generate topologies first.", color="danger"), True, False, True
+
+    episodes = episodes_per_config or 1
+    timeout_val = timeout_seconds or 600
+
+    if episodes < 1:
+        return dbc.Alert("Episodes per config must be at least 1.", color="danger"), True, False, True
+
+    # Build command (mirror requested defaults)
+    project_root = Path(__file__).parent.parent
+    script_path = project_root / 'batch_generate_datasets.py'
+    cmd = [
+        sys.executable,
+        str(script_path),
+        '--filter-topology', chosen_topology,
+        '-e', str(episodes),
+        '--timeout', str(timeout_val),
+        '-y',
+    ]
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            cwd=str(project_root)
+        )
+
+        batch_generation_state['running'] = True
+        batch_generation_state['process'] = process
+        batch_generation_state['start_time'] = time.time()
+        batch_generation_state['config'] = {
+            'topology': chosen_topology,
+            'episodes': episodes,
+            'timeout': timeout_val,
+            'command': ' '.join(cmd)
+        }
+        batch_generation_state['output'] = []
+        batch_generation_state['error'] = None
+
+        starting_msg = dbc.Alert([
+            html.H6("🚀 Batch Generation Started", className="alert-heading"),
+            html.P(f"Topology filter: {chosen_topology}"),
+            html.P(f"Episodes per config: {episodes} | Timeout: {timeout_val}s", className="mb-2"),
+            html.P(f"Command: {' '.join(cmd)}", className="small mb-2"),
+            dbc.Spinner(size="sm")
+        ], color="info")
+
+        return starting_msg, False, True, False
+
+    except Exception as e:
+        exception_msg = dbc.Alert([
+            html.H6("❌ Failed to Start Batch Generation", className="alert-heading"),
+            html.P(f"Error: {str(e)}")
+        ], color="danger")
+
+        return exception_msg, True, False, True
+
+
+@app.callback(
+    Output('batch-generation-status', 'children', allow_duplicate=True),
+    Output('batch-generation-poll-interval', 'disabled', allow_duplicate=True),
+    Output('batch-start-button', 'disabled', allow_duplicate=True),
+    Output('batch-cancel-button', 'disabled', allow_duplicate=True),
+    Input('batch-generation-poll-interval', 'n_intervals'),
+    prevent_initial_call=True
+)
+def poll_batch_generation_status(n_intervals):
+    """Poll the batch generation process status and stream output."""
+    import time
+
+    global batch_generation_state
+
+    if not batch_generation_state['running']:
+        return dash.no_update, True, False, True
+
+    process = batch_generation_state['process']
+    config = batch_generation_state['config']
+    returncode = process.poll()
+
+    if returncode is None:
+        elapsed = time.time() - batch_generation_state['start_time']
+        mins, secs = divmod(int(elapsed), 60)
+
+        # Read available output (non-blocking)
+        import select
+        try:
+            if hasattr(select, 'select'):
+                ready, _, _ = select.select([process.stdout], [], [], 0)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        batch_generation_state['output'].append(line.rstrip())
+        except Exception:
+            pass
+
+        recent_output = '\n'.join(batch_generation_state['output'][-12:]) if batch_generation_state['output'] else "Waiting for output..."
+
+        running_msg = dbc.Alert([
+            html.H6("⏳ Batch Generation In Progress", className="alert-heading"),
+            html.P(f"Topology: {config['topology']} | Episodes/config: {config['episodes']}"),
+            html.P(f"Elapsed time: {mins}m {secs}s", className="mb-2"),
+            dbc.Progress(animated=True, striped=True, value=100, color="info", className="mb-2"),
+            html.P(f"Command: {config['command']}", className="small mb-2"),
+            html.Hr(),
+            html.P("Recent output:", className="small mb-1"),
+            html.Pre(recent_output, className="small mb-0",
+                     style={'maxHeight': '150px', 'overflow': 'auto', 'backgroundColor': '#f8f9fa', 'fontSize': '0.75rem'})
+        ], color="info")
+
+        return running_msg, False, True, False
+
+    stdout, stderr = process.communicate()
+    batch_generation_state['running'] = False
+    batch_generation_state['process'] = None
+
+    if returncode == 0:
+        success_msg = dbc.Alert([
+            html.H6("✅ Batch Generation Complete!", className="alert-heading"),
+            html.P(f"Topology filter: {config['topology']}"),
+            html.P("Process finished successfully.", className="mb-2"),
+            html.Hr(),
+            html.P("Output (last 1000 chars):", className="small mb-1"),
+            html.Pre(stdout[-1000:] if stdout else "No output", className="small mb-0",
+                     style={'maxHeight': '200px', 'overflow': 'auto', 'backgroundColor': '#f8f9fa'})
+        ], color="success")
+
+        return success_msg, True, False, True
+
+    error_msg = dbc.Alert([
+        html.H6("❌ Batch Generation Failed", className="alert-heading"),
+        html.P(f"Exit code: {returncode}"),
+        html.Hr(),
+        html.P("Stdout (last 500 chars):", className="small mb-1"),
+        html.Pre(stdout[-500:] if stdout else "No stdout", className="small mb-2",
+                 style={'maxHeight': '150px', 'overflow': 'auto', 'backgroundColor': '#fff5f5'}),
+        html.P("Stderr (last 500 chars):", className="small mb-1"),
+        html.Pre(stderr[-500:] if stderr else "No stderr", className="small mb-0",
+                 style={'maxHeight': '150px', 'overflow': 'auto', 'backgroundColor': '#fff5f5'})
+    ], color="danger")
+
+    return error_msg, True, False, True
+
+
+@app.callback(
+    Output('batch-generation-status', 'children', allow_duplicate=True),
+    Output('batch-generation-poll-interval', 'disabled', allow_duplicate=True),
+    Output('batch-start-button', 'disabled', allow_duplicate=True),
+    Output('batch-cancel-button', 'disabled', allow_duplicate=True),
+    Input('batch-cancel-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+def cancel_batch_generation(n_clicks):
+    """Cancel the running batch generation process."""
+    import time
+
+    global batch_generation_state
+
+    if not n_clicks or not batch_generation_state['running']:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+    process = batch_generation_state['process']
+
+    try:
+        process.terminate()
+
+        for _ in range(20):
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        if process.poll() is None:
+            process.kill()
+
+        batch_generation_state['running'] = False
+        batch_generation_state['process'] = None
+
+        cancel_msg = dbc.Alert([
+            html.H6("⚠️ Batch Generation Cancelled", className="alert-heading"),
+            html.P("Batch dataset generation was cancelled by user.")
+        ], color="warning")
+
+        return cancel_msg, True, False, True
+
+    except Exception as e:
+        error_msg = dbc.Alert([
+            html.H6("❌ Failed to Cancel Batch", className="alert-heading"),
+            html.P(f"Error: {str(e)}")
+        ], color="danger")
+
+        return error_msg, True, False, True
 
 
 # Replay Section Callbacks
