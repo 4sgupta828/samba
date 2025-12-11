@@ -37,15 +37,29 @@ def find_all_episodes(base_dir: str) -> List[Path]:
 
     # Find all directories matching ep_* pattern
     episodes = []
-    for dataset_dir in base_path.iterdir():
-        if dataset_dir.is_dir():
-            for ep_dir in dataset_dir.glob('ep_*'):
-                if ep_dir.is_dir():
-                    # Verify it has required files
-                    if (ep_dir / 'label.json').exists() and \
-                       (ep_dir / 'topology.json').exists() and \
-                       (ep_dir / 'metrics.jsonl').exists():
-                        episodes.append(ep_dir)
+
+    # Check if this is a single dataset directory (has ep_* directly)
+    direct_episodes = list(base_path.glob('ep_*'))
+    if direct_episodes:
+        # This is a single dataset directory
+        for ep_dir in direct_episodes:
+            if ep_dir.is_dir():
+                # Verify it has required files
+                if (ep_dir / 'label.json').exists() and \
+                   (ep_dir / 'topology.json').exists() and \
+                   (ep_dir / 'metrics.jsonl').exists():
+                    episodes.append(ep_dir)
+    else:
+        # This is a batch directory containing multiple datasets
+        for dataset_dir in base_path.iterdir():
+            if dataset_dir.is_dir():
+                for ep_dir in dataset_dir.glob('ep_*'):
+                    if ep_dir.is_dir():
+                        # Verify it has required files
+                        if (ep_dir / 'label.json').exists() and \
+                           (ep_dir / 'topology.json').exists() and \
+                           (ep_dir / 'metrics.jsonl').exists():
+                            episodes.append(ep_dir)
 
     return sorted(episodes)
 

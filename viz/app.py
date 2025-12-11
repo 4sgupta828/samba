@@ -547,7 +547,11 @@ app.layout = dbc.Container([
                                         outline=True
                                     )
                                 ]),
-                                html.Small("Path relative to project root. Can be a batch folder or single dataset.", className="text-muted")
+                                html.Small([
+                                    "Path relative to project root. Should be a batch folder (e.g., data/batch_run) ",
+                                    "containing multiple datasets, or a single dataset folder. ",
+                                    html.Strong("Note: "), "RCA Discovery skips episodes that already have RCAInvestigated.marker."
+                                ], className="text-muted")
                             ], width=6),
                             dbc.Col([
                                 dbc.Button(
@@ -561,6 +565,16 @@ app.layout = dbc.Container([
                             ], width=2),
                             dbc.Col([
                                 dbc.Button(
+                                    "🔍 Run RCA Discovery",
+                                    id="batch-rca-discovery-button",
+                                    color="success",
+                                    className="mt-4",
+                                    style={'width': '100%'}
+                                ),
+                                html.Small("⚠️ May take a long time", className="text-muted d-block text-center")
+                            ], width=2),
+                            dbc.Col([
+                                dbc.Button(
                                     "📊 Analyze Folder",
                                     id="batch-analyze-button",
                                     color="info",
@@ -568,10 +582,15 @@ app.layout = dbc.Container([
                                     style={'width': '100%'}
                                 ),
                             ], width=2),
-                            dbc.Col([
-                                dbc.Spinner(html.Div(id='batch-analysis-status'), size="sm", spinner_class_name="mt-4"),
-                            ], width=2),
                         ]),
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Spinner(html.Div(id='batch-analysis-status'), size="sm", spinner_class_name="mt-2"),
+                            ], width=6),
+                            dbc.Col([
+                                dbc.Spinner(html.Div(id='batch-rca-discovery-status'), size="sm", spinner_class_name="mt-2"),
+                            ], width=6),
+                        ], className="mb-2"),
                         dbc.Row([
                             dbc.Col([
                                 dbc.Label("Quick Select:", html_for="batch-quick-select"),
@@ -586,6 +605,28 @@ app.layout = dbc.Container([
                             ], width=12)
                         ], className="mt-2"),
                         html.Hr(),
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Collapse([
+                                    dbc.Card([
+                                        dbc.CardHeader("🔍 RCA Discovery Output"),
+                                        dbc.CardBody([
+                                            html.Pre(
+                                                id='batch-rca-discovery-output',
+                                                style={
+                                                    'maxHeight': '400px',
+                                                    'overflowY': 'auto',
+                                                    'backgroundColor': '#f8f9fa',
+                                                    'padding': '10px',
+                                                    'fontSize': '12px',
+                                                    'fontFamily': 'monospace'
+                                                }
+                                            )
+                                        ])
+                                    ], className="mb-3")
+                                ], id="batch-rca-discovery-output-collapse", is_open=False)
+                            ])
+                        ]),
                         dbc.Row([
                             dbc.Col([
                                 html.Div(id='batch-analysis-results')
@@ -3257,6 +3298,121 @@ def analyze_batch_folder(n_clicks, folder_path):
             html.H5("❌ Analysis Error", className="alert-heading"),
             html.Pre(error_msg, style={'fontSize': '0.8em', 'maxHeight': '300px', 'overflow': 'auto'})
         ], color="danger"), html.Span("❌ Error", className="text-danger")
+
+
+@app.callback(
+    [Output('batch-rca-discovery-output', 'children'),
+     Output('batch-rca-discovery-status', 'children'),
+     Output('batch-rca-discovery-output-collapse', 'is_open')],
+    [Input('batch-rca-discovery-button', 'n_clicks')],
+    [State('batch-folder-input', 'value')],
+    prevent_initial_call=True
+)
+def run_batch_rca_discovery(n_clicks, folder_path):
+    """Run batch_rca_discovery.py on specified folder and capture output."""
+    if not n_clicks:
+        return "", "", False
+
+    import os
+    import subprocess
+    import datetime
+    from pathlib import Path
+
+    if not folder_path:
+        return "Error: Please specify a folder path", html.Span("❌ No folder specified", className="text-danger"), True
+
+    # Resolve path - handle both absolute and relative paths
+    if os.path.isabs(folder_path):
+        analysis_path = folder_path
+        folder_display = os.path.basename(folder_path)
+    else:
+        relative_path = folder_path
+        if relative_path.startswith('data/'):
+            relative_path = relative_path[5:]  # Remove 'data/' prefix
+
+        analysis_path = os.path.join(BASE_DATA_DIR, relative_path)
+        folder_display = folder_path.replace('data/', '').replace('\\', '/')
+
+    # Ensure we have an absolute path
+    analysis_path = os.path.abspath(analysis_path)
+
+    if not os.path.exists(analysis_path):
+        return (
+            f"Error: Folder not found: {analysis_path}\nBASE_DATA_DIR: {BASE_DATA_DIR}\nfolder_path: {folder_path}",
+            html.Span("❌ Folder not found", className="text-danger"),
+            True
+        )
+
+    try:
+        # Prepare log file path
+        log_filename = f"rca_discovery_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        log_path = os.path.join(analysis_path, log_filename)
+
+        # Run batch_rca_discovery.py
+        # Get the project root directory (parent of viz/)
+        viz_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(viz_dir)
+        script_path = os.path.join(project_root, 'batch_rca_discovery.py')
+
+        # Verify script exists
+        if not os.path.exists(script_path):
+            return (
+                f"Error: Script not found at {script_path}\nviz_dir: {viz_dir}\nproject_root: {project_root}",
+                html.Span("❌ Script not found", className="text-danger"),
+                True
+            )
+
+        cmd = ['python3', script_path, analysis_path]
+
+        # Execute command and capture output
+        # Note: This will block until completion, which may take a long time
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=project_root,  # Run from project root
+            timeout=3600  # 1 hour timeout
+        )
+
+        # Combine stdout and stderr
+        output = result.stdout if result.stdout else "No output generated"
+        if result.stderr:
+            output += "\n\n=== STDERR ===\n" + result.stderr
+
+        # Ensure we have some output to display
+        if not output.strip():
+            output = f"RCA Discovery process completed but produced no output.\nReturn code: {result.returncode}\nCommand: {' '.join(cmd)}"
+
+        # Save output to log file
+        with open(log_path, 'w') as f:
+            f.write(f"RCA Discovery Log - {datetime.datetime.now()}\n")
+            f.write(f"Folder: {analysis_path}\n")
+            f.write(f"Command: {' '.join(cmd)}\n")
+            f.write(f"Return Code: {result.returncode}\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(output)
+
+        # Prepare status message
+        if result.returncode == 0:
+            status_msg = html.Span(
+                f"✅ RCA Discovery completed for {folder_display} (log: {log_filename})",
+                className="text-success"
+            )
+        else:
+            status_msg = html.Span(
+                f"⚠️ RCA Discovery completed with return code {result.returncode} for {folder_display} (log: {log_filename})",
+                className="text-warning"
+            )
+
+        return output, status_msg, True
+
+    except subprocess.TimeoutExpired:
+        error_msg = "Error: RCA Discovery timed out after 1 hour"
+        return error_msg, html.Span("❌ Timeout", className="text-danger"), True
+    except Exception as e:
+        import traceback
+        error_msg = f"Error running RCA Discovery: {str(e)}\n\n{traceback.format_exc()}"
+        return error_msg, html.Span("❌ Error", className="text-danger"), True
 
 
 if __name__ == '__main__':
