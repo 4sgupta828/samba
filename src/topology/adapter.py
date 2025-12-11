@@ -89,6 +89,11 @@ class TopologyAdapter:
         # Phase 3: REMOVED - Legacy ComputeAgent connection propagation
         # New architecture: Pods inherit connections from parent Service dynamically
 
+        # Phase 4: Sync component state back to graph (for topology serialization)
+        # This ensures that attributes set during wiring (like compute_node) are preserved
+        # in the graph when it's serialized to topology.json
+        self._sync_component_state_to_graph(G, registry)
+
         return registry
 
     def _create_component(self, node_id: str, node_data: Dict[str, Any]):
@@ -350,6 +355,28 @@ class TopologyAdapter:
                 # New: Service consumes from queue (pods will handle consumption)
                 if 'queue_in' not in tgt.connections:
                     tgt.connections['queue_in'] = src
+
+    def _sync_component_state_to_graph(self, G: nx.DiGraph, registry: Dict[str, Any]):
+        """
+        Sync component state back to the NetworkX graph.
+        
+        This ensures that attributes set during wiring (like compute_node on Pods)
+        are preserved in the graph when it's serialized to topology.json.
+        
+        Args:
+            G: NetworkX graph to update
+            registry: Component registry mapping node IDs to component instances
+        """
+        for node_id, component in registry.items():
+            if node_id not in G:
+                continue
+            
+            # Sync Pod compute_node and parent_service attributes
+            if isinstance(component, Pod):
+                if hasattr(component, 'compute_node') and component.compute_node:
+                    G.nodes[node_id]['compute_node'] = component.compute_node.id
+                if hasattr(component, 'parent_service') and component.parent_service:
+                    G.nodes[node_id]['parent_service'] = component.parent_service.id
 
     def _apply_overrides(self, component, overrides: Dict[str, Any]):
         """

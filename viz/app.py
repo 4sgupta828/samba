@@ -1757,16 +1757,21 @@ def update_colocation_panel(episode_id, service_in_focus):
         # Build compute node -> pods -> services mapping
         compute_nodes = {}
         pod_to_service = {}
+        all_pods_by_service = {}  # Track ALL pods for each service
+        pods_without_compute_node = []  # Track pods missing compute_node assignment
 
         for node_id in graph.nodes():
             node_data = graph.nodes[node_id]
             node_type = node_data.get('type', '')
 
-            # Track pod -> service mapping
+            # Track pod -> service mapping and count all pods per service
             if node_type == 'Pod':
                 parent_service = node_data.get('parent_service')
                 if parent_service:
                     pod_to_service[node_id] = parent_service
+                    if parent_service not in all_pods_by_service:
+                        all_pods_by_service[parent_service] = []
+                    all_pods_by_service[parent_service].append(node_id)
 
             # Build compute node mapping
             if node_type == 'ComputeNode':
@@ -1781,8 +1786,9 @@ def update_colocation_panel(episode_id, service_in_focus):
             node_data = graph.nodes[node_id]
             if node_data.get('type') == 'Pod':
                 compute_node = node_data.get('compute_node')
+                parent_service = pod_to_service.get(node_id)
+                
                 if compute_node and compute_node in compute_nodes:
-                    parent_service = pod_to_service.get(node_id)
                     compute_nodes[compute_node]['pods'].append({
                         'id': node_id,
                         'service': parent_service
@@ -1793,6 +1799,12 @@ def update_colocation_panel(episode_id, service_in_focus):
                     # Check if this pod's service is the service in focus
                     if parent_service == service_in_focus:
                         compute_nodes[compute_node]['has_focus_service'] = True
+                elif parent_service:
+                    # Pod without compute_node assignment
+                    pods_without_compute_node.append({
+                        'id': node_id,
+                        'service': parent_service
+                    })
 
         # Find compute nodes with focus service pods
         focus_nodes = [
@@ -1800,7 +1812,18 @@ def update_colocation_panel(episode_id, service_in_focus):
             if data['has_focus_service']
         ]
 
-        if not focus_nodes:
+        # Count total pods for focus service
+        total_focus_pods = len(all_pods_by_service.get(service_in_focus, []))
+        pods_on_compute_nodes = sum(
+            len([p for p in data['pods'] if p['service'] == service_in_focus])
+            for data in compute_nodes.values()
+        )
+        pods_missing_assignment = len([
+            p for p in pods_without_compute_node 
+            if p['service'] == service_in_focus
+        ])
+
+        if not focus_nodes and pods_missing_assignment == 0:
             return dbc.Alert([
                 html.H6("ℹ️ No Pod-Level Co-location", className="alert-heading"),
                 html.P(f"Service '{service_in_focus}' does not have pods placed on compute nodes."),
