@@ -24,6 +24,7 @@ from dataclasses import dataclass, asdict
 from .pod_analysis import PodAnalyzer, ServicePodAnalysis
 from .health_classifier import HealthClassifier, HealthClassification
 from .root_cause_detector import RootCauseDetector, RootCauseCandidate, NetworkPartition
+from .self_health_analyzer import SelfHealthAnalyzer, SelfHealthAnalysis
 from ..propagation_analyzer import FaultPropagationAnalyzer, NodeImpactReport
 
 
@@ -139,6 +140,8 @@ class SOTAPropagationAnalyzer:
         self.root_cause_detector = RootCauseDetector(
             topology_graph, self.fault_start_time
         )
+
+        self.self_health_analyzer = SelfHealthAnalyzer()
 
     def analyze(
         self,
@@ -387,6 +390,9 @@ class SOTAPropagationAnalyzer:
         """
         Detect and rank root cause candidates at SERVICE level.
 
+        UPDATED: Now includes self-health analysis to better identify service nodes
+        with internal faults vs those with only downstream issues.
+
         For pods, aggregates to service level first to avoid dilution.
         Then drills down to identify outlier pods within root cause services.
         """
@@ -407,20 +413,7 @@ class SOTAPropagationAnalyzer:
         # Merge service-level health with node-level health
         combined_health_map = {**health_map, **service_health_map}
 
-        # Identify candidates at service level
-        candidates = self.root_cause_detector.identify_root_cause_candidates(
-            service_level_impacted, service_level_healthy, combined_health_map
-        )
-
-        if not candidates:
-            return []
-
-        # Compute shortest paths (using service-level nodes for pods)
-        candidate_paths = self.root_cause_detector.compute_shortest_paths(
-            service_level_impacted, candidates
-        )
-
-        # Get severity scores and impact times (service-level)
+        # Get severity scores and impact times (service-level) - MOVED UP before candidate identification
         node_severity_scores = {r.node_id: r.overall_severity_score for r in node_reports}
         # Merge with service-level severity
         combined_severity_scores = {**node_severity_scores, **service_severity_scores}
@@ -439,10 +432,47 @@ class SOTAPropagationAnalyzer:
             worst_pod_metrics = node_ranked_metrics.get(worst_pod['pod_id'], [])
             node_ranked_metrics[service_name] = worst_pod_metrics
 
+        # Identify candidates at service level (NOW with metrics for self-health analysis)
+        candidates = self.root_cause_detector.identify_root_cause_candidates(
+            service_level_impacted,
+            service_level_healthy,
+            combined_health_map,
+            node_ranked_metrics=node_ranked_metrics  # NEW: pass metrics for self-health check
+        )
+
+        if not candidates:
+            return []
+
+        # Compute shortest paths (using service-level nodes for pods)
+        candidate_paths = self.root_cause_detector.compute_shortest_paths(
+            service_level_impacted, candidates
+        )
+
+        # NEW: Perform self-health analysis on all candidates
+        print("    Performing self-health analysis on candidates...")
+        self_health_analyses = {}
+        for candidate in candidates:
+            ranked_metrics = node_ranked_metrics.get(candidate, [])
+            # Get node type
+            node_type = self.graph.nodes.get(candidate, {}).get('type', 'Service')
+
+            sha = self.self_health_analyzer.analyze_node_self_health(
+                node_id=candidate,
+                ranked_metrics=ranked_metrics,
+                node_type=node_type
+            )
+            self_health_analyses[candidate] = sha
+
+            # Log self-health findings
+            if sha.is_likely_root_cause:
+                print(f"      {candidate}: Root cause likely (self-degradation: {sha.self_degradation_score:.2f})")
+            elif sha.is_likely_victim:
+                print(f"      {candidate}: Victim likely (only dependency issues)")
+
         # Compute centrality
         centrality_scores = self.root_cause_detector.compute_centrality_scores()
 
-        # Rank candidates
+        # Rank candidates (now with self-health analysis)
         ranked_candidates = self.root_cause_detector.rank_root_cause_candidates(
             candidates=candidates,
             candidate_paths=candidate_paths,
@@ -451,15 +481,20 @@ class SOTAPropagationAnalyzer:
             node_ranked_metrics=node_ranked_metrics,
             centrality_scores=centrality_scores,
             impacted_node_count=len(service_level_impacted),
-            expected_fault_type=self.fault_type
+            expected_fault_type=self.fault_type,
+            self_health_analyses=self_health_analyses  # NEW
         )
 
-        # Enhance candidates with pod-level details if they're services
+        # Enhance candidates with pod-level details and self-health analysis
         for candidate in ranked_candidates:
             if candidate.node_id in service_pod_details:
                 candidate.service_pod_details = service_pod_details[candidate.node_id]
             else:
                 candidate.service_pod_details = None
+
+            # Add self-health analysis to candidate
+            if candidate.node_id in self_health_analyses:
+                candidate.self_health_analysis = self_health_analyses[candidate.node_id].to_dict()
 
         return ranked_candidates
 

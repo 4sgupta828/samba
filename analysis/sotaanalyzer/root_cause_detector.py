@@ -12,9 +12,12 @@ Implements SOTA root cause analysis:
 
 import numpy as np
 import networkx as nx
-from typing import Dict, List, Set, Optional, Tuple
+from typing import Dict, List, Set, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, asdict
 from collections import defaultdict, deque
+
+if TYPE_CHECKING:
+    from .self_health_analyzer import SelfHealthAnalysis
 
 
 @dataclass
@@ -158,56 +161,73 @@ class RootCauseDetector:
         self,
         impacted_nodes: List[str],
         healthy_nodes: List[str],
-        node_health_map: Dict[str, str]
+        node_health_map: Dict[str, str],
+        node_ranked_metrics: Optional[Dict[str, List[Dict]]] = None
     ) -> List[str]:
         """
         Identify root cause candidates.
 
-        UPDATED LOGIC (removes leaf node bias):
-        A node is a candidate if:
-        1. It is impacted (not healthy)
-        2. AND at least SOME of its dependencies are healthy (not necessarily ALL)
-           - This allows both leaf nodes AND non-leaf nodes with partial dependency failures
-           - Removes the bias toward leaf nodes
+        UPDATED LOGIC (NEW: considers self-health degradation):
+        A node is a candidate if ANY of these conditions are met:
+        1. Leaf node (no dependencies)
+        2. Has >= 50% healthy dependencies
+        3. NEW: Shows self-health degradation (resource exhaustion, self errors, self latency)
+           even if ALL dependencies are unhealthy
 
-        The old logic was:
-        - Leaf node → ALWAYS a candidate
-        - Non-leaf node → candidate only if ALL dependencies are healthy
-
-        This created a strong bias toward leaf nodes because they were automatically
-        included even if they had minimal impact.
+        The key insight: A service with internal faults (CPU exhaustion, memory pressure,
+        thread pool saturation) will inevitably impact its outgoing calls, making all
+        dependencies appear degraded. We must look at SELF metrics to identify these.
 
         Args:
             impacted_nodes: List of impacted node IDs
             healthy_nodes: List of healthy node IDs
             node_health_map: Mapping of node_id -> health_status
+            node_ranked_metrics: Optional metrics for self-health analysis
 
         Returns:
             List of root cause candidate node IDs (unique)
         """
+        from .self_health_analyzer import SelfHealthAnalyzer
+
         candidates = set()  # Use set to avoid duplicates
+        self_health_analyzer = SelfHealthAnalyzer() if node_ranked_metrics else None
 
         for node_id in impacted_nodes:
             dependencies = self.get_node_dependencies(node_id)
 
-            # Case 1: No dependencies (leaf node)
+            # Case 1: No dependencies (leaf node) - always a candidate
             if len(dependencies) == 0:
                 candidates.add(node_id)
                 continue
 
-            # Case 2: Has dependencies - check if at least some are healthy
-            # This means the node is showing problems that aren't fully explained
-            # by its dependencies being down
+            # Case 2: Check dependency health
             healthy_dep_count = sum(
                 1 for dep in dependencies
                 if dep in healthy_nodes or node_health_map.get(dep, 'UNKNOWN') == 'HEALTHY'
             )
 
-            # Candidate if:
-            # - All dependencies are healthy (original case), OR
-            # - More than 50% of dependencies are healthy (new: allows partial propagation)
+            # If >= 50% dependencies are healthy, it's a candidate
             if healthy_dep_count >= len(dependencies) * 0.5:
                 candidates.add(node_id)
+                continue
+
+            # Case 3: NEW - Check for self-health degradation
+            # Even if all dependencies are unhealthy, include as candidate if showing
+            # internal health issues (this catches service nodes with internal faults)
+            if self_health_analyzer and node_ranked_metrics:
+                ranked_metrics = node_ranked_metrics.get(node_id, [])
+                if ranked_metrics:
+                    sha = self_health_analyzer.analyze_node_self_health(
+                        node_id=node_id,
+                        ranked_metrics=ranked_metrics,
+                        node_type=self.graph.nodes.get(node_id, {}).get('type', 'Service')
+                    )
+
+                    # Include as candidate if shows self-degradation
+                    # (resource exhaustion, self errors, self latency increase)
+                    if sha.is_likely_root_cause:
+                        candidates.add(node_id)
+                        continue
 
         return list(candidates)
 
@@ -423,10 +443,14 @@ class RootCauseDetector:
         node_ranked_metrics: Dict[str, List[Dict]],
         centrality_scores: Dict[str, float],
         impacted_node_count: int,
-        expected_fault_type: Optional[str] = None
+        expected_fault_type: Optional[str] = None,
+        self_health_analyses: Optional[Dict[str, 'SelfHealthAnalysis']] = None
     ) -> List[RootCauseCandidate]:
         """
         Rank root cause candidates using probabilistic scoring.
+
+        UPDATED: Now includes self-health analysis to distinguish service nodes
+        with internal issues from those with only downstream issues.
 
         Args:
             candidates: List of candidate node IDs
@@ -437,6 +461,7 @@ class RootCauseDetector:
             centrality_scores: Graph centrality scores
             impacted_node_count: Total number of impacted nodes
             expected_fault_type: Expected fault type (if known from ground truth)
+            self_health_analyses: Optional dict of SelfHealthAnalysis for each node
 
         Returns:
             Ranked list of RootCauseCandidate objects
@@ -475,19 +500,36 @@ class RootCauseDetector:
                 candidate, ranked_metrics, expected_fault_type
             )
 
+            # NEW Factor 6: Self-health degradation score
+            # This is CRITICAL for identifying service nodes with internal faults
+            self_health_score = 0.5  # Default neutral
+            if self_health_analyses and candidate in self_health_analyses:
+                sha = self_health_analyses[candidate]
+                # Use self-degradation score directly
+                self_health_score = sha.self_degradation_score
+
+                # Boost if node shows resource exhaustion (strong root cause indicator)
+                if sha.has_resource_exhaustion:
+                    self_health_score = min(1.0, self_health_score * 1.3)
+
+                # Penalize if node only has dependency issues (likely victim)
+                if sha.is_likely_victim:
+                    self_health_score *= 0.5
+
             # Temporal consistency check
             temporal_consistent = self._check_temporal_consistency(
                 candidate, paths, node_first_impact_times
             )
 
-            # Compute composite probability
+            # Compute composite probability (with new self-health factor)
             probability = self._compute_probability(
                 convergence_score=convergence_score,
                 severity_score=severity_score,
                 time_score=time_score,
                 centrality_score=centrality_score,
                 signature_score=signature_score,
-                temporal_consistent=temporal_consistent
+                temporal_consistent=temporal_consistent,
+                self_health_score=self_health_score
             )
 
             # Determine confidence level
@@ -502,13 +544,14 @@ class RootCauseDetector:
             dependencies = self.get_node_dependencies(candidate)
             dep_health = {}  # Would be populated from health classifier
 
-            # Build reasoning
+            # Build reasoning (with self-health info)
             reasoning = self._build_reasoning(
                 is_leaf=candidate in leaf_nodes,
                 convergence_score=convergence_score,
                 impacted_first=impacted_first,
                 path_count=len(paths),
-                severity_score=severity_score
+                severity_score=severity_score,
+                self_health_analysis=self_health_analyses.get(candidate) if self_health_analyses else None
             )
 
             # Get node type
@@ -625,35 +668,43 @@ class RootCauseDetector:
         time_score: float,
         centrality_score: float,
         signature_score: float,
-        temporal_consistent: bool
+        temporal_consistent: bool,
+        self_health_score: float = 0.5
     ) -> float:
         """
         Compute composite probability from weighted factors.
 
-        UPDATED WEIGHTS (emphasizes temporal ordering and severity):
-        - Temporal ordering is now MORE important (30% -> time + consistency)
-        - Severity is emphasized (25% -> 30%)
-        - Convergence is slightly reduced (30% -> 25%)
-        - Centrality and signature remain supportive (10% each)
+        UPDATED WEIGHTS (NEW: includes self-health for service node detection):
+        - Self-health: 25% (NEW - critical for identifying service root causes)
+        - Severity: 25% (adjusted)
+        - Convergence: 20% (reduced)
+        - Time: 20% (reduced)
+        - Centrality: 5% (reduced)
+        - Signature: 5% (reduced)
+
+        Rationale: Self-health is now equally important as severity, because a root
+        cause MUST show internal degradation, not just downstream issues.
         """
-        # Updated weights to emphasize temporal causality
+        # Updated weights to include self-health analysis
         weights = {
-            'convergence': 0.25,  # Reduced from 0.30
-            'severity': 0.30,     # Increased from 0.25
-            'time': 0.25,         # Same (temporal precedence)
-            'centrality': 0.10,   # Same
-            'signature': 0.10     # Same
+            'self_health': 0.25,  # NEW - critical for service nodes
+            'severity': 0.25,     # Adjusted
+            'convergence': 0.20,  # Reduced to make room for self-health
+            'time': 0.20,         # Reduced
+            'centrality': 0.05,   # Reduced
+            'signature': 0.05     # Reduced
         }
 
         probability = (
-            convergence_score * weights['convergence'] +
+            self_health_score * weights['self_health'] +
             severity_score * weights['severity'] +
+            convergence_score * weights['convergence'] +
             time_score * weights['time'] +
             centrality_score * weights['centrality'] +
             signature_score * weights['signature']
         )
 
-        # STRICTER penalty for temporal inconsistency (0.7 -> 0.5)
+        # STRICTER penalty for temporal inconsistency
         # If temporal ordering is violated, this is a major red flag
         if not temporal_consistent:
             probability *= 0.5
@@ -666,16 +717,26 @@ class RootCauseDetector:
         convergence_score: float,
         impacted_first: bool,
         path_count: int,
-        severity_score: float
+        severity_score: float,
+        self_health_analysis: Optional['SelfHealthAnalysis'] = None
     ) -> str:
         """Build human-readable reasoning for candidate."""
         reasons = []
+
+        # Self-health analysis (most important for service nodes)
+        if self_health_analysis:
+            if self_health_analysis.has_resource_exhaustion:
+                reasons.append(f"{self_health_analysis.resource_exhaustion_type} exhaustion")
+            if self_health_analysis.has_self_degradation:
+                reasons.append(f"self-degraded (score: {self_health_analysis.self_degradation_score:.2f})")
+            if self_health_analysis.is_likely_victim:
+                reasons.append("likely victim (only dependency issues)")
 
         if is_leaf:
             reasons.append("leaf node")
 
         if convergence_score > 0.5:
-            reasons.append(f"{path_count} impact paths converge here")
+            reasons.append(f"{path_count} impact paths converge")
 
         if impacted_first:
             reasons.append("impacted first")
