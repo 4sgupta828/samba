@@ -342,7 +342,44 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             if verbose:
                 print(f"  No fault mode: Running baseline simulation without fault injection")
 
-        # If force_fault_type and force_fault_role are specified, find matching scenario
+        # If only force_fault_type is specified (no role), auto-select compatible role
+        elif force_fault_type and not force_fault_role:
+            # Find all scenarios matching the fault type
+            matching_scenarios = []
+            for level in [1, 2, 3, 4]:
+                scenarios = scenario_lib.levels[level]
+                for scenario in scenarios:
+                    if scenario.fault_type == force_fault_type:
+                        # For network_partition, any scenario works
+                        # For other faults, check if topology has required role
+                        if scenario.fault_type == 'network_partition' or scenario.fault_target_role in available_roles:
+                            matching_scenarios.append(scenario)
+
+            if not matching_scenarios:
+                print(f"Error: Could not find compatible scenario with fault_type='{force_fault_type}' for this topology")
+                print(f"  Available roles: {available_roles}")
+                return None
+
+            # Pick the first compatible scenario (could randomize if desired)
+            chosen_scenario = matching_scenarios[0]
+            cfg = EpisodeConfig(
+                level=chosen_scenario.level,
+                topology_size=len(nx_graph.nodes),
+                duration=chosen_scenario.duration,
+                fault_type=chosen_scenario.fault_type,
+                fault_target_role=chosen_scenario.fault_target_role,
+                export_interval=chosen_scenario.export_interval,
+                description=chosen_scenario.description,
+                progression=chosen_scenario.progression,
+                fault_params=chosen_scenario.fault_params,
+                fault_severity=chosen_scenario.fault_severity
+            )
+
+            if verbose:
+                print(f"  Auto-selected scenario: {cfg.description}")
+                print(f"  Fault type: {cfg.fault_type}, Target role: {cfg.fault_target_role} (auto-selected from {len(matching_scenarios)} compatible scenarios)")
+
+        # If both force_fault_type and force_fault_role are specified, find exact match
         elif force_fault_type and force_fault_role:
             # Find a scenario that matches the forced parameters
             cfg = None
@@ -427,7 +464,52 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             if verbose:
                 print(f"  No fault mode: Running baseline simulation without fault injection")
 
-        # If force_fault_type and force_fault_role are specified, find matching scenario
+        # If only force_fault_type is specified (no role), auto-select first matching scenario
+        elif force_fault_type and not force_fault_role:
+            # Find the first scenario matching the fault type
+            cfg = None
+            for level in [1, 2, 3, 4]:
+                scenarios = scenario_lib.levels[level]
+                for scenario in scenarios:
+                    if scenario.fault_type == force_fault_type:
+                        cfg = EpisodeConfig(
+                            level=scenario.level,
+                            topology_size=actual_topology_size if actual_topology_size is not None else scenario.topology_size,
+                            duration=scenario.duration,
+                            fault_type=scenario.fault_type,
+                            fault_target_role=scenario.fault_target_role,
+                            export_interval=scenario.export_interval,
+                            description=scenario.description,
+                            progression=scenario.progression,
+                            fault_params=scenario.fault_params,
+                            fault_severity=scenario.fault_severity
+                        )
+                        break
+                if cfg:
+                    break
+
+            if cfg is None:
+                print(f"Error: Could not find scenario with fault_type='{force_fault_type}'")
+                return None
+
+            # Generate topology that includes the required role
+            topo_gen = TopologyGenerator(seed=episode_id)
+            nx_graph = topo_gen.generate_complex_graph(cfg.topology_size)
+
+            # Verify the topology has the required role (skip for network_partition)
+            if cfg.fault_type != 'network_partition':
+                available_roles = set(data.get('role') for _, data in nx_graph.nodes(data=True))
+                if cfg.fault_target_role not in available_roles:
+                    print(f"Error: Generated topology doesn't have required role '{cfg.fault_target_role}'")
+                    return None
+
+            if verbose:
+                print(f"  Auto-selected scenario: {cfg.description}")
+                print(f"  Fault type: {cfg.fault_type}, Target role: {cfg.fault_target_role} (auto-selected)")
+
+            level = cfg.topology_size  # Use topology size as level for display
+
+        # If both force_fault_type and force_fault_role are specified, find exact match
         elif force_fault_type and force_fault_role:
             # Find a scenario that matches the forced parameters by searching all levels directly
             cfg = None

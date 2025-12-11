@@ -213,9 +213,22 @@ class MetricsDynamicsEngine:
         self.latency_multiplier = latency_multiplier
         self.error_rate_multiplier = error_rate_multiplier
 
-        # Phase 2: Calculate concurrent requests from throughput and latency
+        # Phase 2: Calculate concurrent requests from ACTUAL throughput with smoothing
+        # CRITICAL: Use external_throughput_demand (actual measured) for fast fault response,
+        # but smooth the result to filter noise and maintain physical realism.
+        #
+        # This hybrid approach:
+        # - Responds quickly to sustained throughput drops (network faults)
+        # - Filters out 1-second noise spikes (realistic memory inertia)
+        # - Maintains Little's Law consistency (L = λW)
+        #
         # concurrent = throughput * (latency / 1000)  # Convert ms to seconds
-        self.concurrent_requests = self.throughput_rps * (self.latency_ms / 1000.0)
+        estimated_concurrent = self.external_throughput_demand * (self.latency_ms / 1000.0)
+
+        # Apply exponential moving average (EMA) smoothing
+        # alpha = 0.3: balances responsiveness (responds in ~3 seconds) vs noise filtering
+        alpha = 0.3
+        self.concurrent_requests = alpha * estimated_concurrent + (1 - alpha) * self.concurrent_requests
 
         # Apply action if provided
         if action is not None and action.action_type != "noop":
