@@ -82,7 +82,7 @@ def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     component._emit_log("WARN", f"Starting memory leak: +{leak_rate} MB/request (dynamics: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f})")
 
 def stop_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
-    """Stops an injected memory leak via dynamics engine."""
+    """Stops an injected memory leak via dynamics engine and forces memory to drop."""
     if not isinstance(component, (ComputeAgent, Pod)):
         return
 
@@ -90,7 +90,16 @@ def stop_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
         leak_rate = params.get("leak_mb_per_request", 0.5)
         # Reduce memory per request back to normal (careful not to go negative)
         component.dynamics.config.memory_per_request_mb = max(0.1, component.dynamics.config.memory_per_request_mb - leak_rate)
-        component._emit_log("INFO", f"Stopping memory leak (dynamics: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f})")
+
+        # BUGFIX: Force memory to drop immediately by resetting accumulated memory
+        # Calculate target memory with restored memory_per_request
+        target_memory = (component.dynamics.config.memory_base +
+                        component.dynamics.config.memory_per_request_mb * component.dynamics.concurrent_requests)
+
+        # Set current memory to target (or slightly above to avoid sudden drop artifacts)
+        component.dynamics.memory_percent = target_memory
+
+        component._emit_log("INFO", f"Stopping memory leak (dynamics: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f}, memory reset to {target_memory:.0f}MB)")
     else:
         component._emit_log("WARN", "Component does not have dynamics engine")
 
