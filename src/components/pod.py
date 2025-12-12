@@ -861,13 +861,17 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
             # Execute step based on type
             if step_type == "cache_check":
-                if 'cache' in self.parent_service.connections:
+                # Check if any cache connection exists (cache_*)
+                has_cache = any(conn_name.startswith('cache_') for conn_name in self.parent_service.connections.keys())
+                if has_cache:
                     # Returns (hit, key, cache_obj)
                     cache_hit, cache_key, cache_connection = yield from self._execute_cache_logic(step, span)
 
             elif step_type == "db_query":
                 # Only query DB if cache missed or no cache available
-                if 'database' in self.parent_service.connections:
+                # Check if any database connection exists (db_*)
+                has_db = any(conn_name.startswith('db_') for conn_name in self.parent_service.connections.keys())
+                if has_db:
                     # If we had a cache check and it was a hit, skip DB query
                     if cache_hit:
                         self._emit_log("DEBUG", "Skipping DB query due to cache hit")
@@ -899,7 +903,13 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         Returns:
             tuple: (cache_hit: bool, cache_key: str|None, cache_obj: Cache|None)
         """
-        cache = self.parent_service.connections.get('cache')
+        # Support multiple caches: find any cache connection (cache_*)
+        cache = None
+        for conn_name, conn_target in self.parent_service.connections.items():
+            if conn_name.startswith('cache_'):
+                cache = conn_target
+                break
+
         if not cache:
             return (False, None, None)
 
@@ -1047,7 +1057,13 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
     def _execute_db_logic(self, step, span):
         """Execute database query logic."""
-        db = self.parent_service.connections.get('database')
+        # Support multiple databases: find any database connection (db_*)
+        db = None
+        for conn_name, conn_target in self.parent_service.connections.items():
+            if conn_name.startswith('db_'):
+                db = conn_target
+                break
+
         if not db:
             return
 
@@ -1224,6 +1240,150 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             })
                         # Re-raise to propagate to caller
                         raise
+
+                # Handle cache dependencies in deterministic flow
+                elif conn_name.startswith('cache_') and conn_target.id in required_calls:
+                    cache_start = self.env.now
+
+                    # Check for network partition BEFORE making cache call
+                    self._check_network_partition(conn_target.id)
+
+                    # Generate cache key
+                    import random
+                    cache_key = f"{self.parent_service.service_name}:data:{random.randint(1, 10000)}"
+
+                    try:
+                        should_trace_cache = span is not None
+                        cache_span_ctx = None
+                        if should_trace_cache:
+                            from opentelemetry import trace
+                            cache_span_ctx = trace.set_span_in_context(span)
+
+                        # Try cache get
+                        cache_process = self.env.process(conn_target.get(cache_key, should_trace=should_trace_cache, parent_span_context=cache_span_ctx))
+                        cached_data = yield cache_process
+
+                        # Record cache metrics (both hit and miss count as success)
+                        cache_latency_ms = (self.env.now - cache_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "cache",
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                            self.dependency_duration.record(cache_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "cache",
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+
+                        if span:
+                            span.set_attribute("cache.hit", bool(cached_data))
+
+                    except Exception as e:
+                        # Cache errors
+                        cache_latency_ms = (self.env.now - cache_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "cache",
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                            self.dependency_duration.record(cache_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "cache",
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                            self.dependency_errors.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "cache",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                        self._emit_log("ERROR", f"Cache call failed to {conn_target.id}: {e}")
+                        # Don't re-raise cache errors - they should not fail the request
+
+                # Handle database dependencies in deterministic flow
+                elif conn_name.startswith('db_') and conn_target.id in required_calls:
+                    db_start = self.env.now
+
+                    # Check for network partition BEFORE making db call
+                    self._check_network_partition(conn_target.id)
+
+                    try:
+                        should_trace_db = span is not None
+                        db_span_ctx = None
+                        if should_trace_db:
+                            from opentelemetry import trace
+                            db_span_ctx = trace.set_span_in_context(span)
+
+                        # Execute database query
+                        db_process = self.env.process(conn_target.query(should_trace=should_trace_db, parent_span_context=db_span_ctx))
+                        yield db_process
+
+                        # Record database metrics
+                        db_latency_ms = (self.env.now - db_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "database",
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                            self.dependency_duration.record(db_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "database",
+                                "status": "success",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+
+                    except Exception as e:
+                        # Database errors
+                        db_latency_ms = (self.env.now - db_start) * 1000
+                        if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                            self.dependency_requests.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "database",
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                            self.dependency_duration.record(db_latency_ms, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "database",
+                                "status": "error",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                            self.dependency_errors.add(1, {
+                                "dependency_id": conn_target.id,
+                                "dependency_name": "database",
+                                "component.id": self.id,
+                                "service.name": self.parent_service.service_name,
+                                "service.id": self.parent_service.id
+                            })
+                        self._emit_log("ERROR", f"Database call failed to {conn_target.id}: {e}")
+                        # Database errors should fail the request
+                        raise DependencyFailureException(f"Database call to {conn_target.id} failed: {e}")
 
         else:
             # Fallback to old probabilistic behavior if no semantic flows

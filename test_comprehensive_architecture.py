@@ -123,8 +123,8 @@ class ComprehensiveArchitectureTest:
 
         try:
             # Service A connections
-            self.service_a.connections['database'] = self.db
-            self.service_a.connections['cache'] = self.cache
+            self.service_a.connections['db_db_0'] = self.db
+            self.service_a.connections['cache_cache_0'] = self.cache
             self.service_a.connections['dep_svc_b'] = self.service_b
             self.service_a.connections['ext_api'] = self.external
             self.service_a.connections['queue_out'] = self.queue
@@ -133,7 +133,7 @@ class ComprehensiveArchitectureTest:
                          "DB, Cache, Service B, External API, Queue")
 
             # Service B connections
-            self.service_b.connections['database'] = self.db
+            self.service_b.connections['db_db_0'] = self.db
             self.service_b.connections['queue_in'] = self.queue
 
             self.log_test("Connect Service B to infrastructure", True,

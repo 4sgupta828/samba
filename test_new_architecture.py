@@ -61,8 +61,8 @@ def create_simple_topology():
     )
 
     # Connect service to infrastructure
-    service.connections['database'] = database
-    service.connections['cache'] = cache
+    service.connections['db_db_0'] = database
+    service.connections['cache_cache_0'] = cache
 
     # Create pods
     pod_1 = Pod(env, "pod_a_0", parent_service=service, compute_node=node)

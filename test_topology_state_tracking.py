@@ -71,9 +71,9 @@ def test_topology_tracking():
     )
 
     # Connect services
-    service_a.connections['database'] = db
-    service_a.connections['cache'] = cache
-    service_b.connections['database'] = db
+    service_a.connections['db_db_0'] = db
+    service_a.connections['cache_cache_0'] = cache
+    service_b.connections['db_db_0'] = db
 
     exporter.register_service(service_a)
     exporter.register_service(service_b)

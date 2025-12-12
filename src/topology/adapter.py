@@ -283,11 +283,13 @@ class TopologyAdapter:
         elif isinstance(src, Service):
             if isinstance(tgt, SqlDatabase):
                 # Service → Database
-                src.connections['database'] = tgt
+                # Use unique key to support multiple databases per service
+                src.connections[f'db_{tgt_id}'] = tgt
 
             elif isinstance(tgt, InMemoryCache) or isinstance(tgt, ExternalCache):
                 # Service → Cache (in-memory or external/Redis-like)
-                src.connections['cache'] = tgt
+                # Use unique key to support multiple caches per service
+                src.connections[f'cache_{tgt_id}'] = tgt
 
             elif isinstance(tgt, MessageQueue):
                 # Service → Queue
@@ -317,11 +319,13 @@ class TopologyAdapter:
         elif isinstance(src, ApiService):
             if isinstance(tgt, SqlDatabase):
                 # Service → Database
-                src.connections['database'] = tgt
+                # Use unique key to support multiple databases per service
+                src.connections[f'db_{tgt_id}'] = tgt
 
             elif isinstance(tgt, InMemoryCache) or isinstance(tgt, ExternalCache):
                 # Service → Cache (in-memory or external/Redis-like)
-                src.connections['cache'] = tgt
+                # Use unique key to support multiple caches per service
+                src.connections[f'cache_{tgt_id}'] = tgt
 
             elif isinstance(tgt, MessageQueue):
                 # Service → Queue
