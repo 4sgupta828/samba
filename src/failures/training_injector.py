@@ -262,7 +262,66 @@ class TrainingFailureInjector:
                     yield self.env.timeout(duration)
                     return
 
-        if failure_mode not in ['inject_latency', 'inject_errors', 'cpu_saturation', 'memory_pressure', 'cache_failure']:
+        elif failure_mode == 'disk_io_saturation':
+            # Gradually increase I/O wait latency
+            print(f"   Applying gradual disk I/O saturation over {duration}s...")
+            failure_func = FAILURE_MODES.get(failure_mode)
+            if failure_func:
+                io_wait_ms = params.get('io_wait_ms', 200.0)
+
+                if progression == 'exponential':
+                    # Apply exponentially increasing I/O wait
+                    num_updates = 20
+                    update_interval = duration / num_updates
+
+                    def gradual_io_saturation():
+                        for i in range(num_updates + 1):
+                            # Exponential curve: progress^2 for faster ramp-up
+                            progress = (i / num_updates) ** 2
+                            current_io_wait = io_wait_ms * progress
+
+                            # Apply current level
+                            if hasattr(target, 'dynamics') and target.dynamics:
+                                target.dynamics.fault_latency_additive_ms = current_io_wait
+                                if i == 0:
+                                    # Set flag on first application
+                                    target.dynamics.fault_io_wait_active = True
+
+                            if i < num_updates:
+                                yield self.env.timeout(update_interval)
+
+                    yield self.env.process(gradual_io_saturation())
+                    print(f"   Gradual I/O saturation complete: {io_wait_ms:.0f}ms I/O wait")
+                    return
+
+                elif progression == 'linear':
+                    # Linear ramp
+                    num_updates = 20
+                    update_interval = duration / num_updates
+
+                    def gradual_io_saturation_linear():
+                        for i in range(num_updates + 1):
+                            progress = i / num_updates
+                            current_io_wait = io_wait_ms * progress
+
+                            if hasattr(target, 'dynamics') and target.dynamics:
+                                target.dynamics.fault_latency_additive_ms = current_io_wait
+                                if i == 0:
+                                    target.dynamics.fault_io_wait_active = True
+
+                            if i < num_updates:
+                                yield self.env.timeout(update_interval)
+
+                    yield self.env.process(gradual_io_saturation_linear())
+                    print(f"   Gradual I/O saturation complete: {io_wait_ms:.0f}ms I/O wait")
+                    return
+                else:
+                    # Instant fallback
+                    failure_func(target, params)
+                    yield self.env.timeout(duration)
+                    return
+
+        if failure_mode not in ['inject_latency', 'inject_errors', 'cpu_saturation', 'memory_pressure', 'cache_failure', 'disk_io_saturation']:
             print(f"WARNING: Gradual mode not implemented for '{failure_mode}', using instant")
             # Fall back to instant application
             failure_func = FAILURE_MODES.get(failure_mode)
@@ -435,7 +494,7 @@ class TrainingFailureInjector:
         from src.failures.modes import REVERT_MODES
 
         # Check if this is a gradual-revert-capable fault
-        gradual_faults = ['inject_latency', 'cpu_saturation', 'inject_errors', 'memory_pressure', 'cache_failure']
+        gradual_faults = ['inject_latency', 'cpu_saturation', 'inject_errors', 'memory_pressure', 'cache_failure', 'disk_io_saturation']
 
         if failure_mode not in gradual_faults:
             # Use instant revert from registry
@@ -578,11 +637,41 @@ class TrainingFailureInjector:
                 print(f"   Gradual memory pressure reduction scheduled ({num_updates} steps over {duration:.1f}s)")
                 return gradual_memory_revert()
             else:
-                # Fallback to instant revert
-                from src.failures.modes import revert_memory_pressure
-                for t in targets_to_revert:
-                    revert_memory_pressure(t, params)
-                print(f"   Memory pressure reduced (instant fallback)")
+                print(f"   Warning: No memory_pressure function found")
+
+        elif failure_mode == 'disk_io_saturation':
+            # Gradually reduce I/O wait latency back to zero
+            print(f"   Applying gradual I/O saturation removal over {duration:.1f}s...")
+
+            if hasattr(target, 'dynamics') and target.dynamics:
+                io_wait_ms = params.get('io_wait_ms', 100.0)
+                num_updates = 20
+                update_interval = duration / num_updates
+
+                def gradual_io_recovery():
+                    for i in range(num_updates + 1):
+                        # Progress from 1.0 (full fault) to 0.0 (healthy)
+                        progress = 1.0 - (i / num_updates)
+                        current_io_wait = io_wait_ms * progress
+
+                        # Apply decreasing I/O wait
+                        target.dynamics.fault_latency_additive_ms = current_io_wait
+
+                        # Clear flag on final step
+                        if i == num_updates:
+                            target.dynamics.fault_io_wait_active = False
+                            print(f"   I/O saturation fully removed, flag cleared")
+
+                        if i < num_updates:
+                            yield self.env.timeout(update_interval)
+
+                print(f"   Gradual I/O saturation removal scheduled ({num_updates} steps over {duration:.1f}s)")
+                return gradual_io_recovery()
+            else:
+                print(f"   Warning: Target doesn't have dynamics engine, using instant revert")
+                from src.failures.modes import revert_disk_io_saturation
+                revert_disk_io_saturation(target, params)
+                print(f"   I/O saturation removed (instant fallback)")
 
         # connection_exhaustion removed (2025-12-10) → Use thread_exhaustion instead
 
