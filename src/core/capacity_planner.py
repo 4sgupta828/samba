@@ -305,7 +305,7 @@ class CapacityPlanner:
         # phi=0.0 → 1.5x, phi=1.0 → 1.1x (minimum margin for variance)
         pool_headroom = 1.1 + (0.4 * (1.0 - phi))
 
-        threads = max(10, int(concurrency_per_pod * pool_headroom))
+        threads = max(3, int(concurrency_per_pod * pool_headroom))
 
         logger.info(f"  → Threads: {threads} (concurrency={concurrency_per_pod}, pool_headroom={pool_headroom:.2f})")
 
