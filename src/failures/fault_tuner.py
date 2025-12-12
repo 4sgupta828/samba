@@ -127,6 +127,26 @@ class FaultParameterTuner:
                 baseline_params, total_threads, node_rps, severity, verbose
             )
 
+        elif fault_type == 'memory_pressure':
+            tuned_params = self._tune_memory_pressure_fault(
+                baseline_params, node_config, severity, verbose
+            )
+
+        elif fault_type == 'memory_thrashing':
+            tuned_params = self._tune_memory_thrashing_fault(
+                baseline_params, node_config, severity, verbose
+            )
+
+        elif fault_type == 'thread_exhaustion':
+            tuned_params = self._tune_thread_exhaustion_fault(
+                baseline_params, total_threads, node_rps, severity, verbose
+            )
+
+        elif fault_type == 'disk_io_saturation':
+            tuned_params = self._tune_disk_io_saturation_fault(
+                baseline_params, node_config, node_rps, severity, verbose
+            )
+
         elif fault_type == 'force_deadlock':
             tuned_params = self._tune_deadlock_fault(
                 baseline_params, threads_per_replica, severity, verbose
@@ -135,6 +155,16 @@ class FaultParameterTuner:
         elif fault_type == 'hot_shard':
             tuned_params = self._tune_hot_shard_fault(
                 baseline_params, replicas, severity, verbose
+            )
+
+        elif fault_type == 'cache_failure':
+            tuned_params = self._tune_cache_failure_fault(
+                baseline_params, severity, verbose
+            )
+
+        elif fault_type == 'noisy_neighbor':
+            tuned_params = self._tune_noisy_neighbor_fault(
+                baseline_params, node_config, severity, verbose
             )
 
         elif fault_type in ['slow_queries', 'connection_exhaustion']:
@@ -525,3 +555,242 @@ class FaultParameterTuner:
         estimated_rps = self.target_rps / (len(predecessors) + 1.0)
 
         return estimated_rps
+
+    def _tune_disk_io_saturation_fault(
+        self,
+        baseline_params: Dict[str, Any],
+        node_config: Dict[str, Any],
+        node_rps: float,
+        severity: float,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Tune disk I/O saturation I/O wait time based on database capacity.
+
+        Key insight: I/O saturation is capacity-relative. A database with 1000 connection
+        pool and high RPS can absorb higher I/O latency than a small database.
+
+        Strategy:
+        - Calculate baseline query latency and throughput capacity
+        - Scale I/O wait to push utilization toward saturation without total collapse
+        - Severity controls how close to saturation we get
+        """
+        tuned = baseline_params.copy()
+
+        # Get database capacity metrics
+        connection_pool = node_config.get('connection_pool_capacity', 100)
+
+        # Get baseline latency from component profile
+        node_role = self.graph.nodes.get(self.current_target_node, {}).get('role', 'database')
+        try:
+            latency_profile, _ = get_component_profile(node_role)
+            baseline_latency_ms = latency_profile.p50
+        except:
+            baseline_latency_ms = 20.0  # Fallback for databases
+
+        # Calculate baseline utilization
+        # Utilization = (RPS × Latency) / Capacity
+        baseline_latency_sec = baseline_latency_ms / 1000.0
+        if node_rps > 0 and connection_pool > 0:
+            baseline_util = (node_rps * baseline_latency_sec) / connection_pool
+        else:
+            baseline_util = 0.3  # Conservative default
+
+        # Target utilization: consume headroom based on severity
+        scaled_headroom = self._scale_by_severity(self.headroom_consumption, severity)
+        available_headroom = max(0.1, 1.0 - baseline_util)
+        target_util = min(0.95, baseline_util + (available_headroom * scaled_headroom))
+
+        # Calculate required I/O wait to reach target utilization
+        # target_util = (RPS × (baseline_latency + io_wait)) / connection_pool
+        # → io_wait = (connection_pool × target_util / RPS) - baseline_latency
+        if node_rps > 0:
+            required_total_latency_sec = (connection_pool * target_util) / node_rps
+            io_wait_sec = max(0, required_total_latency_sec - baseline_latency_sec)
+            io_wait_ms = io_wait_sec * 1000
+        else:
+            # Fallback: use severity-based scaling
+            io_wait_ms = baseline_latency_ms * self._scale_by_severity(3.0, severity)
+
+        # Apply bounds based on severity
+        # Subtle (0.0-0.3): 50-200ms
+        # Moderate (0.3-0.7): 200-500ms
+        # Severe (0.7-1.0): 500-2000ms
+        if severity < 0.3:
+            io_wait_ms = max(50.0, min(200.0, io_wait_ms))
+        elif severity < 0.7:
+            io_wait_ms = max(200.0, min(500.0, io_wait_ms))
+        else:
+            io_wait_ms = max(500.0, min(2000.0, io_wait_ms))
+
+        tuned['severity'] = severity
+        # Always set io_wait_ms to override the fault implementation's internal calculation
+        tuned['io_wait_ms'] = io_wait_ms
+
+        if verbose:
+            print(f"  Disk I/O saturation tuning:")
+            print(f"    Connection pool: {connection_pool}")
+            print(f"    Baseline latency: {baseline_latency_ms:.1f}ms")
+            print(f"    Baseline utilization: {baseline_util*100:.1f}%")
+            print(f"    Target utilization: {target_util*100:.1f}%")
+            print(f"    I/O wait: {io_wait_ms:.1f}ms")
+
+        return tuned
+
+    def _tune_thread_exhaustion_fault(
+        self,
+        baseline_params: Dict[str, Any],
+        total_threads: int,
+        node_rps: float,
+        severity: float,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Tune thread exhaustion based on thread pool size and RPS.
+
+        Thread exhaustion reduces available threads, causing queue buildup.
+        Must scale with capacity - more threads = need more exhaustion.
+        """
+        tuned = baseline_params.copy()
+
+        if total_threads < 1:
+            return tuned
+
+        # Calculate how many threads to exhaust based on severity
+        # Severity scales from minimal (10% threads) to severe (80% threads)
+        base_exhaustion_pct = 0.30  # 30% base exhaustion
+        exhaustion_pct = self._scale_by_severity(base_exhaustion_pct, severity)
+        exhaustion_pct = max(0.10, min(0.80, exhaustion_pct))
+
+        exhausted_threads = int(total_threads * exhaustion_pct)
+        exhausted_threads = max(1, exhausted_threads)  # At least 1 thread
+
+        tuned['exhausted_threads'] = exhausted_threads
+        tuned['severity'] = severity
+
+        if verbose:
+            print(f"  Thread exhaustion tuning:")
+            print(f"    Total threads: {total_threads}")
+            print(f"    Exhaustion: {exhaustion_pct*100:.0f}%")
+            print(f"    Exhausted threads: {exhausted_threads}")
+            print(f"    Remaining capacity: {total_threads - exhausted_threads} threads")
+
+        return tuned
+
+    def _tune_memory_pressure_fault(
+        self,
+        baseline_params: Dict[str, Any],
+        node_config: Dict[str, Any],
+        severity: float,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Tune memory pressure based on pod memory limits and severity.
+
+        Memory pressure increases memory allocation, pushing toward OOM.
+        """
+        tuned = baseline_params.copy()
+
+        # Memory pressure is primarily controlled by severity
+        # The fault implementation scales memory_multiplier internally
+        tuned['severity'] = severity
+
+        if verbose:
+            print(f"  Memory pressure tuning:")
+            print(f"    Severity: {severity:.2f}")
+            print(f"    Note: Memory pressure scales internally based on severity")
+
+        return tuned
+
+    def _tune_memory_thrashing_fault(
+        self,
+        baseline_params: Dict[str, Any],
+        node_config: Dict[str, Any],
+        severity: float,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Tune memory thrashing (memory + swap saturation) based on severity.
+
+        Memory thrashing causes page faults and swap I/O, degrading performance.
+        """
+        tuned = baseline_params.copy()
+
+        # Memory thrashing is controlled by severity
+        # Higher severity = more aggressive thrashing
+        tuned['severity'] = severity
+
+        if verbose:
+            print(f"  Memory thrashing tuning:")
+            print(f"    Severity: {severity:.2f}")
+            print(f"    Note: Memory thrashing scales internally based on severity")
+
+        return tuned
+
+    def _tune_cache_failure_fault(
+        self,
+        baseline_params: Dict[str, Any],
+        severity: float,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Tune cache failure based on severity.
+
+        Cache failure is binary (cache up/down) but we can control error rate.
+        Severity affects how often cache operations fail.
+        """
+        tuned = baseline_params.copy()
+
+        # Cache failure can have partial failures based on severity
+        # severity=0.5 → 50% of cache ops fail, rest fall back to DB
+        # severity=1.0 → 100% cache ops fail
+        cache_error_rate = self._scale_by_severity(0.50, severity)
+        cache_error_rate = max(0.30, min(1.0, cache_error_rate))
+
+        tuned['error_rate'] = cache_error_rate
+        tuned['severity'] = severity
+
+        if verbose:
+            print(f"  Cache failure tuning:")
+            print(f"    Severity: {severity:.2f}")
+            print(f"    Cache error rate: {cache_error_rate*100:.0f}%")
+
+        return tuned
+
+    def _tune_noisy_neighbor_fault(
+        self,
+        baseline_params: Dict[str, Any],
+        node_config: Dict[str, Any],
+        severity: float,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Tune noisy neighbor CPU pinning based on severity.
+
+        Noisy neighbor pins CPU to high percentage, causing contention.
+        Severity controls how much CPU the noisy neighbor consumes.
+        """
+        tuned = baseline_params.copy()
+
+        # Scale CPU pinning percentage based on severity
+        # Subtle (0.3): 60-70% CPU
+        # Moderate (0.5): 80-90% CPU
+        # Severe (1.0): 95-100% CPU
+        if severity < 0.3:
+            cpu_percent = 60.0 + (severity / 0.3) * 10.0
+        elif severity < 0.7:
+            cpu_percent = 70.0 + ((severity - 0.3) / 0.4) * 20.0
+        else:
+            cpu_percent = 90.0 + ((severity - 0.7) / 0.3) * 10.0
+
+        cpu_percent = max(60.0, min(100.0, cpu_percent))
+
+        tuned['cpu_percent'] = cpu_percent
+        tuned['severity'] = severity
+
+        if verbose:
+            print(f"  Noisy neighbor tuning:")
+            print(f"    Severity: {severity:.2f}")
+            print(f"    CPU pinning: {cpu_percent:.0f}%")
+
+        return tuned
