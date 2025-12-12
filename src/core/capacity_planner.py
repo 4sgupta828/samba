@@ -103,7 +103,8 @@ class CapacityPlanner:
         node_stats = {n: {'rps': 0.0} for n in self.graph.nodes()}
 
         flows = self.semantic_map.get('request_flows', {})
-        request_types = self.semantic_map.get('request_types', ['GET'])
+        # FIX: Use request_flows keys instead of missing request_types field
+        request_types = list(flows.keys()) if flows else ['GET']
         type_weight = 1.0 / max(1, len(request_types))
 
         for req_type in request_types:

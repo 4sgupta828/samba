@@ -349,10 +349,11 @@ class FaultParameterTuner:
         verbose: bool
     ) -> Dict[str, Any]:
         """
-        Tune memory leak rate based on request throughput and severity.
+        Tune memory leak rate based on concurrency and capacity.
 
-        Goal: Cause OOM within reasonable time (~60-120s)
-        Severity controls how quickly memory pressure builds.
+        Goal: Cause observable memory growth that leads to degradation/propagation.
+        Uses concurrency-aware calculation: memory accumulated = concurrent_requests * leak_per_request.
+        Severity controls target memory increase (50% to 150% of baseline).
         """
         tuned = baseline_params.copy()
 
@@ -361,26 +362,35 @@ class FaultParameterTuner:
 
         baseline_leak = tuned['leak_mb_per_request']
 
-        # Estimate requests processed in 90 seconds
-        requests_in_90s = node_rps * 90.0
+        # FIX: Use concurrency-aware calculation
+        # Estimate average concurrency: Little's Law (L = λ * W)
+        # Assume typical service latency ~50ms, so avg_concurrency = node_rps * 0.05
+        avg_latency_seconds = 0.05
+        avg_concurrency = node_rps * avg_latency_seconds
+        avg_concurrency = max(1.0, avg_concurrency)  # At least 1 concurrent request
 
-        # Assume pod has ~1000MB memory budget before OOM
-        # Scale target by severity (subtle: 400MB, moderate: 700MB, severe: 950MB)
-        base_target_mb = 700.0
-        target_total_leak_mb = self._scale_by_severity(base_target_mb, severity)
+        # Target: Grow memory by X% over baseline (~200MB) within fault duration
+        # Severity scales target: 0.3 -> 50%, 0.5 -> 100%, 0.8 -> 150%
+        base_memory_mb = 200.0
+        target_increase_pct = 0.5 + (severity * 1.0)  # 50% to 150%
+        target_increase_mb = base_memory_mb * target_increase_pct
 
-        tuned_leak = target_total_leak_mb / requests_in_90s if requests_in_90s > 0 else baseline_leak
+        # Memory in dynamics: memory_mb = base + (concurrent_requests * memory_per_request)
+        # To increase by target_increase_mb, we need: leak_per_request * avg_concurrency = target_increase_mb
+        tuned_leak = target_increase_mb / avg_concurrency
 
-        # Bounds: 0.1 to 2.0 MB per request
-        tuned_leak = max(0.1, min(2.0, tuned_leak))
+        # Bounds: 0.5 to 50.0 MB per request (much higher ceiling for low-concurrency services)
+        tuned_leak = max(0.5, min(50.0, tuned_leak))
 
         tuned['leak_mb_per_request'] = tuned_leak
 
         if verbose:
             print(f"  Memory leak tuning:")
-            print(f"    Requests in 90s: {requests_in_90s:.0f}")
-            print(f"    Target leak (severity scaled): {target_total_leak_mb:.0f}MB")
+            print(f"    Node RPS: {node_rps:.1f}")
+            print(f"    Est. avg concurrency: {avg_concurrency:.1f} requests")
+            print(f"    Target increase: {target_increase_mb:.0f}MB ({target_increase_pct*100:.0f}% of {base_memory_mb:.0f}MB)")
             print(f"    Leak rate: {tuned_leak:.2f} MB/request")
+            print(f"    Expected memory growth: {tuned_leak * avg_concurrency:.0f}MB")
 
         return tuned
 
