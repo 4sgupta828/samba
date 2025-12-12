@@ -321,7 +321,147 @@ class TrainingFailureInjector:
                     yield self.env.timeout(duration)
                     return
 
-        if failure_mode not in ['inject_latency', 'inject_errors', 'cpu_saturation', 'memory_pressure', 'cache_failure', 'disk_io_saturation']:
+        elif failure_mode == 'thread_exhaustion':
+            # Gradually spawn zombie threads/connections to exhaust the pool
+            print(f"   Applying gradual thread exhaustion over {duration}s...")
+            failure_func = FAILURE_MODES.get(failure_mode)
+            if failure_func:
+                from src.components.database import SqlDatabase
+                from src.components.pod import Pod
+                from src.components.service import Service
+
+                # Determine the target component and resource pool
+                actual_target = None
+                if isinstance(target, Service) and target.pods:
+                    import random
+                    actual_target = random.choice(target.pods)
+                    target._force_deadlock_pod_id = actual_target.id
+                    print(f"   Applying to randomly selected pod {actual_target.id} (out of {len(target.pods)} pods)")
+                elif isinstance(target, (Pod, SqlDatabase)):
+                    actual_target = target
+                else:
+                    print(f"   ERROR: Cannot apply thread_exhaustion to {type(target).__name__}")
+                    yield self.env.timeout(duration)
+                    return
+
+                # Get resource pool
+                if isinstance(actual_target, SqlDatabase):
+                    resource_pool = actual_target.connection_pool
+                    resource_type = "connections"
+                else:
+                    resource_pool = actual_target.thread_pool
+                    resource_type = "threads"
+
+                # Calculate how many resources to exhaust
+                if "locked_threads" in params or "exhausted_threads" in params:
+                    total_locked = params.get("locked_threads", params.get("exhausted_threads", 0))
+                elif "thread_percentage" in params:
+                    pool_size = resource_pool.capacity
+                    total_locked = max(1, int(pool_size * params["thread_percentage"]))
+                else:
+                    pool_size = resource_pool.capacity
+                    total_locked = max(1, int(pool_size * 0.7))
+
+                # Cap to pool capacity
+                pool_capacity = resource_pool.capacity
+                if total_locked > pool_capacity:
+                    total_locked = pool_capacity
+
+                print(f"   Will gradually lock {total_locked} {resource_type} over {duration:.1f}s")
+
+                # Initialize zombie process tracking if not exists
+                if not hasattr(actual_target, '_zombie_processes'):
+                    actual_target._zombie_processes = []
+
+                # Gradually spawn zombie processes
+                if progression == 'linear':
+                    num_batches = 10  # Spawn in 10 batches
+                    batch_interval = duration / num_batches
+
+                    for batch_idx in range(num_batches):
+                        # Calculate how many threads to lock in this batch
+                        progress = (batch_idx + 1) / num_batches
+                        target_locked = int(total_locked * progress)
+                        current_locked = len(actual_target._zombie_processes)
+                        batch_size = target_locked - current_locked
+
+                        if batch_size > 0:
+                            # Spawn zombie tasks for this batch
+                            fault_duration = params.get("duration", 300.0)
+
+                            def _zombie_task():
+                                try:
+                                    with resource_pool.request() as req:
+                                        yield req  # Acquire resource
+                                        actual_target._emit_log("DEBUG", f"Thread exhaustion: {resource_type[:-1]} locked (zombie task)")
+                                        # Just sleep - no CPU, no work
+                                        yield actual_target.env.timeout(fault_duration)
+                                        actual_target._emit_log("DEBUG", f"Thread exhaustion: {resource_type[:-1]} released (duration expired)")
+                                except Exception as e:
+                                    # Handle interruption from revert
+                                    actual_target._emit_log("DEBUG", f"Thread exhaustion: {resource_type[:-1]} released (interrupted: {e})")
+
+                            for _ in range(batch_size):
+                                zombie_proc = actual_target.env.process(_zombie_task())
+                                actual_target._zombie_processes.append(zombie_proc)
+
+                            actual_target._emit_log("INFO",
+                                f"Thread exhaustion batch {batch_idx+1}/{num_batches}: locked {batch_size} more {resource_type} "
+                                f"(total: {len(actual_target._zombie_processes)}/{total_locked})")
+
+                        # Wait before next batch (unless this is the last batch)
+                        if batch_idx < num_batches - 1:
+                            yield self.env.timeout(batch_interval)
+
+                    print(f"   Gradual thread exhaustion complete: {len(actual_target._zombie_processes)} {resource_type} locked")
+                    return
+
+                elif progression == 'exponential':
+                    # Exponential progression: slower start, faster ramp
+                    num_batches = 10
+                    batch_interval = duration / num_batches
+
+                    for batch_idx in range(num_batches):
+                        # Exponential curve: progress^2
+                        progress = ((batch_idx + 1) / num_batches) ** 2
+                        target_locked = int(total_locked * progress)
+                        current_locked = len(actual_target._zombie_processes)
+                        batch_size = target_locked - current_locked
+
+                        if batch_size > 0:
+                            fault_duration = params.get("duration", 300.0)
+
+                            def _zombie_task():
+                                try:
+                                    with resource_pool.request() as req:
+                                        yield req
+                                        actual_target._emit_log("DEBUG", f"Thread exhaustion: {resource_type[:-1]} locked")
+                                        yield actual_target.env.timeout(fault_duration)
+                                        actual_target._emit_log("DEBUG", f"Thread exhaustion: {resource_type[:-1]} released")
+                                except Exception as e:
+                                    actual_target._emit_log("DEBUG", f"Thread exhaustion: {resource_type[:-1]} released (interrupted)")
+
+                            for _ in range(batch_size):
+                                zombie_proc = actual_target.env.process(_zombie_task())
+                                actual_target._zombie_processes.append(zombie_proc)
+
+                            actual_target._emit_log("INFO",
+                                f"Thread exhaustion batch {batch_idx+1}/{num_batches}: locked {batch_size} more {resource_type} "
+                                f"(total: {len(actual_target._zombie_processes)}/{total_locked})")
+
+                        if batch_idx < num_batches - 1:
+                            yield self.env.timeout(batch_interval)
+
+                    print(f"   Gradual thread exhaustion complete: {len(actual_target._zombie_processes)} {resource_type} locked")
+                    return
+
+                else:
+                    # Unknown progression - instant fallback
+                    failure_func(target, params)
+                    yield self.env.timeout(duration)
+                    return
+
+        if failure_mode not in ['inject_latency', 'inject_errors', 'cpu_saturation', 'memory_pressure', 'cache_failure', 'disk_io_saturation', 'thread_exhaustion']:
             print(f"WARNING: Gradual mode not implemented for '{failure_mode}', using instant")
             # Fall back to instant application
             failure_func = FAILURE_MODES.get(failure_mode)
@@ -494,7 +634,7 @@ class TrainingFailureInjector:
         from src.failures.modes import REVERT_MODES
 
         # Check if this is a gradual-revert-capable fault
-        gradual_faults = ['inject_latency', 'cpu_saturation', 'inject_errors', 'memory_pressure', 'cache_failure', 'disk_io_saturation']
+        gradual_faults = ['inject_latency', 'cpu_saturation', 'inject_errors', 'memory_pressure', 'cache_failure', 'disk_io_saturation', 'thread_exhaustion']
 
         if failure_mode not in gradual_faults:
             # Use instant revert from registry
@@ -672,6 +812,89 @@ class TrainingFailureInjector:
                 from src.failures.modes import revert_disk_io_saturation
                 revert_disk_io_saturation(target, params)
                 print(f"   I/O saturation removed (instant fallback)")
+
+        elif failure_mode == 'thread_exhaustion':
+            # Gradually release zombie threads/connections
+            print(f"   Applying gradual thread exhaustion removal over {duration:.1f}s...")
+
+            from src.components.database import SqlDatabase
+            from src.components.pod import Pod
+            from src.components.service import Service
+
+            # Find the actual target component
+            actual_target = None
+            if hasattr(target, '_force_deadlock_pod_id'):
+                # Service or Pod with tracked deadlock
+                affected_pod_id = target._force_deadlock_pod_id
+                if isinstance(target, Service):
+                    # Look up pod in service's current pod list
+                    for pod in target.pods:
+                        if pod.id == affected_pod_id:
+                            actual_target = pod
+                            break
+                    if not actual_target:
+                        print(f"   Warning: Could not find affected pod {affected_pod_id} in service")
+                        actual_target = target
+                elif isinstance(target, Pod):
+                    actual_target = target
+            elif isinstance(target, SqlDatabase):
+                actual_target = target
+            else:
+                actual_target = target
+
+            # Check if we have zombie processes to release
+            if hasattr(actual_target, '_zombie_processes') and actual_target._zombie_processes:
+                total_zombies = len(actual_target._zombie_processes)
+                print(f"   Found {total_zombies} zombie processes to release gradually")
+
+                # Gradually interrupt zombie processes
+                num_batches = 10
+                batch_interval = duration / num_batches
+
+                for batch_idx in range(num_batches):
+                    # Calculate how many to release in this batch
+                    progress = (batch_idx + 1) / num_batches
+                    target_remaining = int(total_zombies * (1.0 - progress))
+                    current_count = len(actual_target._zombie_processes)
+                    batch_size = current_count - target_remaining
+
+                    if batch_size > 0 and actual_target._zombie_processes:
+                        # Interrupt zombies from this batch
+                        for _ in range(min(batch_size, len(actual_target._zombie_processes))):
+                            if actual_target._zombie_processes:
+                                zombie_proc = actual_target._zombie_processes.pop(0)
+                                try:
+                                    zombie_proc.interrupt("Thread exhaustion recovery")
+                                except Exception as e:
+                                    pass  # Zombie might have already finished
+
+                        actual_target._emit_log("INFO",
+                            f"Thread exhaustion recovery batch {batch_idx+1}/{num_batches}: released {batch_size} processes "
+                            f"(remaining: {len(actual_target._zombie_processes)}/{total_zombies})")
+
+                    # Wait before next batch (unless this is the last batch)
+                    if batch_idx < num_batches - 1:
+                        yield self.env.timeout(batch_interval)
+
+                # Clean up any remaining zombies
+                while actual_target._zombie_processes:
+                    zombie_proc = actual_target._zombie_processes.pop(0)
+                    try:
+                        zombie_proc.interrupt("Thread exhaustion recovery complete")
+                    except Exception:
+                        pass
+
+                print(f"   Thread exhaustion fully removed: all zombie processes released")
+
+                # Clean up tracking attributes
+                if hasattr(target, '_force_deadlock_pod_id'):
+                    delattr(target, '_force_deadlock_pod_id')
+                if hasattr(actual_target, '_force_deadlock_pod_id'):
+                    delattr(actual_target, '_force_deadlock_pod_id')
+            else:
+                print(f"   No zombie processes found, using instant revert")
+                from src.failures.modes import revert_thread_exhaustion
+                revert_thread_exhaustion(target, params)
 
         # connection_exhaustion removed (2025-12-10) → Use thread_exhaustion instead
 
