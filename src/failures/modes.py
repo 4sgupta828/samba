@@ -488,21 +488,32 @@ def disk_io_saturation(component: SimulatedComponent, params: Dict[str, Any]):
     if 'io_wait_ms' in params:
         io_wait_ms = params['io_wait_ms']
 
-    # Set FLOOR on latency (I/O wait is minimum latency)
-    component.dynamics.fault_latency_floor_ms = io_wait_ms
+    # CRITICAL: Use ADDITIVE latency, not FLOOR!
+    # I/O wait should ADD latency on top of natural dynamics, not set a minimum.
+    # Using floor causes feedback loops: floor→high latency→queue buildup→natural latency exceeds floor→stuck
+    # Using additive: natural dynamics + I/O wait, and when removed, natural dynamics recovers
+    component.dynamics.fault_latency_additive_ms = io_wait_ms
 
     # Key characteristic: LOW CPU during I/O wait
-    # Threads are blocked on I/O, not consuming CPU
-    # Model this by NOT adding CPU load (unlike cpu_saturation)
+    # Threads are BLOCKED waiting for I/O, not consuming CPU or context switching
+    # Set flag to suppress queue contention and thread contention CPU
+    component.dynamics.fault_io_wait_active = True
 
     component._emit_log("WARN",
-        f"Disk I/O saturation: {io_wait_ms:.0f}ms I/O wait (LOW CPU, severity={severity:.2f})")
+        f"Disk I/O saturation: {io_wait_ms:.0f}ms I/O wait additive (LOW CPU, severity={severity:.2f})")
 
 def revert_disk_io_saturation(component: SimulatedComponent, params: Dict[str, Any]):
-    """Revert disk I/O saturation by removing latency floor."""
+    """Revert disk I/O saturation by removing additive I/O wait latency.
+
+    Since disk_io_saturation uses ADDITIVE latency (not floor), removing it allows
+    the dynamics engine to naturally return to baseline behavior without getting stuck.
+    """
     if hasattr(component, 'dynamics') and component.dynamics is not None:
-        component.dynamics.fault_latency_floor_ms = None
-        component._emit_log("INFO", "Disk I/O saturation reverted")
+        # Remove the additive I/O wait latency
+        component.dynamics.fault_latency_additive_ms = 0.0
+        # Clear the I/O wait flag to restore normal CPU behavior
+        component.dynamics.fault_io_wait_active = False
+        component._emit_log("INFO", "Disk I/O saturation reverted (I/O wait removed)")
     else:
         component._emit_log("WARN", "Component does not have dynamics engine")
 

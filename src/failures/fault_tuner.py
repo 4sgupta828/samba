@@ -570,9 +570,16 @@ class FaultParameterTuner:
         Key insight: I/O saturation is capacity-relative. A database with 1000 connection
         pool and high RPS can absorb higher I/O latency than a small database.
 
+        CRITICAL CONSTRAINT: Must prevent congestion collapse!
+        - I/O wait that's too high creates massive queue buildup (e.g., 886/1065 connections stuck)
+        - Once in congestion collapse, system CANNOT recover naturally
+        - Even with fault removed, CPU stays at 100%, dynamics computes target_latency > 10,000ms
+        - System stays stuck at latency_max forever
+
         Strategy:
         - Calculate baseline query latency and throughput capacity
         - Scale I/O wait to push utilization toward saturation without total collapse
+        - Use VERY conservative bounds to prevent queue explosion
         - Severity controls how close to saturation we get
         """
         tuned = baseline_params.copy()
@@ -613,15 +620,19 @@ class FaultParameterTuner:
             io_wait_ms = baseline_latency_ms * self._scale_by_severity(3.0, severity)
 
         # Apply bounds based on severity
-        # Subtle (0.0-0.3): 50-200ms
-        # Moderate (0.3-0.7): 200-500ms
-        # Severe (0.7-1.0): 500-2000ms
+        # CRITICAL: These bounds must be EXTREMELY conservative for capacity-limited systems
+        # Even "moderate" severity should allow recovery, not cause total collapse
+        # After testing: 200ms still causes congestion collapse on capacity-limited systems
+        # Reduced by 50% to prevent queue explosion
+        # Subtle (0.0-0.3): 10-40ms (0.5x-2x baseline 20ms latency)
+        # Moderate (0.3-0.7): 40-100ms (2x-5x baseline)
+        # Severe (0.7-1.0): 100-250ms (5x-12.5x baseline)
         if severity < 0.3:
-            io_wait_ms = max(50.0, min(200.0, io_wait_ms))
+            io_wait_ms = max(10.0, min(40.0, io_wait_ms))
         elif severity < 0.7:
-            io_wait_ms = max(200.0, min(500.0, io_wait_ms))
+            io_wait_ms = max(40.0, min(100.0, io_wait_ms))
         else:
-            io_wait_ms = max(500.0, min(2000.0, io_wait_ms))
+            io_wait_ms = max(100.0, min(250.0, io_wait_ms))
 
         tuned['severity'] = severity
         # Always set io_wait_ms to override the fault implementation's internal calculation

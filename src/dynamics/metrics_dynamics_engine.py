@@ -163,6 +163,7 @@ class MetricsDynamicsEngine:
         self.fault_latency_additive_ms = 0.0    # Added latency (for inject_latency)
         self.fault_cpu_floor_percent = None     # Minimum CPU (for cpu_saturation)
         self.fault_error_additive = 0.0         # Added error rate (for inject_errors)
+        self.fault_io_wait_active = False       # True during I/O wait (threads blocked, low CPU)
 
         # Latency history for percentile calculation
         self.latency_history: deque = deque(maxlen=1000)  # Keep last 1000 samples
@@ -277,23 +278,38 @@ class MetricsDynamicsEngine:
         """
         # Calculate target CPU based on current load
         # Phase 2: Use concurrent requests instead of throughput
-        target_cpu_from_load = (
-            self.config.cpu_min +
-            self.config.cpu_from_concurrent_coef * self.concurrent_requests +
-            self.config.cpu_from_connections_coef * self.active_connections
-        )
+        # CRITICAL: During I/O wait, connections are BLOCKED (not consuming CPU)
+        # Suppress connection CPU contribution when threads are waiting for I/O
+        if self.fault_io_wait_active:
+            # I/O wait: threads blocked, only count minimal baseline CPU
+            target_cpu_from_load = self.config.cpu_min
+        else:
+            target_cpu_from_load = (
+                self.config.cpu_min +
+                self.config.cpu_from_concurrent_coef * self.concurrent_requests +
+                self.config.cpu_from_connections_coef * self.active_connections
+            )
 
         # Phase 3: Add CPU overhead from resource contention
         # Queue depth causes CPU spike ONLY when threads are actively processing
         # During deadlocks: queue grows but threads are sleeping → minimal CPU
+        # During I/O wait: threads are blocked waiting for I/O → minimal CPU
         # The key insight: queue contention CPU should be proportional to THROUGHPUT, not just queue depth
         # If throughput is near zero (deadlock), queue doesn't cause CPU spikes
         active_processing_factor = min(self.throughput_rps / max(self.config.throughput_capacity, 1.0), 1.0)
-        queue_contention_cpu = ((self.queue_depth / 10.0) * 5.0) * active_processing_factor  # Max 5% per 10 queued
+
+        # Suppress queue contention CPU during I/O wait (threads blocked, not thrashing)
+        if self.fault_io_wait_active:
+            queue_contention_cpu = 0.0  # Threads waiting for I/O don't consume CPU
+        else:
+            queue_contention_cpu = ((self.queue_depth / 10.0) * 5.0) * active_processing_factor  # Max 5% per 10 queued
 
         # Thread pool saturation causes contention
         # When many threads are blocked on slow I/O, CPU increases from context switching
-        if self.thread_pool_size > 0:
+        # EXCEPT during I/O wait, where threads are sleeping/blocked, not switching
+        if self.fault_io_wait_active:
+            contention_cpu = 0.0  # I/O wait: threads blocked, not context switching
+        elif self.thread_pool_size > 0:
             thread_saturation = self.concurrent_requests / self.thread_pool_size
             # Exponential increase when saturated (>70% utilization)
             if thread_saturation > 0.7:
