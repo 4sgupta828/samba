@@ -679,21 +679,50 @@ class FaultParameterTuner:
         verbose: bool
     ) -> Dict[str, Any]:
         """
-        Tune thread exhaustion based on thread pool size and RPS.
+        Tune thread exhaustion based on thread pool size, RPS, and baseline utilization.
 
-        Thread exhaustion reduces available threads, causing queue buildup.
-        Must scale with capacity - more threads = need more exhaustion.
+        Key insight: Must account for baseline utilization!
+        Exhausting 30% of capacity means nothing if baseline is only 10%.
+        We need to exhaust enough to push total utilization to target level.
+
+        Formula:
+        - Estimate baseline_util from RPS and latency
+        - Calculate target_util from severity
+        - Exhaust: target_util - baseline_util (as % of capacity)
         """
         tuned = baseline_params.copy()
 
         if total_threads < 1:
             return tuned
 
-        # Calculate how many threads to exhaust based on severity
-        # Severity scales from minimal (10% threads) to severe (80% threads)
-        base_exhaustion_pct = 0.30  # 30% base exhaustion
-        exhaustion_pct = self._scale_by_severity(base_exhaustion_pct, severity)
-        exhaustion_pct = max(0.10, min(0.80, exhaustion_pct))
+        # Step 1: Estimate baseline utilization
+        # For databases: utilization ≈ (RPS × avg_query_time) / capacity
+        # For services: utilization ≈ (RPS × avg_latency) / capacity
+        # Use conservative estimate: assume ~10-15ms per operation
+        avg_operation_time_ms = 10.0  # Conservative estimate
+        baseline_util = (node_rps * avg_operation_time_ms / 1000.0) / total_threads
+        baseline_util = max(0.0, min(0.5, baseline_util))  # Clamp to 0-50% (sanity check)
+
+        # Step 2: Calculate target utilization based on severity
+        # Severity 0.0 → 40% utilization (subtle)
+        # Severity 0.5 → 70% utilization (moderate)
+        # Severity 1.0 → 95% utilization (severe)
+        if severity < 0.3:
+            # Subtle: 40-60% utilization
+            target_util = 0.40 + (severity / 0.3) * 0.20
+        elif severity < 0.7:
+            # Moderate: 60-85% utilization
+            normalized = (severity - 0.3) / 0.4
+            target_util = 0.60 + (normalized * 0.25)
+        else:
+            # Severe: 85-95% utilization
+            normalized = (severity - 0.7) / 0.3
+            target_util = 0.85 + (normalized * 0.10)
+
+        # Step 3: Calculate exhaustion needed
+        # Need to exhaust: (target - baseline) as % of total capacity
+        exhaustion_pct = target_util - baseline_util
+        exhaustion_pct = max(0.10, min(0.85, exhaustion_pct))  # Ensure reasonable bounds
 
         exhausted_threads = int(total_threads * exhaustion_pct)
         exhausted_threads = max(1, exhausted_threads)  # At least 1 thread
@@ -702,11 +731,15 @@ class FaultParameterTuner:
         tuned['severity'] = severity
 
         if verbose:
-            print(f"  Thread exhaustion tuning:")
-            print(f"    Total threads: {total_threads}")
-            print(f"    Exhaustion: {exhaustion_pct*100:.0f}%")
+            print(f"  Thread exhaustion tuning (baseline-aware):")
+            print(f"    Total threads/connections: {total_threads}")
+            print(f"    Estimated RPS: {node_rps:.1f}")
+            print(f"    Estimated baseline utilization: {baseline_util*100:.1f}%")
+            print(f"    Target utilization (severity={severity:.2f}): {target_util*100:.1f}%")
+            print(f"    Exhaustion needed: {exhaustion_pct*100:.1f}%")
             print(f"    Exhausted threads: {exhausted_threads}")
-            print(f"    Remaining capacity: {total_threads - exhausted_threads} threads")
+            print(f"    Expected total utilization: {(baseline_util + exhaustion_pct)*100:.1f}%")
+            print(f"    Remaining free capacity: {total_threads - exhausted_threads - int(baseline_util * total_threads)} threads")
 
         return tuned
 
