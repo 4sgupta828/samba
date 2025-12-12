@@ -26,35 +26,33 @@ from typing import List, Dict, Tuple
 
 # Fault type configurations - synchronized with viz/app.py VALID_FAULT_COMBINATIONS
 FAULT_CONFIGS = [
-    # Level 1: Simple service failures (Tier 1: Core Resource Saturation)
+    # Level 1: Core Resource Saturation (service-level)
     {'fault_type': 'cpu_saturation', 'fault_role': 'service', 'level': 1},
     {'fault_type': 'memory_leak', 'fault_role': 'service', 'level': 1},
     {'fault_type': 'memory_pressure', 'fault_role': 'service', 'level': 1},
     {'fault_type': 'memory_thrashing', 'fault_role': 'service', 'level': 1},
     {'fault_type': 'thread_exhaustion', 'fault_role': 'service', 'level': 1},
-    {'fault_type': 'inject_latency', 'fault_role': 'service', 'level': 1},
-    {'fault_type': 'inject_errors', 'fault_role': 'service', 'level': 1},
 
-    # Level 2: Database bottlenecks (Tier 1: Core Resource Saturation)
-    {'fault_type': 'cpu_saturation', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'memory_leak', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'memory_pressure', 'fault_role': 'database', 'level': 2},
+    # Level 2: Database-specific resource saturation
     {'fault_type': 'thread_exhaustion', 'fault_role': 'database', 'level': 2},
     {'fault_type': 'disk_io_saturation', 'fault_role': 'database', 'level': 2},
-    {'fault_type': 'force_deadlock', 'fault_role': 'database', 'level': 2},
 
-    # Level 3: Complex interactions (Tier 2: Interaction Failures + Structural)
-    {'fault_type': 'cache_failure', 'fault_role': 'cache', 'level': 3},
-    {'fault_type': 'inject_latency', 'fault_role': 'cache', 'level': 3},
-    {'fault_type': 'queue_consumer_slowdown', 'fault_role': 'queue', 'level': 3},
-    {'fault_type': 'hot_shard', 'fault_role': 'service', 'level': 3},
-    {'fault_type': 'force_deadlock', 'fault_role': 'service', 'level': 3},
-    {'fault_type': 'noisy_neighbor', 'fault_role': 'service', 'level': 3},
+    # Level 3: Interaction Failures - service latency/errors
+    {'fault_type': 'inject_latency', 'fault_role': 'service', 'level': 3},
+    {'fault_type': 'inject_errors', 'fault_role': 'service', 'level': 3},
 
-    # Level 4: External dependencies and network (Tier 2: Interaction Failures)
+    # Level 4: Interaction Failures - cache/queue/external
+    {'fault_type': 'cache_failure', 'fault_role': 'cache', 'level': 4},
+    {'fault_type': 'inject_latency', 'fault_role': 'cache', 'level': 4},
+    {'fault_type': 'queue_consumer_slowdown', 'fault_role': 'queue', 'level': 4},
     {'fault_type': 'inject_latency', 'fault_role': 'external', 'level': 4},
     {'fault_type': 'inject_errors', 'fault_role': 'external', 'level': 4},
-    {'fault_type': 'network_partition', 'fault_role': 'network', 'level': 4},
+
+    # Level 5: Structural/Distributed Faults
+    {'fault_type': 'noisy_neighbor', 'fault_role': 'service', 'level': 5},
+    {'fault_type': 'hot_shard', 'fault_role': 'service', 'level': 5},
+    {'fault_type': 'force_deadlock', 'fault_role': 'service', 'level': 5},
+    {'fault_type': 'network_partition', 'fault_role': 'network', 'level': 5},
 ]
 
 
@@ -329,6 +327,10 @@ def main():
 
     total_configs = len(configs_to_run)
 
+    # Create timestamped batch run directory name (preview)
+    batch_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    batch_run_dir_preview = os.path.join(args.output, f"batch_run_{batch_timestamp}")
+
     # Print header
     print(f"{Colors.HEADER}{'='*70}")
     print(f"BATCH DATASET GENERATION")
@@ -338,7 +340,8 @@ def main():
     print(f"Total episodes to generate: {total_configs * args.episodes_per_config}")
     print(f"Timeout per run: {args.timeout}s ({args.timeout//60}m)")
     print(f"Estimated max duration: {format_duration(total_configs * args.timeout)}")
-    print(f"Output directory: {args.output}")
+    print(f"Base output directory: {args.output}")
+    print(f"Batch run directory: {batch_run_dir_preview}")
     print(f"{Colors.HEADER}{'='*70}{Colors.ENDC}\n")
 
     # Confirm start (unless --yes flag is used)
@@ -347,6 +350,12 @@ def main():
         if response.lower() != 'y':
             print("Cancelled.")
             return
+
+    # Create timestamped batch run directory
+    batch_run_dir = os.path.join(args.output, f"batch_run_{batch_timestamp}")
+    os.makedirs(batch_run_dir, exist_ok=True)
+
+    print(f"{Colors.OKGREEN}Created batch run directory: {batch_run_dir}{Colors.ENDC}\n")
 
     # Run all configurations
     results = []
@@ -363,7 +372,7 @@ def main():
             fault_config=fault_config,
             topology_name=topology,
             episodes=args.episodes_per_config,
-            output_dir=args.output,
+            output_dir=batch_run_dir,
             timeout_seconds=args.timeout,
             verbose=args.verbose
         )
@@ -388,12 +397,14 @@ def main():
 
         # Save progress periodically (every 10 runs)
         if idx % 10 == 0 or idx == total_configs:
-            save_progress(args.results_file, results, failed_runs)
+            progress_results_file = os.path.join(batch_run_dir, 'batch_results.json')
+            save_progress(progress_results_file, results, failed_runs)
 
     batch_duration = time.time() - batch_start_time
 
-    # Final save
-    save_progress(args.results_file, results, failed_runs)
+    # Save results to batch run directory
+    batch_results_file = os.path.join(batch_run_dir, 'batch_results.json')
+    save_progress(batch_results_file, results, failed_runs)
 
     # Print summary
     print_summary(results, batch_duration)
