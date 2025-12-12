@@ -277,7 +277,7 @@ class FaultParameterTuner:
         # For inject_latency faults, calculate added latency
         if 'latency_ms' in tuned:
             # Calculate latency to reach target utilization
-            required_total_latency_sec = (total_threads * self.target_utilization) / node_rps
+            required_total_latency_sec = (total_threads * target_util) / node_rps
             required_added_latency_ms = max(0, (required_total_latency_sec - baseline_latency_sec) * 1000)
             # Bound to reasonable range
             required_added_latency_ms = max(200.0, min(1000.0, required_added_latency_ms))
