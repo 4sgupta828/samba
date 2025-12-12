@@ -95,7 +95,25 @@ class FaultParameterTuner:
         # Get node metrics
         replicas = node_config.get('desired_replicas', 1)
         threads_per_replica = node_config.get('thread_pool_size', 10)
-        total_threads = replicas * threads_per_replica
+
+        # For databases, use connection_pool_capacity as the thread pool size
+        # Databases don't have replicas or thread_pool_size in the same way services do
+        if node_role == 'database':
+            # Database thread pool = connection pool capacity (or cpu_cores * multiplier)
+            connection_pool_capacity = node_config.get('connection_pool_capacity', None)
+            cpu_cores = node_config.get('cpu_cores', None)
+
+            if connection_pool_capacity:
+                total_threads = connection_pool_capacity
+            elif cpu_cores:
+                # Estimate connection pool from CPU cores (typical ratio: 25-50 connections per core)
+                total_threads = cpu_cores * 25
+            else:
+                # Fallback to default
+                total_threads = 50
+        else:
+            # For services/pods, use replicas * thread_pool_size
+            total_threads = replicas * threads_per_replica
 
         # Estimate node RPS (rough heuristic based on topology position)
         node_rps = self._estimate_node_rps(target_node_id)
@@ -105,7 +123,11 @@ class FaultParameterTuner:
             print(f"  Target: {target_node_id} ({node_role})")
             print(f"  Fault type: {fault_type}")
             print(f"  Severity: {severity:.2f} ({'subtle' if severity < 0.3 else 'moderate' if severity < 0.7 else 'severe'})")
-            print(f"  Capacity: {replicas} replicas × {threads_per_replica} threads = {total_threads} total threads")
+            if node_role == 'database':
+                print(f"  Capacity: connection_pool={node_config.get('connection_pool_capacity', 'N/A')}, cpu_cores={node_config.get('cpu_cores', 'N/A')}")
+                print(f"  Total threads/connections: {total_threads}")
+            else:
+                print(f"  Capacity: {replicas} replicas × {threads_per_replica} threads = {total_threads} total threads")
             print(f"  Estimated RPS: {node_rps:.1f}")
             print(f"  Strategy: Capacity-relative (no phi, {self.headroom_consumption*100:.0f}% base headroom)")
 

@@ -708,6 +708,18 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             # Add to tracking set BEFORE acquiring thread so it gets interrupted even while queued
             self.active_request_processes.add(current_proc)
 
+            # FIX: Bounded queue - reject requests if queue is too full
+            # This prevents unbounded queue growth that can cascade into system overload
+            queue_depth = len(self.thread_pool.queue)
+            max_queue_depth = self.thread_pool_size * 5  # Allow 5x thread pool size in queue
+
+            if queue_depth >= max_queue_depth:
+                self._emit_log("WARN", f"Thread pool queue full ({queue_depth}/{max_queue_depth}), rejecting request")
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "thread_pool_queue_full")
+                raise Exception(f"Thread pool queue full: {queue_depth} requests waiting (max: {max_queue_depth})")
+
             with self.thread_pool.request() as req:
                 yield req  # Wait for available thread
 

@@ -567,6 +567,29 @@ class ApiService(EnrichedComponent):
 
         while True:
             try:
+                # FIX: Backpressure - check pod thread pool queue depth before pulling next message
+                # This prevents pulling more messages when pods are overloaded
+                if self.pods:
+                    # Check average queue depth across all pods
+                    total_queue_depth = 0
+                    total_capacity = 0
+                    for pod in self.pods:
+                        if hasattr(pod, 'thread_pool') and hasattr(pod.thread_pool, 'queue'):
+                            total_queue_depth += len(pod.thread_pool.queue)
+                            total_capacity += pod.thread_pool_size
+
+                    # If average queue depth is over 50% of thread pool size, apply backpressure
+                    if total_capacity > 0:
+                        avg_queue_depth = total_queue_depth / len(self.pods)
+                        avg_capacity = total_capacity / len(self.pods)
+                        queue_utilization = avg_queue_depth / avg_capacity if avg_capacity > 0 else 0
+
+                        if queue_utilization > 0.5:  # Over 50% queue utilization
+                            # Apply backpressure - wait before pulling next message
+                            backpressure_delay = min(1.0, queue_utilization)  # 0.5s to 1.0s delay
+                            self._emit_log("DEBUG", f"[{self.service_name}] Backpressure: queue util {queue_utilization:.1%}, waiting {backpressure_delay:.2f}s")
+                            yield self.env.timeout(backpressure_delay)
+
                 # Wait for a message from the queue
                 # receive_message() is a generator, so use yield from
                 msg = yield from queue.receive_message()
