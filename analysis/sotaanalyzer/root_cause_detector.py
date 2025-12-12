@@ -169,7 +169,8 @@ class RootCauseDetector:
 
         UPDATED LOGIC (NEW: considers self-health degradation):
         A node is a candidate if ANY of these conditions are met:
-        1. Leaf node (no dependencies)
+        1. Leaf node (no dependencies) - BUT ONLY if it has actionable self-metrics
+           (excludes ExternalCache, ExternalService with only victim metrics)
         2. Has >= 50% healthy dependencies
         3. NEW: Shows self-health degradation (resource exhaustion, self errors, self latency)
            even if ALL dependencies are unhealthy
@@ -193,9 +194,11 @@ class RootCauseDetector:
         self_health_analyzer = SelfHealthAnalyzer() if node_ranked_metrics else None
 
         for node_id in impacted_nodes:
+            node_type = self.graph.nodes.get(node_id, {}).get('type', 'Service')
             dependencies = self.get_node_dependencies(node_id)
 
             # Case 1: No dependencies (leaf node) - always a candidate
+            # External nodes will be properly scored later based on caller-side metrics
             if len(dependencies) == 0:
                 candidates.add(node_id)
                 continue
@@ -220,7 +223,7 @@ class RootCauseDetector:
                     sha = self_health_analyzer.analyze_node_self_health(
                         node_id=node_id,
                         ranked_metrics=ranked_metrics,
-                        node_type=self.graph.nodes.get(node_id, {}).get('type', 'Service')
+                        node_type=node_type
                     )
 
                     # Include as candidate if shows self-degradation
@@ -310,6 +313,120 @@ class RootCauseDetector:
                 node: self.graph.in_degree(node) / max(1, len(self.graph.nodes()))
                 for node in self.graph.nodes()
             }
+
+    def get_node_callers(self, node_id: str) -> List[str]:
+        """
+        Get nodes that call/depend on this node (reverse dependencies).
+
+        For external dependencies, these are the services that use them.
+        """
+        callers = []
+
+        for source, target, edge_data in self.graph.edges(data=True):
+            edge_type = edge_data.get('type', '')
+
+            # For most edges, if target is our node, source is a caller
+            if target == node_id and edge_type != 'async_consume':
+                callers.append(source)
+            # For async_consume, if source is our node (queue), target is caller (consumer)
+            elif source == node_id and edge_type == 'async_consume':
+                callers.append(target)
+
+        return callers
+
+    def check_external_node_caller_anomalies(
+        self,
+        external_node_id: str,
+        node_ranked_metrics: Dict[str, List[Dict]]
+    ) -> Tuple[float, int, int]:
+        """
+        Check if callers of an external node show anomalous dependency metrics.
+
+        IMPORTANT: We must distinguish between two scenarios:
+        1. External dep is faulty: Caller's request rate stayed stable, but error/latency increased
+        2. Caller changed behavior: Caller's request rate spiked (10x), causing overload
+
+        Only scenario 1 indicates the external dependency is the root cause.
+
+        For external dependencies (ExternalCache, ExternalService, ExternalDatabase),
+        we check if their CALLERS show:
+        - Stable (or decreased) request rate to the external dep
+        - BUT increased error rate or latency from the external dep
+
+        Args:
+            external_node_id: The external dependency node
+            node_ranked_metrics: Metrics for all nodes
+
+        Returns:
+            Tuple of (caller_anomaly_score, anomalous_callers, total_callers)
+            - caller_anomaly_score: 0-1, fraction of callers with genuine external dep issues
+            - anomalous_callers: count of callers showing external dep degradation
+            - total_callers: total number of callers
+        """
+        callers = self.get_node_callers(external_node_id)
+
+        if not callers:
+            return 0.0, 0, 0
+
+        # Check each caller for dependency metrics related to this external node
+        anomalous_callers = 0
+
+        for caller_id in callers:
+            caller_metrics = node_ranked_metrics.get(caller_id, [])
+
+            # Find dependency metrics for this caller
+            dep_error_metric = None
+            dep_latency_metric = None
+            dep_request_rate_metric = None
+
+            for metric in caller_metrics[:10]:  # Check top 10 metrics
+                metric_name = metric.get('metric_name', '').lower()
+
+                is_dependency = any(kw in metric_name for kw in [
+                    'dependency', 'outgoing', 'downstream'
+                ])
+
+                if not is_dependency:
+                    continue
+
+                # Categorize dependency metrics
+                if 'error' in metric_name or 'failure' in metric_name:
+                    if dep_error_metric is None:
+                        dep_error_metric = metric
+                elif 'latency' in metric_name or 'duration' in metric_name:
+                    if dep_latency_metric is None:
+                        dep_latency_metric = metric
+                elif 'rate' in metric_name or 'throughput' in metric_name or 'requests' in metric_name:
+                    if dep_request_rate_metric is None:
+                        dep_request_rate_metric = metric
+
+            # Analyze: Did the external dep degrade while request pattern stayed stable?
+            request_rate_changed = False
+            response_degraded = False
+
+            # Check if request rate changed significantly (caller behavior change)
+            if dep_request_rate_metric:
+                mean_change_pct = dep_request_rate_metric.get('mean_change_pct', 0)
+                # If request rate increased >2x (200%), this might be caller overload
+                if abs(mean_change_pct) > 200:
+                    request_rate_changed = True
+
+            # Check if response degraded (error or latency)
+            if dep_error_metric and dep_error_metric.get('severity_score', 0) > 0.3:
+                response_degraded = True
+            elif dep_latency_metric and dep_latency_metric.get('severity_score', 0) > 0.3:
+                response_degraded = True
+
+            # Count as anomalous ONLY if:
+            # - Response degraded (errors or latency up)
+            # - AND request rate did NOT spike (pattern stayed stable)
+            if response_degraded and not request_rate_changed:
+                anomalous_callers += 1
+
+        # Compute fraction of callers showing genuine external dep issues
+        caller_anomaly_score = anomalous_callers / len(callers) if callers else 0.0
+
+        return caller_anomaly_score, anomalous_callers, len(callers)
 
     def match_fault_signature(
         self,
@@ -475,21 +592,76 @@ class RootCauseDetector:
         ranked_candidates = []
 
         for candidate in candidates:
+            node_type = self.graph.nodes[candidate].get('type', 'Unknown')
+
             # Factor 1: Convergence score (path-based)
             paths = candidate_paths.get(candidate, [])
             convergence_score = len(paths) / max(1, impacted_node_count)
 
             # Factor 2: Severity score
+            # UPDATED: For TRULY external nodes (role="external"), use caller-side anomalies
+            # For internal leaf nodes, check if only generic errors appear (victim symptom)
             severity_score = node_severity_scores.get(candidate, 0.0)
+            caller_anomaly_score = 0.0
+
+            # Check if this is a truly external node by checking the 'role' field
+            node_role = self.graph.nodes[candidate].get('role', '')
+            is_truly_external = (node_role == 'external')
+            is_leaf = candidate in leaf_nodes
+
+            # Only use caller-side analysis for truly external nodes (role="external")
+            if is_truly_external:
+                # For truly external nodes (no metrics), check if callers show dependency anomalies
+                caller_anomaly_score, anomalous_callers, total_callers = \
+                    self.check_external_node_caller_anomalies(candidate, node_ranked_metrics)
+
+                # If callers show anomalies, use that as severity
+                # Otherwise, heavily penalize (likely just victim errors)
+                if caller_anomaly_score > 0.5:  # >50% callers show anomalies
+                    severity_score = max(severity_score, caller_anomaly_score)
+                elif caller_anomaly_score > 0:  # Some callers show anomalies
+                    severity_score = max(severity_score, caller_anomaly_score * 0.7)
+                else:  # No caller anomalies - likely just victim
+                    severity_score *= 0.1  # Heavy penalty
+            elif is_leaf and node_role in ['cache', 'database']:
+                # For internal leaf nodes (caches, databases), check if only generic errors appear
+                # If their self-health metrics (cache.hit_rate, query_time, etc.) are stable,
+                # but component.errors appears, they're likely victims
+                candidate_metrics = node_ranked_metrics.get(candidate, [])
+
+                # Find component.errors severity
+                error_severity = 0.0
+                # Find max self-health metric severity (excluding component.errors)
+                self_health_severity = 0.0
+
+                for metric in candidate_metrics[:5]:
+                    metric_name = metric.get('metric_name', '').lower()
+                    metric_severity = metric.get('severity_score', 0.0)
+
+                    if 'component.error' in metric_name:
+                        error_severity = max(error_severity, metric_severity)
+                    elif any(kw in metric_name for kw in ['cache', 'hit_rate', 'miss', 'query', 'connection', 'latency', 'throughput']):
+                        # These are self-health metrics for caches/databases
+                        self_health_severity = max(self_health_severity, metric_severity)
+
+                # If only errors are high but self-health is stable → likely victim
+                if error_severity > 0.3 and self_health_severity < 0.2:
+                    # Downweight severity significantly (victim symptom)
+                    severity_score *= 0.3
+            # For other internal nodes, use their own self-metrics directly
 
             # Factor 3: Temporal precedence
+            # NOTE: We do NOT penalize nodes impacted later!
+            # Root cause metrics can emerge later while effects appear first
+            # (e.g., memory leak building up, connection pool exhaustion)
             first_impact = node_first_impact_times.get(candidate)
             impacted_first = (
                 first_impact is not None and
                 earliest_impact is not None and
                 abs(first_impact - earliest_impact) <= self.time_window
             )
-            time_score = 1.0 if impacted_first else 0.5
+            # Slight bonus for being impacted early, but no penalty for being late
+            time_score = 1.0 if impacted_first else 0.8
 
             # Factor 4: Centrality
             centrality_score = centrality_scores.get(candidate, 0.0)
@@ -544,18 +716,18 @@ class RootCauseDetector:
             dependencies = self.get_node_dependencies(candidate)
             dep_health = {}  # Would be populated from health classifier
 
-            # Build reasoning (with self-health info)
+            # Build reasoning (with self-health info and caller anomalies)
+            # Only include caller_anomaly_score for truly external nodes (role="external")
             reasoning = self._build_reasoning(
                 is_leaf=candidate in leaf_nodes,
                 convergence_score=convergence_score,
                 impacted_first=impacted_first,
                 path_count=len(paths),
                 severity_score=severity_score,
-                self_health_analysis=self_health_analyses.get(candidate) if self_health_analyses else None
+                self_health_analysis=self_health_analyses.get(candidate) if self_health_analyses else None,
+                node_type=node_type,
+                caller_anomaly_score=caller_anomaly_score if is_truly_external else None
             )
-
-            # Get node type
-            node_type = self.graph.nodes[candidate].get('type', 'Unknown')
 
             ranked_candidates.append(RootCauseCandidate(
                 node_id=candidate,
@@ -718,10 +890,21 @@ class RootCauseDetector:
         impacted_first: bool,
         path_count: int,
         severity_score: float,
-        self_health_analysis: Optional['SelfHealthAnalysis'] = None
+        self_health_analysis: Optional['SelfHealthAnalysis'] = None,
+        node_type: str = 'Unknown',
+        caller_anomaly_score: Optional[float] = None
     ) -> str:
         """Build human-readable reasoning for candidate."""
         reasons = []
+
+        # External node caller analysis
+        if caller_anomaly_score is not None:
+            if caller_anomaly_score > 0.5:
+                reasons.append(f"majority callers show dependency anomalies ({caller_anomaly_score:.0%})")
+            elif caller_anomaly_score > 0:
+                reasons.append(f"some callers show dependency anomalies ({caller_anomaly_score:.0%})")
+            else:
+                reasons.append("no caller anomalies (likely victim)")
 
         # Self-health analysis (most important for service nodes)
         if self_health_analysis:
