@@ -238,7 +238,16 @@ class ScenarioLibrary:
         ]
 
     def _get_level2_scenarios(self) -> List[EpisodeConfig]:
-        """Level 2: Database bottlenecks."""
+        """Level 2: Database bottlenecks.
+
+        Note: Databases are treated as black-box storage applications.
+        Only faults that model observable database behaviors are included:
+        - disk_io_saturation: Slow queries due to disk/I/O bottlenecks
+        - thread_exhaustion: Connection pool saturation
+
+        Pod-level faults (cpu_saturation, memory_pressure, memory_leak, force_deadlock)
+        are excluded as they require pod/thread manipulation not available for databases.
+        """
         return [
             EpisodeConfig(
                 level=2,
@@ -259,46 +268,6 @@ class ScenarioLibrary:
                 export_interval=5,
                 description="Database thread pool exhaustion (connection pool saturation)",
                 progression="linear"
-            ),
-            EpisodeConfig(
-                level=2,
-                topology_size=10,
-                duration=600,
-                fault_type="cpu_saturation",
-                fault_target_role="database",
-                export_interval=5,
-                description="Database CPU saturation (background job contention)",
-                progression="step"  # Background jobs often start suddenly
-            ),
-            EpisodeConfig(
-                level=2,
-                topology_size=10,
-                duration=600,
-                fault_type="memory_leak",
-                fault_target_role="database",
-                export_interval=5,
-                description="Database memory leak",
-                progression="exponential"
-            ),
-            EpisodeConfig(
-                level=2,
-                topology_size=10,
-                duration=600,
-                fault_type="memory_pressure",
-                fault_target_role="database",
-                export_interval=5,
-                description="Database memory pressure (sustained high memory)",
-                progression="linear"
-            ),
-            EpisodeConfig(
-                level=2,
-                topology_size=10,
-                duration=600,
-                fault_type="force_deadlock",
-                fault_target_role="database",
-                export_interval=5,
-                description="Database deadlock (transaction blocking)",
-                progression="step"
             ),
         ]
 

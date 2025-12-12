@@ -127,14 +127,15 @@ BATCH_TOPOLOGY_OPTIONS, DEFAULT_BATCH_TOPOLOGY = load_topology_bank_options()
 # Valid fault type and role combinations based on redesigned fault catalog (2025-12-10)
 # Tier 1: Core Resource Saturation (unique signatures, capacity-relative, severity-based)
 # Tier 2: Interaction Failures (distributed system patterns)
+# Note: Databases are black-box storage - only faults modeling observable DB behaviors are included
 VALID_FAULT_COMBINATIONS = {
     # Tier 1: Core Resource Saturation
-    'cpu_saturation': ['service', 'database'],  # High CPU → consistent slowdown
-    'memory_pressure': ['service', 'database'],  # Sustained high memory → allocation overhead
+    'cpu_saturation': ['service'],  # High CPU → consistent slowdown (service only - requires pod control)
+    'memory_pressure': ['service'],  # Sustained high memory → allocation overhead (service only - requires pod control)
     'memory_thrashing': ['service'],  # NEW: Memory bursts → bimodal latency (service-specific)
-    'thread_exhaustion': ['service', 'database'],  # NEW: Pool saturation → queue buildup
-    'disk_io_saturation': ['database'],  # NEW: HIGH latency, LOW CPU (database-specific)
-    'memory_leak': ['service', 'database'],  # Gradual memory exhaustion
+    'thread_exhaustion': ['service', 'database'],  # NEW: Pool saturation → queue buildup (connection pool for DB)
+    'disk_io_saturation': ['database'],  # NEW: HIGH latency, LOW CPU (database-specific - models slow queries)
+    'memory_leak': ['service'],  # Gradual memory exhaustion (service only - requires pod control)
 
     # Tier 2: Interaction Failures
     'inject_latency': ['service', 'cache', 'external'],  # Generic latency injection
@@ -145,7 +146,7 @@ VALID_FAULT_COMBINATIONS = {
     # Structural/Distributed Faults
     'noisy_neighbor': ['service'],  # CPU steal from co-located pods
     'hot_shard': ['service'],  # Traffic skew to single replica
-    'force_deadlock': ['service', 'database'],  # Alias for thread_exhaustion (backward compat)
+    'force_deadlock': ['service'],  # Alias for thread_exhaustion (backward compat, service only)
     'network_partition': ['network'],  # Total isolation between components
 
     # Deprecated faults REMOVED (2025-12-10):
