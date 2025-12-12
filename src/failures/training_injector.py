@@ -730,21 +730,21 @@ class TrainingFailureInjector:
                 num_updates = 20  # 20 updates over the duration
                 update_interval = duration / num_updates
 
-                # Generator to gradually restore cache
-                def gradual_cache_restore():
-                    for i in range(num_updates + 1):
-                        # Progress from 1.0 (full fault) to 0.0 (healthy)
-                        progress = 1.0 - (i / num_updates)
-                        params_with_progress = params.copy()
-                        params_with_progress['progress'] = progress
-                        cache_failure(target, params_with_progress)
-
-                        if i < num_updates:
-                            yield self.env.timeout(update_interval)
-
-                # Return the generator so it can be yielded from in generate_dataset.py
                 print(f"   Gradual cache restoration scheduled ({num_updates} steps over {duration:.1f}s)")
-                return gradual_cache_restore()
+
+                # Apply gradual restore directly with yield statements
+                for i in range(num_updates + 1):
+                    # Progress from 1.0 (full fault) to 0.0 (healthy)
+                    progress = 1.0 - (i / num_updates)
+                    params_with_progress = params.copy()
+                    params_with_progress['progress'] = progress
+                    cache_failure(target, params_with_progress)
+
+                    if i < num_updates:
+                        yield self.env.timeout(update_interval)
+
+                print(f"   Cache restoration complete")
+                return
             else:
                 print(f"   Warning: Target doesn't support cache_failure revert")
 
@@ -754,28 +754,29 @@ class TrainingFailureInjector:
             pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
             is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
             targets_to_revert = target.pods if is_pod_level_fault else [target]
-            
+
             failure_func = FAILURE_MODES.get(failure_mode)
             if failure_func:
                 # Apply gradual revert by calling function with decreasing progress
                 num_updates = 20  # 20 updates over the duration
                 update_interval = duration / num_updates
-                
-                def gradual_memory_revert():
-                    for i in range(num_updates + 1):
-                        # Progress from 1.0 (full fault) to 0.0 (healthy)
-                        progress = 1.0 - (i / num_updates)
-                        params_with_progress = params.copy()
-                        params_with_progress['progress'] = progress
-                        for t in targets_to_revert:
-                            failure_func(t, params_with_progress)
-                        
-                        if i < num_updates:
-                            yield self.env.timeout(update_interval)
-                
-                # Return the generator so it can be yielded from in generate_dataset.py
+
                 print(f"   Gradual memory pressure reduction scheduled ({num_updates} steps over {duration:.1f}s)")
-                return gradual_memory_revert()
+
+                # Apply gradual revert directly with yield statements
+                for i in range(num_updates + 1):
+                    # Progress from 1.0 (full fault) to 0.0 (healthy)
+                    progress = 1.0 - (i / num_updates)
+                    params_with_progress = params.copy()
+                    params_with_progress['progress'] = progress
+                    for t in targets_to_revert:
+                        failure_func(t, params_with_progress)
+
+                    if i < num_updates:
+                        yield self.env.timeout(update_interval)
+
+                print(f"   Memory pressure reduction complete")
+                return
             else:
                 print(f"   Warning: No memory_pressure function found")
 
@@ -788,25 +789,27 @@ class TrainingFailureInjector:
                 num_updates = 20
                 update_interval = duration / num_updates
 
-                def gradual_io_recovery():
-                    for i in range(num_updates + 1):
-                        # Progress from 1.0 (full fault) to 0.0 (healthy)
-                        progress = 1.0 - (i / num_updates)
-                        current_io_wait = io_wait_ms * progress
-
-                        # Apply decreasing I/O wait
-                        target.dynamics.fault_latency_additive_ms = current_io_wait
-
-                        # Clear flag on final step
-                        if i == num_updates:
-                            target.dynamics.fault_io_wait_active = False
-                            print(f"   I/O saturation fully removed, flag cleared")
-
-                        if i < num_updates:
-                            yield self.env.timeout(update_interval)
-
                 print(f"   Gradual I/O saturation removal scheduled ({num_updates} steps over {duration:.1f}s)")
-                return gradual_io_recovery()
+
+                # Apply gradual I/O recovery directly with yield statements
+                for i in range(num_updates + 1):
+                    # Progress from 1.0 (full fault) to 0.0 (healthy)
+                    progress = 1.0 - (i / num_updates)
+                    current_io_wait = io_wait_ms * progress
+
+                    # Apply decreasing I/O wait
+                    target.dynamics.fault_latency_additive_ms = current_io_wait
+
+                    # Clear flag on final step
+                    if i == num_updates:
+                        target.dynamics.fault_io_wait_active = False
+                        print(f"   I/O saturation fully removed, flag cleared")
+
+                    if i < num_updates:
+                        yield self.env.timeout(update_interval)
+
+                print(f"   I/O saturation removal complete")
+                return
             else:
                 print(f"   Warning: Target doesn't have dynamics engine, using instant revert")
                 from src.failures.modes import revert_disk_io_saturation
