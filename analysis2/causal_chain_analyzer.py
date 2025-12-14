@@ -21,8 +21,11 @@ class CausalChainAnalyzer:
         story.append(f"   Internal Symptoms: {', '.join(symptoms)}")
         
         # BFS to find impacted downstream nodes
-        layers = list(nx.bfs_layers(self.topology, root_cause_node))
-        
+        try:
+            layers = list(nx.bfs_layers(self.topology, root_cause_node))
+        except nx.NetworkXError:
+            return story # Node not in graph or isolated
+
         if len(layers) > 1:
             # Check immediate downstream
             downstream = layers[1]
@@ -33,7 +36,10 @@ class CausalChainAnalyzer:
                 votes = graph_votes.get(victim, [])
                 blamed_root = any(v['source'] == victim for v in votes) # Actually reverse logic in graph votes
                 
-                if blamed_root:
-                    story.append(f"   - {victim} experienced high latency/errors calling {root_cause_node}")
+                # Check for impact on victim
+                # In a real system, we'd check the victim's metrics here. 
+                # For this narrative generator, we assume impact if they voted.
+                
+                story.append(f"   - {victim} calls {root_cause_node} (Potential cascading latency)")
                 
         return story

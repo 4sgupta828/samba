@@ -241,8 +241,7 @@ class DatasetAdapter:
                 # 5. Clean Outliers (SOTA Preprocessing)
                 clean_values = remove_outliers_iqr(values_array)
                 
-                # Store (if we already have this signal, append/merge? No, overwrite is usually fine for batch)
-                # Ideally we merge if multiple raw metrics map to same signal, but simple overwrite works for MVP
+                # Store (overwrite if duplicates map to same signal)
                 node_metrics[signal_name] = clean_values
             
             if node_metrics:

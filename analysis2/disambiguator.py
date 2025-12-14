@@ -31,7 +31,7 @@ class CallerCalleeDisambiguator:
             caller_metrics_curr.get('outbound_rps', np.array([]))
         )
         
-        # 2. Analyze Latency (Prefer P99 if available - SOTA practice)
+        # 2. Analyze Latency (Prefer P99 if available)
         lat_key = 'dependency_latency_p99' if 'dependency_latency_p99' in caller_metrics_curr else 'dependency_latency'
         lat_stat = compare_distributions(
             caller_metrics_base.get(lat_key, np.array([])),

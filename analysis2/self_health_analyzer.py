@@ -39,8 +39,7 @@ class SelfHealthAnalyzer:
         max_effect_size = 0.0
         resource_score = 0.0
         
-        # 1. Check Resource Saturation (Old Code Logic)
-        # We compare against limits if available, otherwise relative increase
+        # 1. Check Resource Saturation
         limits = self.config_extractor.get_limits_for_node(node_id, node_type)
         
         for metric in self.resource_metrics:
@@ -64,7 +63,7 @@ class SelfHealthAnalyzer:
                     else:
                         resource_score = max(resource_score, min(10.0, stat.effect_size * 2.5))
 
-        # 2. Check for "Limp Mode" / Deadlock (New Code Logic)
+        # 2. Check for "Limp Mode" / Deadlock
         # High Latency + LOW CPU = Process is hung/deadlocked
         lat_stat = self._check_metric('avg_latency', baseline, current)
         cpu_stat = self._check_metric('cpu_usage', baseline, current)

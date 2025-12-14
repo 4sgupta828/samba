@@ -11,7 +11,6 @@ Provides robust statistical methods for anomaly detection:
 import numpy as np
 from scipy import stats
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
 import warnings
 
 # Suppress runtime warnings for clean output
@@ -67,7 +66,7 @@ def validate_baseline_stability(data: np.ndarray, cv_threshold: float = 0.5) -> 
     
     return cv < cv_threshold
 
-def detect_changepoint(data: np.ndarray, penalty: int = 10) -> bool:
+def detect_changepoint(data: np.ndarray) -> bool:
     """
     Detects if a structural break occurred in the time series.
     Tries robust PELT method (ruptures), falls back to thresholding.
@@ -122,7 +121,6 @@ def compare_distributions(baseline: np.ndarray, current: np.ndarray, alpha=0.05)
     category = categorize_effect_size(effect_size)
 
     # 3. Structural Change (Did the pattern actually break?)
-    # Concatenate to see if a break exists at the transition
     combined_series = np.concatenate([baseline, current])
     cp_detected = detect_changepoint(combined_series)
 
