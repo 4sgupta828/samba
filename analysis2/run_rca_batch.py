@@ -253,93 +253,332 @@ class DatasetAdapter:
 # 3. BATCH RUNNER LOGIC
 # ==========================================
 
-def process_episode(episode_dir: Path):
-    print(f"\nAnalyzing Episode: {episode_dir.name}")
-    
+def is_episode_processed(episode_dir: Path) -> Tuple[bool, str]:
+    """
+    Check if episode has already been processed.
+
+    Returns:
+        (is_processed, status) where status is 'investigated', 'failed', or 'not_processed'
+    """
+    if (episode_dir / 'RCAInvestigated.marker').exists():
+        return True, 'investigated'
+    elif (episode_dir / 'RCAFailed.marker').exists():
+        return True, 'failed'
+    else:
+        return False, 'not_processed'
+
+def create_marker_file(episode_dir: Path, marker_type: str, data: Dict = None):
+    """Create a marker file to indicate processing status."""
+    marker_file = episode_dir / f'RCA{marker_type}.marker'
+    with open(marker_file, 'w') as f:
+        if data:
+            json.dump(data, f, indent=2)
+        else:
+            f.write(f"Analysis completed: {marker_type}\n")
+
+def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
+    """
+    Process a single episode with error handling and marker creation.
+
+    Args:
+        episode_dir: Path to episode directory
+        top_k: Number of top candidates to check
+
+    Returns:
+        Dictionary with processing results
+    """
+    import traceback
+
     try:
+        print(f"\n{'='*80}")
+        print(f"Processing: {episode_dir}")
+        print(f"{'='*80}")
+
         # 1. Load Data
         adapter = DatasetAdapter(episode_dir)
         baseline, current = adapter.get_data_windows()
-        
+
         ground_truth_node = adapter.label.get('root_cause_node')
-        
+
         # 2. Run Engine
-        # Pass the parsed topology and extracted config (limits) if available
         engine = WhiteboxRCAEngine(adapter.topology)
-        
         results = engine.analyze_incident(baseline, current)
-        
+
         if not results:
-            print("  [!] No anomalies detected.")
-            return False
+            print("  ❌ No anomalies detected.")
+            error_info = {'error': 'No anomalies detected', 'error_type': 'NoAnomalies'}
+            create_marker_file(episode_dir, 'Failed', error_info)
+            return {
+                'episode': str(episode_dir),
+                'status': 'no_anomalies',
+                'ground_truth': ground_truth_node
+            }
 
         # 3. Validate Results
         top_candidate = results[0]['node']
         top_score = results[0]['score']
         top_story = results[0].get('story', [])
-        
-        # Validation: Is Ground Truth in Top 3?
-        top_3 = [r['node'] for r in results[:3]]
-        
-        is_exact = (top_candidate == ground_truth_node)
-        is_top3 = (ground_truth_node in top_3)
-        
-        # 4. Print Report
-        print(f"  Ground Truth: {ground_truth_node}")
-        print(f"  Top Result:   {top_candidate} (Score: {top_score:.1f})")
-        
-        if is_exact:
-            print("  ✅ EXACT MATCH")
-        elif is_top3:
-            print(f"  ⚠️  IN TOP 3 (Rank: {top_3.index(ground_truth_node) + 1})")
+
+        # Check if ground truth in top-K
+        top_k_nodes = [r['node'] for r in results[:top_k]]
+        is_in_top_k = ground_truth_node in top_k_nodes
+
+        if is_in_top_k:
+            rank = top_k_nodes.index(ground_truth_node) + 1
         else:
-            print(f"  ❌ FAIL (Top 3: {top_3})")
-            
+            rank = None
+
+        # 4. Print Report
+        print(f"\n  Ground Truth: {ground_truth_node}")
+        print(f"  Top Result:   {top_candidate} (Score: {top_score:.1f})")
+
+        if rank == 1:
+            print(f"  ✅ EXACT MATCH (Rank 1/{top_k})")
+        elif is_in_top_k:
+            print(f"  ✅ IN TOP-{top_k} (Rank {rank}/{top_k})")
+        else:
+            print(f"  ❌ NOT IN TOP-{top_k}")
+            print(f"     Top {min(3, len(top_k_nodes))}: {top_k_nodes[:3]}")
+
         # Print the Generated Story (Explanation)
         if top_story:
             print("\n  📜 Causal Narrative:")
             for line in top_story:
                 print(f"    {line}")
-                
-        return is_top3 # Return success if in top 3
+
+        # 5. Save results to JSON file
+        output_data = {
+            'ground_truth': ground_truth_node,
+            'top_k': top_k,
+            'found_in_top_k': is_in_top_k,
+            'rank': rank,
+            'candidates': results[:top_k],
+            'total_candidates': len(results)
+        }
+
+        output_file = episode_dir / 'rca_analysis.json'
+        with open(output_file, 'w') as f:
+            json.dump(output_data, f, indent=2)
+
+        # 6. Create marker file
+        if is_in_top_k:
+            create_marker_file(episode_dir, 'Investigated', {'rank': rank, 'top_k': top_k})
+            status = 'success'
+        else:
+            status = 'not_in_top_k'
+
+        return {
+            'episode': str(episode_dir),
+            'status': status,
+            'ground_truth': ground_truth_node,
+            'top_result': top_candidate,
+            'rank': rank,
+            'in_top_k': is_in_top_k
+        }
 
     except Exception as e:
-        print(f"  [!] Error processing episode: {e}")
-        # Uncomment for debugging:
-        # import traceback
-        # traceback.print_exc()
-        return False
+        error_msg = str(e)
+        error_type = type(e).__name__
+        tb = traceback.format_exc()
+
+        print(f"\n  ❌ ERROR processing {episode_dir.name}: {error_msg}")
+        print(f"     Error type: {error_type}")
+
+        # Create failure marker
+        error_info = {
+            'error': error_msg,
+            'error_type': error_type,
+            'traceback': tb
+        }
+        create_marker_file(episode_dir, 'Failed', error_info)
+
+        return {
+            'episode': str(episode_dir),
+            'status': 'error',
+            'error': error_msg,
+            'error_type': error_type
+        }
 
 def find_all_episodes(base_dir: str) -> List[Path]:
-    """Finds all subdirectories starting with 'ep_'."""
+    """
+    Find all episode directories in the base directory.
+
+    Args:
+        base_dir: Base directory to search (supports nested structure)
+
+    Returns:
+        List of episode directory paths
+    """
     path = Path(base_dir)
     if not path.exists():
         raise FileNotFoundError(f"Directory not found: {base_dir}")
-    return sorted([p for p in path.iterdir() if p.is_dir() and p.name.startswith('ep_')])
+
+    episodes = []
+
+    # Check if this is a single dataset directory (has ep_* directly)
+    direct_episodes = list(path.glob('ep_*'))
+    if direct_episodes:
+        for ep_dir in direct_episodes:
+            if ep_dir.is_dir():
+                # Verify it has required files
+                if (ep_dir / 'label.json').exists() and \
+                   (ep_dir / 'topology.json').exists() and \
+                   (ep_dir / 'metrics.jsonl').exists():
+                    episodes.append(ep_dir)
+    else:
+        # This is a batch directory containing multiple datasets
+        for dataset_dir in path.iterdir():
+            if dataset_dir.is_dir():
+                for ep_dir in dataset_dir.glob('ep_*'):
+                    if ep_dir.is_dir():
+                        # Verify it has required files
+                        if (ep_dir / 'label.json').exists() and \
+                           (ep_dir / 'topology.json').exists() and \
+                           (ep_dir / 'metrics.jsonl').exists():
+                            episodes.append(ep_dir)
+
+    return sorted(episodes)
+
+def print_summary(results: List[Dict], skipped: Dict[str, int], top_k: int):
+    """Print summary of batch processing."""
+    total_processed = len(results)
+    success_count = sum(1 for r in results if r['status'] == 'success')
+    not_in_top_k_count = sum(1 for r in results if r['status'] == 'not_in_top_k')
+    no_anomaly_count = sum(1 for r in results if r['status'] == 'no_anomalies')
+    error_count = sum(1 for r in results if r['status'] == 'error')
+
+    print(f"\n{'='*80}")
+    print("BATCH WHITEBOX RCA SUMMARY")
+    print(f"{'='*80}")
+    print(f"Total episodes found: {total_processed + skipped['investigated'] + skipped['failed']}")
+    print(f"  Already investigated: {skipped['investigated']}")
+    print(f"  Already failed: {skipped['failed']}")
+    print(f"  Processed this run: {total_processed}")
+    print()
+    print(f"Results for {total_processed} processed episodes:")
+    print(f"  ✅ Success (found in top-{top_k}): {success_count} ({success_count/max(1,total_processed)*100:.1f}%)")
+    print(f"  ❌ Not in top-{top_k}: {not_in_top_k_count} ({not_in_top_k_count/max(1,total_processed)*100:.1f}%)")
+    print(f"  ⚠️  No anomalies: {no_anomaly_count} ({no_anomaly_count/max(1,total_processed)*100:.1f}%)")
+    print(f"  🔥 Errors: {error_count} ({error_count/max(1,total_processed)*100:.1f}%)")
+    print(f"{'='*80}")
+
+    # Show success rate including previously investigated
+    total_investigated = success_count + skipped['investigated']
+    total_attempted = total_processed + skipped['investigated'] + skipped['failed']
+    if total_attempted > 0:
+        print(f"\nOverall success rate: {total_investigated}/{total_attempted} ({total_investigated/total_attempted*100:.1f}%)")
+
+    # Show errors if any
+    if error_count > 0:
+        print(f"\nEpisodes with errors:")
+        for r in results:
+            if r['status'] == 'error':
+                print(f"  - {Path(r['episode']).name}: {r['error_type']}")
+
+def clear_episode_markers_and_output(episode_dir: Path):
+    """Remove marker files and analysis output from an episode directory."""
+    files_to_remove = [
+        'RCAInvestigated.marker',
+        'RCAFailed.marker',
+        'rca_analysis.json'
+    ]
+
+    removed = []
+    for filename in files_to_remove:
+        filepath = episode_dir / filename
+        if filepath.exists():
+            filepath.unlink()
+            removed.append(filename)
+
+    return removed
 
 if __name__ == "__main__":
+    # Configuration
+    top_k = 5  # Check top-5 candidates by default
+    reprocess = False
+
     if len(sys.argv) < 2:
-        print("Usage: python run_rca_batch.py <data_directory>")
+        print("Usage: python run_rca_batch.py <data_directory> [top_k] [--reprocess]")
+        print("Example: python run_rca_batch.py ../data/batch_run 5")
+        print("         python run_rca_batch.py ../data/batch_run 5 --reprocess")
+        print()
+        print("Options:")
+        print("  --reprocess    Clear all marker files and analysis outputs before running")
         sys.exit(1)
-        
+
     data_dir = sys.argv[1]
-    episodes = find_all_episodes(data_dir)
-    
-    print(f"Found {len(episodes)} episodes in {data_dir}")
-    print("="*60)
-    
-    success_count = 0
-    total_processed = 0
-    
+
+    # Parse arguments
+    for arg in sys.argv[2:]:
+        if arg == '--reprocess':
+            reprocess = True
+        else:
+            try:
+                top_k = int(arg)
+            except ValueError:
+                print(f"Warning: Invalid argument '{arg}', ignoring")
+
+    print(f"{'='*80}")
+    print("BATCH WHITEBOX RCA ANALYSIS")
+    print(f"{'='*80}")
+    print(f"Base directory: {data_dir}")
+    print(f"Top-K candidates: {top_k}")
+    if reprocess:
+        print(f"Mode: REPROCESS (clearing old markers and outputs)")
+    print(f"{'='*80}\n")
+
+    # Find all episodes
+    try:
+        episodes = find_all_episodes(data_dir)
+    except FileNotFoundError as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
+
+    if not episodes:
+        print(f"No episodes found in {data_dir}")
+        sys.exit(0)
+
+    print(f"Found {len(episodes)} episodes")
+
+    # Reprocess mode: clear all markers and outputs
+    if reprocess:
+        print("\n🔄 Clearing old markers and outputs...")
+        total_cleared = 0
+        for ep in episodes:
+            removed = clear_episode_markers_and_output(ep)
+            if removed:
+                total_cleared += 1
+        print(f"   Cleared {total_cleared} episode(s)")
+        print()
+
+    # Check which episodes are already processed
+    skipped = {'investigated': 0, 'failed': 0}
+    to_process = []
+
     for ep in episodes:
-        total_processed += 1
-        if process_episode(ep):
-            success_count += 1
-            
-    print("\n" + "="*60)
-    print(f"BATCH SUMMARY")
-    print("="*60)
-    print(f"Total Processed: {total_processed}")
-    print(f"Success (Top-3): {success_count}")
-    if total_processed > 0:
-        print(f"Accuracy:        {(success_count/total_processed)*100:.1f}%")
+        is_processed, status = is_episode_processed(ep)
+        if is_processed:
+            if status == 'investigated':
+                skipped['investigated'] += 1
+            else:
+                skipped['failed'] += 1
+        else:
+            to_process.append(ep)
+
+    print(f"  Already investigated: {skipped['investigated']}")
+    print(f"  Already failed: {skipped['failed']}")
+    print(f"  To process: {len(to_process)}")
+
+    if not to_process:
+        print("\n✅ All episodes already processed!")
+        sys.exit(0)
+
+    # Process episodes
+    results = []
+    for i, episode_dir in enumerate(to_process, 1):
+        print(f"\n[{i}/{len(to_process)}] ", end='')
+        result = process_episode(episode_dir, top_k)
+        results.append(result)
+
+    # Print summary
+    print_summary(results, skipped, top_k)

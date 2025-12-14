@@ -1,34 +1,27 @@
 #!/bin/bash
 # Wrapper script to run RCA analysis on nested batch_run structure
-# Usage: ./run_batch_analysis.sh <path_to_batch_run>
-# Example: ./run_batch_analysis.sh ../data/batch_run
+# Usage: ./run_batch_analysis.sh <path_to_batch_run> [top_k] [--reprocess]
+# Example: ./run_batch_analysis.sh ../data/batch_run 5
+#          ./run_batch_analysis.sh ../data/batch_run 5 --reprocess
 
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <batch_run_directory>"
-    echo "Example: $0 ../data/batch_run"
+    echo "Usage: $0 <batch_run_directory> [top_k] [--reprocess]"
+    echo "Example: $0 ../data/batch_run 5"
+    echo "         $0 ../data/batch_run 5 --reprocess"
+    echo ""
+    echo "Options:"
+    echo "  --reprocess    Clear all marker files and analysis outputs before running"
     exit 1
 fi
 
 BATCH_DIR="$1"
+shift
 
 if [ ! -d "$BATCH_DIR" ]; then
     echo "Error: Directory $BATCH_DIR does not exist"
     exit 1
 fi
 
-echo "Running RCA analysis on all data directories in $BATCH_DIR"
-echo "============================================================"
-
-# Find all data_* directories and run analysis on each
-for data_dir in "$BATCH_DIR"/data_*; do
-    if [ -d "$data_dir" ]; then
-        echo ""
-        echo "Processing: $(basename $data_dir)"
-        echo "------------------------------------------------------------"
-        python3 run_rca_batch.py "$data_dir"
-    fi
-done
-
-echo ""
-echo "============================================================"
-echo "Analysis complete!"
+# Note: The updated run_rca_batch.py now handles nested structures automatically
+# So we can just call it once on the batch_run directory
+python3 run_rca_batch.py "$BATCH_DIR" "$@"

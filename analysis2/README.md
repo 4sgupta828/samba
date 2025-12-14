@@ -70,33 +70,101 @@ data/
 Run the batch processor on a single data directory containing `ep_*` subdirectories:
 
 ```bash
-python run_rca_batch.py ./data/my_data_dir
+python3 run_rca_batch.py ./data/my_data_dir [top_k]
 ```
+
+The optional `top_k` parameter (default: 5) specifies how many top candidates to consider.
 
 #### Option B: Nested Batch Structure
 
-If you have a directory containing multiple `data_*` directories (like `data/batch_run`), use the wrapper script:
+The script automatically handles nested structures (directories containing multiple `data_*` subdirectories):
 
 ```bash
-./run_batch_analysis.sh ../data/batch_run
+python3 run_rca_batch.py ../data/batch_run 5
 ```
 
-This will automatically run the analysis on all `data_*` subdirectories.
+Or use the wrapper script:
+
+```bash
+./run_batch_analysis.sh ../data/batch_run 5
+```
+
+#### Key Features:
+
+- **Smart Processing**: Automatically skips already-processed episodes (detects `RCAInvestigated.marker` and `RCAFailed.marker` files)
+- **Reprocess Mode**: Use `--reprocess` flag to clear all markers and outputs and re-run analysis
+- **Progress Tracking**: Shows `[N/Total]` progress as it processes episodes
+- **JSON Output**: Saves detailed results to `rca_analysis.json` in each episode directory
+- **Marker Files**: Creates `RCAInvestigated.marker` when ground truth is found in top-K
+- **Error Handling**: Creates `RCAFailed.marker` on errors and continues processing other episodes
+- **Comprehensive Summary**: Shows success rates, error counts, and overall statistics
+
+#### Reprocessing Episodes:
+
+To clear all markers and outputs and re-run analysis from scratch:
+
+```bash
+python3 run_rca_batch.py ../data/batch_run 5 --reprocess
+```
+
+Or with the wrapper script:
+
+```bash
+./run_batch_analysis.sh ../data/batch_run 5 --reprocess
+```
+
+This will:
+- Remove all `RCAInvestigated.marker` files
+- Remove all `RCAFailed.marker` files
+- Remove all `rca_analysis.json` files
+- Re-run analysis on all episodes
 
 ### 3\. Example Output
 
 ```text
-Analyzing Episode: ep_mem_leak_04
-  Ground Truth: product-catalog
-  Top Result:   product-catalog (Score: 18.4)
-  ✅ EXACT MATCH
+================================================================================
+BATCH WHITEBOX RCA ANALYSIS
+================================================================================
+Base directory: ../data/batch_run
+Top-K candidates: 5
+================================================================================
+
+Found 18 episodes
+  Already investigated: 17
+  Already failed: 0
+  To process: 1
+
+[1/1]
+================================================================================
+Processing: ../data/batch_run/data_20251212_135507/ep_0
+================================================================================
+
+  Ground Truth: tenant_service
+  Top Result:   pod_tenant_service_3 (Score: 51.2)
+  ✅ IN TOP-5 (Rank 1/5)
 
   📜 Causal Narrative:
-    🔴 ROOT CAUSE: product-catalog
-       Internal Symptoms: memory_usage increased (d=2.10), Thread Pool Saturation (52/50)
+    🔴 ROOT CAUSE: pod_tenant_service_3
+       Internal Symptoms: memory_usage increased (d=3.08)
     ⬇️ Propagation:
-       - frontend calls product-catalog (Potential cascading latency)
-       - recommendation-service calls product-catalog (Potential cascading latency)
+       - node_3 calls pod_tenant_service_3 (Potential cascading latency)
+
+================================================================================
+BATCH WHITEBOX RCA SUMMARY
+================================================================================
+Total episodes found: 18
+  Already investigated: 17
+  Already failed: 0
+  Processed this run: 1
+
+Results for 1 processed episodes:
+  ✅ Success (found in top-5): 1 (100.0%)
+  ❌ Not in top-5: 0 (0.0%)
+  ⚠️  No anomalies: 0 (0.0%)
+  🔥 Errors: 0 (0.0%)
+================================================================================
+
+Overall success rate: 18/18 (100.0%)
 ```
 
 ## 🧠 How It Works
