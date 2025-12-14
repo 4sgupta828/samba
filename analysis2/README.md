@@ -23,6 +23,7 @@ It combines **robust statistical rigor** (Changepoint detection, Mann-Whitney U)
 | File | Description |
 | :--- | :--- |
 | `run_rca_batch.py` | **Entry Point.** Batch processor that loads data, normalizes metrics, and runs the engine across multiple episode directories. |
+| `run_batch_analysis.sh` | **Wrapper Script.** Runs analysis on nested batch directories (e.g., directories containing multiple `data_*` subdirectories). |
 | `whitebox_rca.py` | **The Engine.** Orchestrates the 4-phase analysis process (Self-Health, Propagation, Ranking, Storytelling). |
 | `statistical_utils.py` | **Math Core.** Implements Mann-Whitney U tests, Cohen's d effect size, and SOTA Changepoint Detection (PELT/BinSeg). |
 | `self_health_analyzer.py` | **Internal Diagnostics.** Analyzes a node in isolation to detect Resource Saturation or Limp Mode deadlocks. |
@@ -64,11 +65,23 @@ data/
 
 ### 2\. Running the Analysis
 
-Run the batch processor pointing to your data directory:
+#### Option A: Single Data Directory
+
+Run the batch processor on a single data directory containing `ep_*` subdirectories:
 
 ```bash
-python run_rca_batch.py ./data
+python run_rca_batch.py ./data/my_data_dir
 ```
+
+#### Option B: Nested Batch Structure
+
+If you have a directory containing multiple `data_*` directories (like `data/batch_run`), use the wrapper script:
+
+```bash
+./run_batch_analysis.sh ../data/batch_run
+```
+
+This will automatically run the analysis on all `data_*` subdirectories.
 
 ### 3\. Example Output
 

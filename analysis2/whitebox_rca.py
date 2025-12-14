@@ -90,7 +90,7 @@ class WhiteboxRCAEngine:
             # 2. Impact Bonus (Log Traffic)
             # Prioritize high-traffic nodes slightly
             b_metrics = baseline_data.get(node, {})
-            traffic_metric = b_metrics.get('inbound_rps') or b_metrics.get('request_rate')
+            traffic_metric = b_metrics.get('inbound_rps') if 'inbound_rps' in b_metrics else b_metrics.get('request_rate')
             traffic_vol = np.mean(traffic_metric) if traffic_metric is not None and len(traffic_metric) > 0 else 1.0
             impact_bonus = math.log10(max(1.0, traffic_vol))
 
