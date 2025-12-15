@@ -1,7 +1,8 @@
 """
 Batch RCA Analysis Visualization
 
-Displays comprehensive analysis of RCA failures across a batch run.
+Displays comprehensive analysis of RCA results across a batch run.
+Shows both successful (rank=1) and failed (rank!=1) RCA cases.
 """
 
 import dash_bootstrap_components as dbc
@@ -9,94 +10,88 @@ from dash import html, dcc
 from typing import Dict, List
 
 
-def create_batch_analysis_summary(results: List[Dict]) -> html.Div:
+def create_batch_analysis_summary(all_results: List[Dict], successful_results: List[Dict], failed_results: List[Dict]) -> html.Div:
     """
     Create summary statistics view for batch analysis.
 
     Args:
-        results: List of failure analysis results from analyze_failures.py
+        all_results: All RCA results
+        successful_results: Successful RCA cases (rank=1)
+        failed_results: Failed RCA cases (rank!=1)
 
     Returns:
         Dash HTML div with summary statistics
     """
-    if not results:
+    if not all_results:
         return html.Div([
-            dbc.Alert("No failures found in this batch run!", color="success", className="mt-3")
+            dbc.Alert("No RCA results found in this batch run!", color="info", className="mt-3")
         ])
 
-    total = len(results)
+    total = len(all_results)
+    success_count = len(successful_results)
+    fail_count = len(failed_results)
+    success_rate = (success_count / total * 100) if total > 0 else 0
 
     # Calculate statistics
-    detected = sum(1 for r in results if r.get('ground_truth_detected', False))
-    temporal_violations = sum(
-        1 for r in results
-        if r.get('temporal_ordering', {}).get('valid') == False
-    )
-    weak_injection = sum(
-        1 for r in results
-        if r.get('fault_injection_severity', {}).get('adequate') == False
-    )
-    service_faults = sum(
-        1 for r in results
-        if 'service' in r.get('topology', {}).get('ground_truth_type', '').lower()
-    )
-    low_severity = sum(
-        1 for r in results
-        if r.get('ground_truth_metrics', {}).get('found')
-        and r.get('ground_truth_metrics', {}).get('overall_severity_score', 0) < 0.1
-    )
+    found_in_top_k = sum(1 for r in all_results if r.get('found_in_top_k', False))
+
+    # Rank distribution for failures
+    rank_2 = sum(1 for r in failed_results if r.get('rank') == 2)
+    rank_3 = sum(1 for r in failed_results if r.get('rank') == 3)
+    rank_4_plus = sum(1 for r in failed_results if r.get('rank') and r.get('rank') >= 4)
+    not_in_top_k = sum(1 for r in failed_results if not r.get('found_in_top_k', False))
 
     # Fault type distribution
     from collections import Counter
-    fault_types = Counter(r.get('fault_type', 'Unknown') for r in results)
-    datasets = Counter(r.get('dataset_dir', 'Unknown') for r in results)
+    fault_types = Counter(r.get('fault_type', 'Unknown') for r in all_results)
+    datasets = Counter(r.get('dataset_dir', 'Unknown') for r in all_results)
 
     summary_cards = dbc.Row([
         dbc.Col([
             dbc.Card([
                 dbc.CardBody([
-                    html.H3(str(total), className="text-danger"),
-                    html.P("Total Failures", className="mb-0 text-muted")
+                    html.H3(str(total), className="text-primary"),
+                    html.P("Total Episodes", className="mb-0 text-muted small")
                 ])
             ], className="text-center shadow-sm")
         ], width=2),
         dbc.Col([
             dbc.Card([
                 dbc.CardBody([
-                    html.H3(f"{detected}/{total}", className="text-warning"),
-                    html.P("GT Detected (not top-K)", className="mb-0 text-muted small")
+                    html.H3(f"{success_count}", className="text-success"),
+                    html.P(f"Rank 1 ({success_rate:.1f}%)", className="mb-0 text-muted small")
                 ])
             ], className="text-center shadow-sm")
         ], width=2),
         dbc.Col([
             dbc.Card([
                 dbc.CardBody([
-                    html.H3(f"{temporal_violations}", className="text-danger"),
-                    html.P("Temporal Violations", className="mb-0 text-muted small")
+                    html.H3(f"{fail_count}", className="text-danger"),
+                    html.P(f"Failures ({100-success_rate:.1f}%)", className="mb-0 text-muted small")
                 ])
             ], className="text-center shadow-sm")
         ], width=2),
         dbc.Col([
             dbc.Card([
                 dbc.CardBody([
-                    html.H3(f"{weak_injection}", className="text-warning"),
-                    html.P("Weak Fault Injection", className="mb-0 text-muted small")
+                    html.H3(f"{found_in_top_k}/{total}", className="text-info"),
+                    html.P("In Top-K", className="mb-0 text-muted small")
                 ])
             ], className="text-center shadow-sm")
         ], width=2),
         dbc.Col([
             dbc.Card([
                 dbc.CardBody([
-                    html.H3(f"{service_faults}", className="text-info"),
-                    html.P("Service-Level Faults", className="mb-0 text-muted small")
+                    html.H3(f"{not_in_top_k}", className="text-warning"),
+                    html.P("Not in Top-K", className="mb-0 text-muted small")
                 ])
             ], className="text-center shadow-sm")
         ], width=2),
         dbc.Col([
             dbc.Card([
                 dbc.CardBody([
-                    html.H3(f"{low_severity}", className="text-secondary"),
-                    html.P("Low Severity (<0.1)", className="mb-0 text-muted small")
+                    html.H3(f"{rank_2 + rank_3}", className="text-secondary"),
+                    html.P("Rank 2-3", className="mb-0 text-muted small")
                 ])
             ], className="text-center shadow-sm")
         ], width=2),
@@ -136,146 +131,204 @@ def create_batch_analysis_summary(results: List[Dict]) -> html.Div:
         html.Thead([
             html.Tr([
                 html.Th("Dataset Directory"),
-                html.Th("Failures", className="text-end")
+                html.Th("Count", className="text-end")
             ])
         ]),
         html.Tbody(dataset_rows)
     ], bordered=True, hover=True, size="sm", className="mb-3")
 
     return html.Div([
-        html.H4("📊 Batch Analysis Summary", className="mb-3"),
+        html.H4("📊 Batch RCA Analysis Summary", className="mb-3"),
         summary_cards,
         dbc.Row([
             dbc.Col([
-                html.H5("Failures by Fault Type", className="mb-2"),
+                html.H5("Distribution by Fault Type", className="mb-2"),
                 fault_type_table
             ], width=6),
             dbc.Col([
-                html.H5("Failures by Dataset", className="mb-2"),
+                html.H5("Distribution by Dataset", className="mb-2"),
                 dataset_table
             ], width=6)
         ])
     ])
 
 
-def create_batch_failure_details(results: List[Dict]) -> html.Div:
+def create_episode_card(result: Dict, index: int, is_success: bool) -> dbc.Card:
     """
-    Create detailed view of individual failures.
+    Create a card for a single episode result.
 
     Args:
-        results: List of failure analysis results from analyze_failures.py
+        result: Episode result dictionary
+        index: Episode number
+        is_success: Whether this is a successful RCA (rank=1)
 
     Returns:
-        Dash HTML div with individual failure details
+        Dash bootstrap card component
     """
-    if not results:
+    dataset_dir = result.get('dataset_dir', 'Unknown')
+    episode_name = result.get('episode_name', 'Unknown')
+    ground_truth = result.get('ground_truth', 'Unknown')
+    fault_type = result.get('fault_type', 'Unknown')
+    rank = result.get('rank', 'N/A')
+    found_in_top_k = result.get('found_in_top_k', False)
+    top_candidates = result.get('top_candidates', [])
+
+    # Determine status badge
+    if is_success:
+        status_badge = dbc.Badge("✓ Rank 1", color="success", className="ms-2")
+        card_color = "success"
+        header_class = "text-success"
+    elif found_in_top_k:
+        status_badge = dbc.Badge(f"Rank {rank}", color="warning", className="ms-2")
+        card_color = "warning"
+        header_class = "text-warning"
+    else:
+        status_badge = dbc.Badge(f"Not in Top-K", color="danger", className="ms-2")
+        card_color = "danger"
+        header_class = "text-danger"
+
+    # Build top candidates list
+    candidate_items = []
+    for i, candidate in enumerate(top_candidates[:5], 1):
+        node = candidate.get('node', 'Unknown')
+        score = candidate.get('score', 0)
+        is_gt = (node == ground_truth)
+
+        # Create label with score breakdown
+        score_parts = []
+        if 'self_score' in candidate:
+            score_parts.append(f"self={candidate['self_score']:.1f}")
+        if 'integrated_score' in candidate:
+            score_parts.append(f"int={candidate['integrated_score']:.1f}")
+        if 'guilt_ratio' in candidate and candidate['guilt_ratio'] is not None:
+            score_parts.append(f"guilt={candidate['guilt_ratio']:.1f}")
+        if 'temporal_score' in candidate:
+            score_parts.append(f"temp={candidate['temporal_score']:.1f}")
+
+        score_str = f" ({', '.join(score_parts)})" if score_parts else ""
+
+        item = html.Li([
+            html.Strong(f"#{i}: {node}", className="text-success" if is_gt else ""),
+            f" - Score: {score:.1f}{score_str}",
+            html.Span(" ← Ground Truth", className="text-success ms-2") if is_gt else ""
+        ], className="small")
+        candidate_items.append(item)
+
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H6([
+                f"#{index}: ",
+                html.Span(f"{dataset_dir}/{episode_name}", className=header_class),
+                status_badge,
+                html.Span(f" - {fault_type}", className="ms-2 text-muted small")
+            ], className="mb-0")
+        ]),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Strong("Ground Truth: "),
+                    html.Span(ground_truth, className="text-danger"),
+                    html.Br(),
+                    html.Strong("Rank: "),
+                    html.Span(str(rank)),
+                    html.Br(),
+                    html.Strong("Total Candidates: "),
+                    html.Span(str(result.get('total_candidates', 0))),
+                ], width=4),
+                dbc.Col([
+                    html.Strong("Top 5 Candidates:"),
+                    html.Ul(candidate_items, className="mb-0 mt-1")
+                ], width=5),
+                dbc.Col([
+                    html.A(
+                        dbc.Button(
+                            "🔍 Open Episode",
+                            color="primary",
+                            size="sm",
+                            className="mt-2"
+                        ),
+                        href=f"/?scope=batch_run&datarun={dataset_dir}&episode={episode_name}",
+                        target="_blank",
+                        style={'textDecoration': 'none'}
+                    )
+                ], width=3, className="text-center")
+            ])
+        ])
+    ], className="mb-3 shadow-sm", color=card_color, outline=True)
+
+
+def create_batch_results_details(successful_results: List[Dict], failed_results: List[Dict]) -> html.Div:
+    """
+    Create detailed view of both successful and failed RCA cases.
+
+    Args:
+        successful_results: List of successful RCA cases (rank=1)
+        failed_results: List of failed RCA cases (rank!=1)
+
+    Returns:
+        Dash HTML div with detailed results
+    """
+    components = []
+
+    # Successful cases section
+    if successful_results:
+        success_cards = [
+            create_episode_card(result, i, is_success=True)
+            for i, result in enumerate(successful_results, 1)
+        ]
+        components.append(html.Div([
+            dbc.Collapse([
+                html.H5(f"✅ Successful RCA Cases ({len(successful_results)})", className="mb-3 mt-4 text-success"),
+                html.Div(success_cards)
+            ], id="successful-cases-collapse", is_open=False),
+            dbc.Button(
+                f"Toggle Successful Cases ({len(successful_results)})",
+                id="toggle-successful-button",
+                color="success",
+                size="sm",
+                className="mb-3 mt-3"
+            )
+        ]))
+
+    # Failed cases section
+    if failed_results:
+        failure_cards = [
+            create_episode_card(result, i, is_success=False)
+            for i, result in enumerate(failed_results, 1)
+        ]
+        components.append(html.Div([
+            html.H5(f"❌ Failed RCA Cases ({len(failed_results)})", className="mb-3 mt-4 text-danger"),
+            html.Div(failure_cards)
+        ]))
+
+    if not components:
         return html.Div()
 
-    failure_cards = []
-
-    for i, result in enumerate(results, 1):
-        # Build hypothesis list
-        hypotheses = result.get('root_cause_hypothesis', [])
-        hypothesis_items = [
-            html.Li(h, className="mb-2 small") for h in hypotheses
-        ]
-
-        # Ground truth metrics
-        gt_metrics = result.get('ground_truth_metrics', {})
-        severity_score = gt_metrics.get('overall_severity_score', 0) if gt_metrics.get('found') else 0
-        health_status = gt_metrics.get('health_status', 'UNKNOWN') if gt_metrics.get('found') else 'NOT ANALYZED'
-
-        # Topology info
-        topo = result.get('topology', {})
-
-        # Create clickable link to load episode
-        dataset_dir = result.get('dataset_dir', 'Unknown')
-        episode_name = result.get('episode_name', 'Unknown')
-
-        failure_card = dbc.Card([
-            dbc.CardHeader([
-                html.H6([
-                    f"Failure #{i}: ",
-                    html.Span(f"{dataset_dir}/{episode_name}", className="text-primary"),
-                    html.Span(f" - {result.get('fault_type', 'Unknown')}", className="ms-2 text-muted")
-                ], className="mb-0")
-            ]),
-            dbc.CardBody([
-                dbc.Row([
-                    dbc.Col([
-                        html.Strong("Ground Truth: "),
-                        html.Span(result.get('ground_truth', 'Unknown'), className="text-danger"),
-                        html.Br(),
-                        html.Strong("Type: "),
-                        html.Span(f"{topo.get('ground_truth_type', 'Unknown')} ({topo.get('ground_truth_role', 'Unknown')})"),
-                        html.Br(),
-                        html.Strong("Topology: "),
-                        html.Span(f"{topo.get('total_nodes', 0)} nodes, Leaf: {topo.get('is_leaf_node', False)}"),
-                    ], width=4),
-                    dbc.Col([
-                        html.Strong("Top 3 Candidates: "),
-                        html.Ul([
-                            html.Li(candidate) for candidate in result.get('top_3_candidates', [])
-                        ], className="mb-0 small")
-                    ], width=4),
-                    dbc.Col([
-                        html.Strong("Metrics: "),
-                        html.Br(),
-                        html.Span(f"Severity: {severity_score:.3f}", className="small"),
-                        html.Br(),
-                        html.Span(f"Health: {health_status}", className="small"),
-                        html.Br(),
-                        html.Span(f"GT Detected: {'Yes' if result.get('ground_truth_detected') else 'No'}", className="small"),
-                        html.Br(),
-                        html.A(
-                            dbc.Button(
-                                "🔍 Open Episode",
-                                color="primary",
-                                size="sm",
-                                className="mt-2"
-                            ),
-                            href=f"/?scope=batch_run&datarun={dataset_dir}&episode={episode_name}",
-                            target="_blank",
-                            style={'textDecoration': 'none'}
-                        )
-                    ], width=4)
-                ]),
-                html.Hr(className="my-2"),
-                html.Div([
-                    html.Strong("Why RCA Failed (Hypotheses):"),
-                    html.Ul(hypothesis_items, className="mb-0 mt-2")
-                ])
-            ])
-        ], className="mb-3 shadow-sm")
-
-        failure_cards.append(failure_card)
-
-    return html.Div([
-        html.H4(f"📋 Individual Failure Details ({len(results)} cases)", className="mb-3 mt-4"),
-        html.Div(failure_cards)
-    ])
+    return html.Div(components)
 
 
-def create_batch_analysis_view(results: List[Dict]) -> html.Div:
+def create_batch_analysis_view(all_results: List[Dict], successful_results: List[Dict], failed_results: List[Dict]) -> html.Div:
     """
     Create complete batch analysis view combining summary and details.
 
     Args:
-        results: List of failure analysis results from analyze_failures.py
+        all_results: All RCA results
+        successful_results: Successful RCA cases (rank=1)
+        failed_results: Failed RCA cases (rank!=1)
 
     Returns:
         Complete batch analysis dashboard
     """
-    if not results:
+    if not all_results:
         return html.Div([
             dbc.Alert([
-                html.H5("✅ No RCA Failures Found!", className="alert-heading"),
-                html.P("All RCA cases in this batch run succeeded. Great job!")
-            ], color="success", className="mt-3")
+                html.H5("📂 No RCA Results Found!", className="alert-heading"),
+                html.P("No rca_analysis.json files found in this batch.")
+            ], color="info", className="mt-3")
         ])
 
     return html.Div([
-        create_batch_analysis_summary(results),
+        create_batch_analysis_summary(all_results, successful_results, failed_results),
         html.Hr(),
-        create_batch_failure_details(results)
+        create_batch_results_details(successful_results, failed_results)
     ])

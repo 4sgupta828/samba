@@ -3491,6 +3491,19 @@ def toggle_batch_analysis_collapse(n_clicks, is_open):
 
 
 @app.callback(
+    Output('successful-cases-collapse', 'is_open'),
+    [Input('toggle-successful-button', 'n_clicks')],
+    [State('successful-cases-collapse', 'is_open')],
+    prevent_initial_call=True
+)
+def toggle_successful_cases_collapse(n_clicks, is_open):
+    """Toggle successful RCA cases visibility."""
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+@app.callback(
     Output('batch-quick-select', 'options'),
     [Input('batch-refresh-button', 'n_clicks'),
      Input('batch-analysis-collapse', 'is_open')],
@@ -3572,13 +3585,13 @@ def update_folder_input_from_dropdown(selected_folder):
     prevent_initial_call=True
 )
 def analyze_batch_folder(n_clicks, folder_path):
-    """Run analyze_failures.py on specified folder and display results."""
+    """Analyze batch RCA results from rca_analysis.json files."""
     if not n_clicks:
         return html.Div(), ""
 
     import os
+    import json
     from pathlib import Path
-    from analyze_failures import analyze_all_failures
 
     if not folder_path:
         return dbc.Alert("Please specify a folder path to analyze", color="warning"), ""
@@ -3602,70 +3615,101 @@ def analyze_batch_folder(n_clicks, folder_path):
         return dbc.Alert(f"Folder not found: {analysis_path}\n(BASE_DATA_DIR: {BASE_DATA_DIR})", color="danger"), ""
 
     try:
+        # Find all rca_analysis.json files
+        rca_files = list(Path(analysis_path).rglob('rca_analysis.json'))
 
-        # Run failure analysis
-        status = html.Div([
-            dbc.Spinner(size="sm", color="primary"),
-            html.Span(f" Analyzing {folder_display}...", className="ms-2")
-        ])
+        if not rca_files:
+            view = dbc.Alert([
+                html.H5("📂 No RCA Results Found", className="alert-heading"),
+                html.P(f"No rca_analysis.json files found in {folder_display}"),
+                html.P("Make sure this folder contains episodes with RCA analysis results.", className="mb-0 small")
+            ], color="info")
+            status = html.Span(f"No RCA data in {folder_display}", className="text-muted")
+            return view, status
 
-        # Analyze all failures in this folder
-        results = []
-        total_markers = 0
+        # Process all RCA results
+        all_results = []
+        successful_results = []
+        failed_results = []
         errors = []
 
-        # Find all RCA failures in the folder
-        for marker_file in Path(analysis_path).rglob('RCAInvestigated.marker'):
-            total_markers += 1
-            import json
-            with open(marker_file) as f:
-                marker = json.load(f)
+        for rca_file in rca_files:
+            try:
+                with open(rca_file) as f:
+                    rca_data = json.load(f)
 
-            # Only include failures
-            if not marker.get('success'):
-                from analyze_failures import FailureAnalyzer
-                episode_dir = marker_file.parent
-                try:
-                    analyzer = FailureAnalyzer(str(episode_dir))
-                    result = analyzer.analyze()
-                    results.append(result)
-                except Exception as e:
-                    error_msg = f"{episode_dir.name}: {str(e)}"
-                    errors.append(error_msg)
-                    print(f"Error analyzing {episode_dir}: {e}")
+                episode_dir = rca_file.parent
+                dataset_dir = episode_dir.parent.name
+                episode_name = episode_dir.name
+
+                # Load label for ground truth
+                label_file = episode_dir / 'label.json'
+                if label_file.exists():
+                    with open(label_file) as f:
+                        label = json.load(f)
+                else:
+                    label = {}
+
+                # Extract key information
+                ground_truth = rca_data.get('ground_truth', label.get('root_cause_node'))
+                rank = rca_data.get('rank')
+                found_in_top_k = rca_data.get('found_in_top_k', False)
+                top_candidates = rca_data.get('top_candidates', [])
+
+                result = {
+                    'episode': str(episode_dir),
+                    'episode_name': episode_name,
+                    'dataset_dir': dataset_dir,
+                    'ground_truth': ground_truth,
+                    'fault_type': label.get('fault_type', 'Unknown'),
+                    'rank': rank,
+                    'found_in_top_k': found_in_top_k,
+                    'top_candidates': top_candidates[:5],  # Top 5
+                    'total_candidates': rca_data.get('total_service_candidates', len(rca_data.get('all_candidates', []))),
+                    'rca_data': rca_data  # Store full data for detailed view
+                }
+
+                all_results.append(result)
+
+                # Categorize by success/failure
+                if rank == 1:
+                    successful_results.append(result)
+                else:
+                    failed_results.append(result)
+
+            except Exception as e:
+                error_msg = f"{rca_file.parent.name}: {str(e)}"
+                errors.append(error_msg)
+                print(f"Error processing {rca_file}: {e}")
 
         # Create visualization
-        if results:
+        if all_results:
             view = html.Div([
-                create_batch_analysis_view(results),
+                create_batch_analysis_view(all_results, successful_results, failed_results),
                 # Show errors if any
                 html.Div([
                     html.Hr(),
                     dbc.Alert([
-                        html.H6(f"⚠️ {len(errors)} episodes failed to analyze:", className="alert-heading"),
+                        html.H6(f"⚠️ {len(errors)} episodes failed to process:", className="alert-heading"),
                         html.Ul([html.Li(err, className="small") for err in errors[:10]])
                     ], color="warning")
                 ]) if errors else html.Div()
             ])
-            success_rate = len(results) / (len(results) + len(errors)) * 100 if (len(results) + len(errors)) > 0 else 0
+            total = len(all_results)
+            success_count = len(successful_results)
+            fail_count = len(failed_results)
+            success_rate = (success_count / total * 100) if total > 0 else 0
             status = html.Span(
-                f"✅ Analyzed {len(results)} failures from {folder_display} ({success_rate:.0f}% success)",
+                f"✅ Analyzed {total} episodes: {success_count} succeeded ({success_rate:.1f}%), {fail_count} failed",
                 className="text-success"
             )
         else:
-            if total_markers == 0:
-                view = dbc.Alert([
-                    html.H5("📂 No RCA Results Found", className="alert-heading"),
-                    html.P(f"No RCAInvestigated.marker files found in {folder_display}"),
-                    html.P("Make sure this folder contains episodes with RCA analysis results.", className="mb-0 small")
-                ], color="info")
-                status = html.Span(f"No RCA data in {folder_display}", className="text-muted")
-            else:
-                view = dbc.Alert([
-                    html.H5("✅ No Failures Found!", className="alert-heading"),
-                    html.P(f"All {total_markers} RCA cases in {folder_display} succeeded!")
-                ], color="success")
-                status = html.Span(f"✅ Complete - No failures in {folder_display}", className="text-success")
+            view = dbc.Alert([
+                html.H5("⚠️ No Valid Results", className="alert-heading"),
+                html.P(f"Found {len(rca_files)} rca_analysis.json files but could not process any of them."),
+                html.P(f"Errors: {len(errors)}", className="mb-0 small") if errors else html.P()
+            ], color="warning")
+            status = html.Span(f"⚠️ No valid data in {folder_display}", className="text-warning")
 
         return view, status
 
