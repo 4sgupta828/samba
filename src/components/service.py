@@ -59,11 +59,7 @@ class Service(EnrichedComponent):
             description=f"Number of requests routed by {service_name}",
             unit="1",
         )
-        self.service_errors_counter = self.meter.create_counter(
-            f"service.{component_id}.errors",
-            description=f"Number of errors in {service_name}",
-            unit="1",
-        )
+        # Note: Service does not emit error metrics - errors are emitted by Pods where real work happens
 
     def _default_pipeline(self):
         """
@@ -93,22 +89,14 @@ class Service(EnrichedComponent):
         # Verify this service supports this request type
         if request_type not in self.supported_request_types:
             self._emit_log("ERROR", f"Unsupported request type '{request_type}' for {self.service_name}")
-            self.service_errors_counter.add(1, {
-                "error_type": "unsupported_request",
-                "request_type": request_type,
-                "component.id": self.id
-            })
+            # Error will be recorded by the caller (Gateway/Workload) - Service is just a router
             raise Exception(f"Service {self.service_name} does not support request type: {request_type}")
 
         # Get a healthy pod to handle the request
         pod = self.get_pod_target()
         if not pod:
             self._emit_log("ERROR", f"No healthy pods available for {self.service_name}")
-            self.service_errors_counter.add(1, {
-                "error_type": "no_pods_available",
-                "request_type": request_type,
-                "component.id": self.id
-            })
+            # Error will be recorded by the caller (Gateway/Workload) - Service is just a router
             raise Exception(f"No healthy pods available for service {self.service_name}")
 
         # Record request
@@ -118,16 +106,8 @@ class Service(EnrichedComponent):
         })
 
         # Forward to pod (pod executes the processing pipeline)
-        try:
-            yield from pod.handle_request(request_type, should_trace, parent_span_context)
-        except Exception as e:
-            # Record error
-            self.service_errors_counter.add(1, {
-                "error_type": type(e).__name__,
-                "request_type": request_type,
-                "component.id": self.id
-            })
-            raise
+        # Pod will emit error metrics if the request fails - Service just routes
+        yield from pod.handle_request(request_type, should_trace, parent_span_context)
 
     def get_pod_target(self):
         """
