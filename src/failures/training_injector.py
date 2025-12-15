@@ -644,7 +644,19 @@ class TrainingFailureInjector:
             if revert_func:
                 print(f"   Using instant revert for '{failure_mode}'")
                 try:
-                    revert_func(target, params)
+                    # BUGFIX (2025-12-15): Apply revert to pods for pod-level faults
+                    # Must match injection logic to avoid silent failures
+                    pod_level_faults = ['memory_leak', 'cpu_saturation']
+
+                    if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
+                        # Revert fault on all pods of the service
+                        print(f"   Reverting '{failure_mode}' on {len(target.pods)} pods of {target_id}")
+                        for pod in target.pods:
+                            revert_func(pod, params)
+                    else:
+                        # Revert on target directly
+                        revert_func(target, params)
+
                     print(f"   Revert function completed for '{failure_mode}'")
                 except Exception as e:
                     print(f"   ERROR: Revert function failed for '{failure_mode}': {e}")
