@@ -70,8 +70,8 @@ def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     """
     Starts or accelerates a memory leak in a ComputeAgent/Pod via dynamics engine.
 
-    Models memory leaking per request - memory accumulates based on concurrent requests
-    and naturally has bigger impact on smaller instances (e.g., right-sized consumers).
+    Models memory leaking per request - memory accumulates based on concurrent requests.
+    For low-throughput consumers, leak rate is amplified to ensure visible impact.
     """
     if not isinstance(component, (ComputeAgent, Pod)):
         component._emit_log("WARN", "start_memory_leak can only be applied to ComputeAgent/Pod components.")
@@ -83,16 +83,32 @@ def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
 
     leak_rate = params.get("leak_mb_per_request", 0.5)
 
+    # Detect if this is a consumer node (has queue_in connection)
+    # Consumers have low throughput → low concurrent requests → need higher leak rate
+    is_consumer = False
+    if isinstance(component, Pod) and hasattr(component, 'parent_service'):
+        parent = component.parent_service
+        if parent and hasattr(parent, 'connections'):
+            connections = getattr(parent, 'connections', {})
+            is_consumer = 'queue_in' in connections
+
+    # Amplify leak for consumers to compensate for low concurrent requests
+    if is_consumer:
+        leak_rate *= 5  # 5x multiplier for async consumers
+        component._emit_log("WARN",
+            f"Starting memory leak (CONSUMER): +{leak_rate:.1f} MB/request (5x amplified) "
+            f"(memory_per_request_mb: {component.dynamics.config.memory_per_request_mb + leak_rate:.2f}MB)")
+    else:
+        component._emit_log("WARN",
+            f"Starting memory leak: +{leak_rate:.1f} MB/request "
+            f"(memory_per_request_mb: {component.dynamics.config.memory_per_request_mb + leak_rate:.2f}MB)")
+
     # Store original value for revert
     if not hasattr(component, '_memory_leak_original_per_request'):
         component._memory_leak_original_per_request = component.dynamics.config.memory_per_request_mb
 
     # Increase memory per request in dynamics engine
     component.dynamics.config.memory_per_request_mb += leak_rate
-
-    component._emit_log("WARN",
-        f"Starting memory leak: +{leak_rate:.1f} MB/request "
-        f"(memory_per_request_mb: {component.dynamics.config.memory_per_request_mb:.2f}MB)")
 
 def stop_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
     """
