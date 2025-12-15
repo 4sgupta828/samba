@@ -30,8 +30,8 @@ VALID_COMBINATIONS = {
     'queue_consumer_slowdown': ['queue'],
     'hot_shard': ['service'],
     'noisy_neighbor': ['service'],
-    'force_deadlock': ['service', 'database'],
     'network_partition': ['network'],
+    # Note: force_deadlock removed (2025-12-15) - use thread_exhaustion instead
 }
 
 

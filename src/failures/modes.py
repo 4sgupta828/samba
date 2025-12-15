@@ -1234,7 +1234,7 @@ FAILURE_MODES = {
     "revert_memory_pressure": revert_memory_pressure,
     "memory_thrashing": memory_thrashing,  # NEW: Tier 1 fault
     "revert_memory_thrashing": revert_memory_thrashing,
-    "thread_exhaustion": thread_exhaustion,  # NEW: Tier 1 fault (preferred name)
+    "thread_exhaustion": thread_exhaustion,  # NEW: Tier 1 fault (models pool saturation from any cause)
     "revert_thread_exhaustion": revert_thread_exhaustion,
     "disk_io_saturation": disk_io_saturation,  # NEW: Tier 1 fault
     "revert_disk_io_saturation": revert_disk_io_saturation,
@@ -1262,8 +1262,10 @@ FAILURE_MODES = {
     "revert_hot_shard": revert_hot_shard,
     "network_partition": network_partition,
     "revert_network_partition": revert_network_partition,
-    "force_deadlock": force_deadlock,
-    "revert_force_deadlock": revert_force_deadlock,
+
+    # force_deadlock removed (2025-12-15) → Use thread_exhaustion instead
+    # force_deadlock was identical to thread_exhaustion in implementation
+    # thread_exhaustion is the preferred name as it better describes the fault
 }
 
 # Registry mapping fault injection modes to their revert functions
@@ -1298,7 +1300,8 @@ REVERT_MODES = {
     "noisy_neighbor": revert_noisy_neighbor,
     "hot_shard": revert_hot_shard,
     "network_partition": revert_network_partition,
-    "force_deadlock": revert_force_deadlock,
+
+    # force_deadlock removed (2025-12-15) → Use thread_exhaustion instead
 
     # State changes (no revert needed - handled by deployment controller)
     "set_state": None,

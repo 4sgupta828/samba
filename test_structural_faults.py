@@ -21,7 +21,7 @@ from src.components.compute_node import ComputeNode
 from src.components.pod import Pod
 from src.components.service import Service
 from src.components.network import NetworkLink, NetworkPartitionError
-from src.failures.modes import noisy_neighbor, hot_shard, network_partition, force_deadlock, revert_force_deadlock
+from src.failures.modes import noisy_neighbor, hot_shard, network_partition, thread_exhaustion, revert_thread_exhaustion
 
 
 def test_noisy_neighbor():
@@ -212,10 +212,10 @@ def test_network_partition():
         return False
 
 
-def test_force_deadlock():
-    """Test 4: Force Deadlock - Thread exhaustion without CPU consumption."""
+def test_thread_exhaustion():
+    """Test 4: Thread Exhaustion - Thread pool saturation without CPU consumption."""
     print("\n" + "="*60)
-    print("TEST 4: Force Deadlock (Thread Exhaustion)")
+    print("TEST 4: Thread Exhaustion")
     print("="*60)
 
     env = simpy.Environment()
@@ -224,19 +224,19 @@ def test_force_deadlock():
     pod = Pod(env, "pod_1")
     pod.state.operational = "RUNNING"
 
-    print(f"\nBefore force_deadlock:")
+    print(f"\nBefore thread_exhaustion:")
     print(f"  Thread pool capacity: {pod.thread_pool.capacity}")
     print(f"  Active threads: {pod.thread_pool.count}")
     print(f"  Queued requests: {len(pod.thread_pool.queue)}")
 
-    # Apply force deadlock - lock 3 threads for 10 seconds
-    print(f"\nApplying force_deadlock (lock 3 threads for 10s)...")
-    force_deadlock(pod, {"locked_threads": 3, "duration": 10.0})
+    # Apply thread exhaustion - lock 3 threads for 10 seconds
+    print(f"\nApplying thread_exhaustion (lock 3 threads for 10s)...")
+    thread_exhaustion(pod, {"locked_threads": 3, "duration": 10.0})
 
     # Run simulation for a bit to let zombie tasks acquire threads
     env.run(until=0.1)
 
-    print(f"\nAfter force_deadlock (0.1s later):")
+    print(f"\nAfter thread_exhaustion (0.1s later):")
     print(f"  Thread pool capacity: {pod.thread_pool.capacity}")
     print(f"  Active threads: {pod.thread_pool.count}")
     print(f"  Queued requests: {len(pod.thread_pool.queue)}")
@@ -248,16 +248,16 @@ def test_force_deadlock():
         return False
 
     print(f"\n✅ Part 1 PASSED: 3 threads locked (zombie tasks consuming threads without CPU)")
-    print(f"   New requests will queue until deadlock duration expires (10s)")
+    print(f"   New requests will queue until thread exhaustion duration expires (10s)")
 
     # Test revert - interrupt zombie processes early
-    print(f"\nTesting revert_force_deadlock (interrupt early)...")
-    revert_force_deadlock(pod, {})
+    print(f"\nTesting revert_thread_exhaustion (interrupt early)...")
+    revert_thread_exhaustion(pod, {})
 
     # Run simulation a bit more to process interrupts
     env.run(until=0.2)
 
-    print(f"\nAfter revert_force_deadlock:")
+    print(f"\nAfter revert_thread_exhaustion:")
     print(f"  Thread pool capacity: {pod.thread_pool.capacity}")
     print(f"  Active threads: {pod.thread_pool.count}")
     print(f"  Queued requests: {len(pod.thread_pool.queue)}")
@@ -265,7 +265,7 @@ def test_force_deadlock():
     # Verify threads were released
     if pod.thread_pool.count == 0:
         print(f"\n✅ Part 2 PASSED: All threads released early via revert")
-        print(f"   Deadlock can be manually cleared before duration expires")
+        print(f"   Thread exhaustion can be manually cleared before duration expires")
         return True
     else:
         print(f"\n❌ Part 2 FAILED: Expected 0 active threads after revert, got {pod.thread_pool.count}")
@@ -284,7 +284,7 @@ def main():
     results.append(("Noisy Neighbor", test_noisy_neighbor()))
     results.append(("Hot Shard", test_hot_shard()))
     results.append(("Network Partition", test_network_partition()))
-    results.append(("Force Deadlock", test_force_deadlock()))
+    results.append(("Thread Exhaustion", test_thread_exhaustion()))
 
     # Print summary
     print("\n" + "="*60)

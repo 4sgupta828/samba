@@ -74,7 +74,7 @@ class EpisodeConfig:
                 'severity': severity  # Use user-specified or random
             },
             'thread_exhaustion': {
-                # Percentage-based thread blocking (replaces connection_exhaustion and force_deadlock)
+                # Percentage-based thread blocking (pool saturation from any cause)
                 'thread_percentage': random.uniform(0.6, 0.8),  # 60-80% of threads
                 'duration': 300.0  # 5 minutes (fixed duration for consistent observation window)
             },
@@ -108,12 +108,8 @@ class EpisodeConfig:
                 'source_component_id': None,  # Will be set dynamically at injection
                 'target_component_id': None,   # Will be set dynamically at injection
                 'bidirectional': True
-            },
-            'force_deadlock': {
-                # Alias for thread_exhaustion (deprecated, kept for backward compatibility)
-                'thread_percentage': random.uniform(0.6, 0.8),  # 60-80% of threads
-                'duration': 300.0  # 5 minutes (fixed duration for consistent observation window)
             }
+            # force_deadlock removed (2025-12-15) - identical to thread_exhaustion
         }
 
         return param_defaults.get(self.fault_type, {})
@@ -245,7 +241,7 @@ class ScenarioLibrary:
         - disk_io_saturation: Slow queries due to disk/I/O bottlenecks
         - thread_exhaustion: Connection pool saturation
 
-        Pod-level faults (cpu_saturation, memory_pressure, memory_leak, force_deadlock)
+        Pod-level faults (cpu_saturation, memory_pressure, memory_leak)
         are excluded as they require pod/thread manipulation not available for databases.
         """
         return [
@@ -314,16 +310,8 @@ class ScenarioLibrary:
                 description="Hot shard causing traffic skew",
                 progression="step"  # Traffic shifts are often sudden
             ),
-            EpisodeConfig(
-                level=3,
-                topology_size=20,
-                duration=900,
-                fault_type="force_deadlock",
-                fault_target_role="service",
-                export_interval=10,
-                description="Thread deadlock causing request queueing",
-                progression="step"  # Deadlocks occur suddenly
-            ),
+            # force_deadlock episode removed (2025-12-15) - duplicate of thread_exhaustion
+            # Use thread_exhaustion for thread pool saturation scenarios
             EpisodeConfig(
                 level=3,
                 topology_size=20,

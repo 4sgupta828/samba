@@ -51,8 +51,8 @@ FAULT_CONFIGS = [
     # Level 5: Structural/Distributed Faults
     {'fault_type': 'noisy_neighbor', 'fault_role': 'service', 'level': 5},
     {'fault_type': 'hot_shard', 'fault_role': 'service', 'level': 5},
-    {'fault_type': 'force_deadlock', 'fault_role': 'service', 'level': 5},
     {'fault_type': 'network_partition', 'fault_role': 'network', 'level': 5},
+    # Note: force_deadlock removed (2025-12-15) - identical to thread_exhaustion
 ]
 
 

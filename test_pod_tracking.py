@@ -15,7 +15,7 @@ sys.path.insert(0, str(project_root))
 
 from src.components.service import Service
 from src.components.pod import Pod
-from src.failures.modes import noisy_neighbor, revert_noisy_neighbor, force_deadlock, revert_force_deadlock
+from src.failures.modes import noisy_neighbor, revert_noisy_neighbor, thread_exhaustion, revert_thread_exhaustion
 
 
 def test_noisy_neighbor_pod_tracking():
@@ -75,10 +75,10 @@ def test_noisy_neighbor_pod_tracking():
     return True
 
 
-def test_force_deadlock_pod_tracking():
-    """Test that force_deadlock tracks the correct pod ID."""
+def test_thread_exhaustion_pod_tracking():
+    """Test that thread_exhaustion tracks the correct pod ID."""
     print("\n" + "="*60)
-    print("TEST: Force Deadlock Pod ID Tracking")
+    print("TEST: Thread Exhaustion Pod ID Tracking")
     print("="*60)
 
     env = simpy.Environment()
@@ -95,9 +95,9 @@ def test_force_deadlock_pod_tracking():
 
     print(f"\nInitial pods: {[p.id for p in service.pods]}")
 
-    # Apply force_deadlock to service (should target pod_1)
-    print(f"\nApplying force_deadlock to service...")
-    force_deadlock(service, {"locked_threads": 5, "duration": 10.0})
+    # Apply thread_exhaustion to service (should target pod_1)
+    print(f"\nApplying thread_exhaustion to service...")
+    thread_exhaustion(service, {"locked_threads": 5, "duration": 10.0})
 
     # Run simulation to let zombie tasks acquire threads
     env.run(until=0.1)
@@ -112,8 +112,8 @@ def test_force_deadlock_pod_tracking():
     print(f"✅ 5 threads locked on {pod1.id}")
 
     # Revert on the correct pod (pod still exists)
-    print(f"\nReverting force_deadlock (pod still exists)...")
-    revert_force_deadlock(service, {})
+    print(f"\nReverting thread_exhaustion (pod still exists)...")
+    revert_thread_exhaustion(service, {})
 
     # Run simulation to process interrupts
     env.run(until=0.2)
@@ -157,12 +157,12 @@ def test_concurrent_faults():
     noisy_pod_id = service._noisy_neighbor_pod_id
     print(f"✅ noisy_neighbor tracking: {noisy_pod_id}")
 
-    # Apply force_deadlock (should also target pod_1, but tracked separately)
-    print(f"\nApplying force_deadlock...")
-    force_deadlock(service, {"locked_threads": 3, "duration": 10.0})
+    # Apply thread_exhaustion (should also target pod_1, but tracked separately)
+    print(f"\nApplying thread_exhaustion...")
+    thread_exhaustion(service, {"locked_threads": 3, "duration": 10.0})
     env.run(until=0.1)
     deadlock_pod_id = service._force_deadlock_pod_id
-    print(f"✅ force_deadlock tracking: {deadlock_pod_id}")
+    print(f"✅ thread_exhaustion tracking: {deadlock_pod_id}")
 
     # Both should track the same pod (pod_1) but independently
     assert noisy_pod_id == deadlock_pod_id == "pod_1"
@@ -180,13 +180,13 @@ def test_concurrent_faults():
     assert pod1.dynamics.fault_cpu_floor_percent is None
     print(f"✅ noisy_neighbor reverted, tracking cleaned up")
 
-    # Revert force_deadlock second
-    print(f"\nReverting force_deadlock...")
-    revert_force_deadlock(service, {})
+    # Revert thread_exhaustion second
+    print(f"\nReverting thread_exhaustion...")
+    revert_thread_exhaustion(service, {})
     env.run(until=0.2)
     assert not hasattr(service, '_force_deadlock_pod_id')
     assert pod1.thread_pool.count == 0
-    print(f"✅ force_deadlock reverted, tracking cleaned up")
+    print(f"✅ thread_exhaustion reverted, tracking cleaned up")
 
     print(f"\n✅ TEST PASSED: Multiple faults track independently")
     return True
@@ -208,10 +208,10 @@ def main():
         results.append(("Noisy Neighbor Pod Tracking", False))
 
     try:
-        results.append(("Force Deadlock Pod Tracking", test_force_deadlock_pod_tracking()))
+        results.append(("Thread Exhaustion Pod Tracking", test_thread_exhaustion_pod_tracking()))
     except Exception as e:
         print(f"\n❌ EXCEPTION: {e}")
-        results.append(("Force Deadlock Pod Tracking", False))
+        results.append(("Thread Exhaustion Pod Tracking", False))
 
     try:
         results.append(("Concurrent Faults", test_concurrent_faults()))

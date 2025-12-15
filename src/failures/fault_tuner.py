@@ -169,10 +169,7 @@ class FaultParameterTuner:
                 baseline_params, node_config, node_rps, severity, verbose
             )
 
-        elif fault_type == 'force_deadlock':
-            tuned_params = self._tune_deadlock_fault(
-                baseline_params, threads_per_replica, severity, verbose
-            )
+        # force_deadlock removed (2025-12-15) - use thread_exhaustion instead
 
         elif fault_type == 'hot_shard':
             tuned_params = self._tune_hot_shard_fault(

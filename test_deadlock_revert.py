@@ -1,13 +1,13 @@
 """
-Test script to verify force_deadlock and revert_force_deadlock work correctly.
+Test script to verify thread_exhaustion and revert_thread_exhaustion work correctly.
 """
 import simpy
 from src.components.service import Service
 from src.components.pod import Pod
-from src.failures.modes import force_deadlock, revert_force_deadlock
+from src.failures.modes import thread_exhaustion, revert_thread_exhaustion
 
-def test_deadlock_revert():
-    """Test that deadlock can be reverted properly."""
+def test_thread_exhaustion_revert():
+    """Test that thread_exhaustion can be reverted properly."""
     env = simpy.Environment()
 
     # Create a minimal pod with required attributes
@@ -40,22 +40,22 @@ def test_deadlock_revert():
     print(f"Thread pool capacity: {pod.thread_pool.capacity}")
     print(f"Thread pool count (in use): {pod.thread_pool.count}")
 
-    # Apply deadlock using percentage-based approach
-    print("\n=== Applying deadlock at t=10s (70% of threads) ===")
+    # Apply thread_exhaustion using percentage-based approach
+    print("\n=== Applying thread_exhaustion at t=10s (70% of threads) ===")
     env.run(until=10)
-    force_deadlock(service, {"thread_percentage": 0.7, "duration": 100.0})
+    thread_exhaustion(service, {"thread_percentage": 0.7, "duration": 100.0})
 
-    # Run simulation to let deadlock take effect
+    # Run simulation to let thread_exhaustion take effect
     env.run(until=11)
     expected_locked = int(10 * 0.7)  # 70% of 10 = 7 threads
-    print(f"\nThread pool count after deadlock: {pod.thread_pool.count} (expected: {expected_locked})")
+    print(f"\nThread pool count after thread_exhaustion: {pod.thread_pool.count} (expected: {expected_locked})")
     print(f"Zombie processes: {len(pod._zombie_processes)} (expected: {expected_locked})")
     print(f"_force_deadlock_pod_id on service: {getattr(service, '_force_deadlock_pod_id', 'NOT SET')}")
 
-    # Revert deadlock
-    print("\n=== Reverting deadlock at t=20s ===")
+    # Revert thread_exhaustion
+    print("\n=== Reverting thread_exhaustion at t=20s ===")
     env.run(until=20)
-    revert_force_deadlock(service, {})
+    revert_thread_exhaustion(service, {})
 
     # Check if threads were released
     env.run(until=21)
@@ -69,9 +69,9 @@ def test_deadlock_revert():
 
     # Success check
     if pod.thread_pool.count == 0 and len(pod._zombie_processes) == 0:
-        print("\n✅ SUCCESS: Deadlock properly reverted!")
+        print("\n✅ SUCCESS: Thread exhaustion properly reverted!")
     else:
         print(f"\n❌ FAILURE: Threads still locked (count={pod.thread_pool.count}, zombies={len(pod._zombie_processes)})")
 
 if __name__ == "__main__":
-    test_deadlock_revert()
+    test_thread_exhaustion_revert()

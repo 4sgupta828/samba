@@ -26,8 +26,8 @@ COMBINATIONS = [
     ('queue_consumer_slowdown', 'queue'),
     ('hot_shard', 'service'),
     ('noisy_neighbor', 'service'),
-    ('force_deadlock', 'service'),
     ('network_partition', 'network'),
+    # force_deadlock removed (2025-12-15) - use thread_exhaustion instead
 ]
 
 

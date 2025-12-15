@@ -146,13 +146,13 @@ VALID_FAULT_COMBINATIONS = {
     # Structural/Distributed Faults
     'noisy_neighbor': ['service'],  # CPU steal from co-located pods
     'hot_shard': ['service'],  # Traffic skew to single replica
-    'force_deadlock': ['service'],  # Alias for thread_exhaustion (backward compat, service only)
     'network_partition': ['network'],  # Total isolation between components
 
-    # Deprecated faults REMOVED (2025-12-10):
-    # - slow_queries → Use disk_io_saturation
-    # - connection_exhaustion → Use thread_exhaustion
-    # - enable_background_job → Use cpu_saturation
+    # Deprecated faults REMOVED:
+    # (2025-12-10): slow_queries → Use disk_io_saturation
+    # (2025-12-10): connection_exhaustion → Use thread_exhaustion
+    # (2025-12-10): enable_background_job → Use cpu_saturation
+    # (2025-12-15): force_deadlock → Use thread_exhaustion (identical implementation)
 }
 
 # Fault type durations (typical duration for visible impact)
@@ -174,11 +174,11 @@ FAULT_DURATIONS = {
     # Structural/Distributed Faults
     'noisy_neighbor': 900,  # 15 min - CPU steal accumulation
     'hot_shard': 900,  # 15 min - traffic skew impact
-    'force_deadlock': 900,  # 15 min - thread blocking (alias for thread_exhaustion)
     'network_partition': 600,  # 10 min - isolation impact
 
-    # Deprecated faults REMOVED (2025-12-10):
-    # - slow_queries, connection_exhaustion, enable_background_job
+    # Deprecated faults REMOVED:
+    # (2025-12-10): slow_queries, connection_exhaustion, enable_background_job
+    # (2025-12-15): force_deadlock (use thread_exhaustion instead)
 }
 
 # Reverse mapping: role -> valid fault types
@@ -361,7 +361,6 @@ app.layout = dbc.Container([
                                         {'label': 'Noisy Neighbor', 'value': 'noisy_neighbor'},
                                         {'label': 'Hot Shard', 'value': 'hot_shard'},
                                         {'label': 'Network Partition', 'value': 'network_partition'},
-                                        {'label': 'Force Deadlock', 'value': 'force_deadlock'},
                                     ],
                                     value='',
                                     placeholder="Select fault type...",
@@ -2210,10 +2209,11 @@ def update_fault_dropdowns(fault_type, fault_role):
         # Structural/Distributed Faults
         'noisy_neighbor': 'Noisy Neighbor (15min) - CPU steal',
         'hot_shard': 'Hot Shard (15min) - Traffic skew',
-        'force_deadlock': 'Force Deadlock (15min) - Thread blocking',
         'network_partition': 'Network Partition (10min) - Isolation',
 
-        # Deprecated faults REMOVED: slow_queries, connection_exhaustion, enable_background_job
+        # Deprecated faults REMOVED:
+        # (2025-12-10): slow_queries, connection_exhaustion, enable_background_job
+        # (2025-12-15): force_deadlock (use thread_exhaustion instead)
     }
 
     # Default: show all options
