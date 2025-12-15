@@ -423,6 +423,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
         This is called automatically if the parent service has a queue_in connection.
         Messages are processed concurrently to simulate realistic queue consumer behavior.
+
+        Implements circuit breaker pattern: if messages consistently fail (e.g., due to DB outage),
+        the consumer backs off to avoid wasting resources on failing retries.
         """
         if not self.parent_service:
             return
@@ -433,9 +436,21 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
         self._emit_log("INFO", f"Starting queue consumer for {queue.id}")
 
+        # Circuit breaker state for backpressure
+        consecutive_failures = 0
+        backoff_delay = 1.0  # Start with 1s backoff
+        max_backoff = 60.0  # Max 60s backoff
+
         # Continuously pull messages and spawn concurrent processing tasks
         while self.state.operational != "TERMINATED":
             try:
+                # Circuit breaker: if too many failures, back off
+                if consecutive_failures >= 5:
+                    self._emit_log("WARN", f"Circuit breaker: {consecutive_failures} consecutive failures, backing off for {backoff_delay:.1f}s")
+                    yield self.env.timeout(backoff_delay)
+                    # Exponential backoff with jitter
+                    backoff_delay = min(backoff_delay * 2, max_backoff) + random.uniform(0, 1)
+
                 # Check for network partition BEFORE consuming from queue
                 self._check_network_partition(queue.id)
 
@@ -444,13 +459,31 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
                 self._emit_log("DEBUG", f"Received message {msg.id} from queue")
 
-                # Spawn concurrent message processing (don't wait for completion)
-                self.env.process(self._process_queue_message(msg, queue))
+                # Process message and track result for circuit breaker
+                try:
+                    # Spawn concurrent message processing and wait for result
+                    yield self.env.process(self._process_queue_message(msg, queue))
+
+                    # Success - reset circuit breaker
+                    if consecutive_failures > 0:
+                        self._emit_log("INFO", f"Circuit breaker: Processing succeeded after {consecutive_failures} failures, resetting")
+                    consecutive_failures = 0
+                    backoff_delay = 1.0  # Reset backoff
+
+                except Exception as proc_error:
+                    # Message processing failed - increment failure counter
+                    consecutive_failures += 1
+                    self._emit_log("WARN", f"Message processing failed (consecutive failures: {consecutive_failures}): {proc_error}")
+
+                    # Don't re-raise - let the message return to queue via visibility timeout
+                    # Circuit breaker will handle backpressure
 
             except Exception as e:
                 # Queue receive failed - log and retry after delay
-                self._emit_log("WARN", f"Queue receive failed: {e}")
-                yield self.env.timeout(1.0)  # Wait 1s before retrying
+                consecutive_failures += 1
+                self._emit_log("WARN", f"Queue receive failed (consecutive failures: {consecutive_failures}): {e}")
+                yield self.env.timeout(backoff_delay)
+                backoff_delay = min(backoff_delay * 2, max_backoff)
 
     def _process_queue_message(self, msg, queue):
         """
@@ -528,6 +561,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 })
 
             # Don't delete - let visibility timeout return it to queue for retry
+            # Re-raise so circuit breaker in _consume_from_queue can track failures
+            raise
 
     def _monitor_oom(self):
         """Background process that monitors for OOMKilled condition using dynamics engine."""
@@ -660,6 +695,9 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             request_type: Type of request to handle (GET, POST, PUT, DELETE, etc.)
             should_trace: Whether to create tracing spans for this request
             parent_span_context: Parent span context for distributed tracing
+
+        Raises:
+            Exception: Propagates exceptions from processing to signal request failure
         """
         # Check if tracing is enabled for this request
         if should_trace and parent_span_context:
@@ -805,8 +843,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
                 except Exception as e:
                     # Record error metrics (only if metrics are initialized and not skipped)
-                    # Database errors, network errors, and other failures should fail the request gracefully
-                    # without crashing the simulation
+                    # Database errors, network errors, and other failures should fail the request
                     latency_ms = (self.env.now - start_time) * 1000
                     if not skip_metrics and self.request_counter and self.request_duration and self.request_errors and self.parent_service:
                         self.request_counter.add(1, {
@@ -829,7 +866,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             "service.name": self.parent_service.service_name,
                             "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                         })
-                    # Don't re-raise - let the request fail gracefully without crashing the simulation
+                    # Re-raise exception so caller knows the request failed
+                    raise
         finally:
             # Remove from tracking AFTER the with block's __exit__ completes
             # This prevents conflicts with SimPy's resource cleanup
