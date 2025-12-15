@@ -13,6 +13,7 @@ import pandas as pd
 import networkx as nx
 from pathlib import Path
 from typing import Dict, Tuple, List, Any
+from collections import defaultdict
 
 # Import the SOTA Engine
 from whitebox_rca import WhiteboxRCAEngine
@@ -263,6 +264,64 @@ class DatasetAdapter:
             
         return data
 
+    def aggregate_pods_to_services(self, pod_data: Dict[str, Dict[str, np.ndarray]]) -> Dict[str, Dict[str, np.ndarray]]:
+        """
+        Aggregate pod-level metrics to service-level.
+
+        For each service with pods:
+        - Combine all pod metrics into service-level metrics
+        - Use mean for rates/percentages, sum for counts
+        - This enables service-level edge analysis
+
+        Args:
+            pod_data: {node_id: {metric_name: values}}
+
+        Returns:
+            service_data: {service_name: {metric_name: aggregated_values}}
+        """
+        service_data = {}
+
+        # Group pods by their parent service
+        service_to_pods = defaultdict(list)
+
+        for node_id in pod_data.keys():
+            node_attrs = self.topology.nodes.get(node_id, {})
+            parent_service = node_attrs.get('parent_service')
+
+            if parent_service:
+                # This is a pod - add to its parent service
+                service_to_pods[parent_service].append(node_id)
+            else:
+                # This is a standalone node (Service, ExternalService, etc.)
+                # Copy its metrics as-is
+                service_data[node_id] = pod_data[node_id]
+
+        # Aggregate metrics for each service
+        for service_name, pod_ids in service_to_pods.items():
+            service_metrics = {}
+
+            # Get all unique metric names across all pods
+            all_metric_names = set()
+            for pod_id in pod_ids:
+                all_metric_names.update(pod_data[pod_id].keys())
+
+            # Aggregate each metric
+            for metric_name in all_metric_names:
+                # Collect values from all pods that have this metric
+                all_values = []
+                for pod_id in pod_ids:
+                    if metric_name in pod_data[pod_id]:
+                        all_values.extend(pod_data[pod_id][metric_name])
+
+                if all_values:
+                    # Convert to numpy array
+                    service_metrics[metric_name] = np.array(all_values)
+
+            if service_metrics:
+                service_data[service_name] = service_metrics
+
+        return service_data
+
 # ==========================================
 # 3. BATCH RUNNER LOGIC
 # ==========================================
@@ -290,82 +349,109 @@ def create_marker_file(episode_dir: Path, marker_type: str, data: Dict = None):
         else:
             f.write(f"Analysis completed: {marker_type}\n")
 
-def aggregate_to_service_level(results: List[Dict], topology: nx.DiGraph) -> List[Dict]:
+def perform_pod_forensics(
+    service_name: str,
+    topology: nx.DiGraph,
+    baseline_pods: Dict[str, Dict[str, np.ndarray]],
+    current_pods: Dict[str, Dict[str, np.ndarray]],
+    service_result: Dict
+) -> Dict:
     """
-    Aggregate pod-level results to service-level for comparison with ground truth.
+    LEVEL 2 Analysis: Pod-level forensics within a service.
+
+    When a service is identified as root cause, analyze its pods to determine:
+    1. Are all pods degraded uniformly? (Service-wide issue)
+    2. Is it just 1-2 outlier pods? (Pod-specific issue)
+    3. Which pods are most degraded?
 
     Args:
-        results: List of pod/node-level results
-        topology: NetworkX topology graph with node metadata
+        service_name: The service to analyze
+        topology: Full topology graph
+        baseline_pods: Pod-level baseline metrics
+        current_pods: Pod-level current metrics
+        service_result: The service-level RCA result
 
     Returns:
-        List of service-level aggregated results
+        Dict with pod forensics results
     """
-    from collections import defaultdict
+    from self_health_analyzer import SelfHealthAnalyzer
+    from config_extractor import ConfigExtractor
 
-    # Group results by parent service
-    service_groups = defaultdict(lambda: {
-        'pods': [],
-        'total_score': 0.0,
-        'max_score': 0.0,
-        'guilt_ratio': 0.0,
-        'self_score': 0.0,
-        'temporal_score': 0.0,
-        'trace_score': 0.0,
-        'symptoms': set(),
-        'blamed_by': set(),
-        'stories': []
-    })
+    # Find all pods for this service
+    service_pods = [
+        node for node in topology.nodes
+        if topology.nodes[node].get('parent_service') == service_name
+    ]
 
-    for result in results:
-        node_id = result['node']
-        node_data = topology.nodes.get(node_id, {})
+    if not service_pods:
+        return {
+            'pod_count': 0,
+            'analysis': 'No pods found (standalone service)',
+            'degraded_pods': [],
+            'healthy_pods': []
+        }
 
-        # Get parent service (for pods) or use node itself (for services/standalone nodes)
-        parent_service = node_data.get('parent_service')
+    # Analyze each pod
+    config_extractor = ConfigExtractor({})
+    analyzer = SelfHealthAnalyzer(config_extractor)
 
-        # If no parent_service, this is a standalone node (Service, ExternalService, etc.)
-        # Use the node_id itself as the service name
-        if parent_service is None:
-            parent_service = node_id
+    pod_analyses = []
+    for pod_id in service_pods:
+        node_type = topology.nodes[pod_id].get('type', 'Pod')
+        baseline_metrics = baseline_pods.get(pod_id, {})
+        current_metrics = current_pods.get(pod_id, {})
 
-        # Aggregate data
-        group = service_groups[parent_service]
-        group['pods'].append(node_id)
-        group['total_score'] += result['score']
-        group['max_score'] = max(group['max_score'], result['score'])
-        group['guilt_ratio'] = max(group['guilt_ratio'], result.get('guilt_ratio', 0))
-        group['self_score'] = max(group['self_score'], result.get('self_score', 0))
-        group['temporal_score'] = max(group['temporal_score'], result.get('temporal_score', 0))
-        group['trace_score'] = max(group['trace_score'], result.get('trace_score', 0))
-        group['symptoms'].update(result.get('symptoms', []))
-        group['blamed_by'].update(result.get('blamed_by', []))
-        if result.get('story'):
-            group['stories'].append((node_id, result['story']))
+        if not current_metrics:
+            continue
 
-    # Convert to result format
-    service_results = []
-    for service_name, group in service_groups.items():
-        # Use average score across pods, weighted by max
-        avg_score = group['total_score'] / len(group['pods'])
-        final_score = (avg_score + group['max_score']) / 2  # Blend average and max
+        analysis = analyzer.analyze(pod_id, node_type, baseline_metrics, current_metrics)
 
-        service_results.append({
-            'node': service_name,
-            'score': round(final_score, 2),
-            'guilt_ratio': round(group['guilt_ratio'], 2),
-            'self_score': round(group['self_score'], 2),
-            'temporal_score': round(group['temporal_score'], 2),
-            'trace_score': round(group['trace_score'], 2),
-            'pod_count': len(group['pods']),
-            'affected_pods': group['pods'],
-            'symptoms': list(group['symptoms']),
-            'blamed_by': list(group['blamed_by']),
-            'story': group['stories'][0][1] if group['stories'] else []  # Use first pod's story
+        pod_analyses.append({
+            'pod_id': pod_id,
+            'self_score': float(analysis.self_degradation_score),
+            'symptoms': analysis.symptoms,
+            'is_degraded': bool(analysis.self_degradation_score > 2.0)  # Explicit bool conversion
         })
 
-    # Sort by score descending
-    return sorted(service_results, key=lambda x: x['score'], reverse=True)
+    # Sort by degradation score
+    pod_analyses.sort(key=lambda x: x['self_score'], reverse=True)
+
+    # Categorize pods
+    degraded_pods = [p for p in pod_analyses if p['is_degraded']]
+    healthy_pods = [p for p in pod_analyses if not p['is_degraded']]
+
+    # Determine pattern
+    if len(degraded_pods) == 0:
+        pattern = "No pods showing self-degradation (likely victim of dependency)"
+    elif len(degraded_pods) == len(pod_analyses):
+        pattern = "All pods degraded uniformly (service-wide issue)"
+    elif len(degraded_pods) <= 2:
+        pattern = f"Outlier pods detected ({len(degraded_pods)}/{len(pod_analyses)} degraded)"
+    else:
+        pattern = f"Majority pods degraded ({len(degraded_pods)}/{len(pod_analyses)})"
+
+    # Remove is_degraded from output (not JSON serializable)
+    for pod in degraded_pods:
+        pod.pop('is_degraded', None)
+    for pod in healthy_pods:
+        pod.pop('is_degraded', None)
+
+    return {
+        'pod_count': int(len(pod_analyses)),
+        'degraded_count': int(len(degraded_pods)),
+        'healthy_count': int(len(healthy_pods)),
+        'pattern': pattern,
+        'degraded_pods': degraded_pods[:5],  # Top 5 most degraded
+        'healthy_pods': healthy_pods[:3]  # Top 3 healthiest
+    }
+
+def aggregate_to_service_level_DEPRECATED(results: List[Dict], topology: nx.DiGraph) -> List[Dict]:
+    """
+    DEPRECATED: No longer needed with two-level architecture.
+    Service-level analysis happens at data aggregation time, not result aggregation time.
+    """
+    # This function is kept for backwards compatibility but should not be used
+    raise NotImplementedError("Use two-level architecture instead")
 
 def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
     """
@@ -387,27 +473,42 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
 
         # 1. Load Data
         adapter = DatasetAdapter(episode_dir)
-        baseline, current = adapter.get_data_windows()
+        baseline_pods, current_pods = adapter.get_data_windows()
 
         ground_truth_node = adapter.label.get('root_cause_node')
         fault_start_time = adapter.label.get('fault_start_time', 0)
 
-        # 2. Prepare optional data sources
+        # 2. Aggregate pod metrics to service level (LEVEL 1 DATA)
+        baseline_services = adapter.aggregate_pods_to_services(baseline_pods)
+        current_services = adapter.aggregate_pods_to_services(current_pods)
+
+        # 3. Prepare optional data sources
         traces_file = episode_dir / 'traces.jsonl'
         if not traces_file.exists():
             traces_file = None
 
-        # 3. Run Engine (NEW: Pass time-series and traces)
+        # 4. LEVEL 1: Service-level RCA
         engine = WhiteboxRCAEngine(adapter.topology)
-        pod_results = engine.analyze_incident(
-            baseline, current,
+        service_results = engine.analyze_incident(
+            baseline_services, current_services,
             metrics_df=adapter.metrics_df,
             fault_start_time=fault_start_time,
             traces_file=traces_file
         )
 
-        # 4. Aggregate to service level
-        results = aggregate_to_service_level(pod_results, adapter.topology)
+        # 5. LEVEL 2: Pod-level forensics for top service(s)
+        # Identify which pods within the root cause service are problematic
+        if service_results:
+            top_service = service_results[0]['node']
+            pod_forensics = perform_pod_forensics(
+                top_service, adapter.topology,
+                baseline_pods, current_pods,
+                service_results[0]
+            )
+            service_results[0]['pod_forensics'] = pod_forensics
+
+        # Keep results at service level (no aggregation needed - already at service level)
+        results = service_results
 
         # NOTE: Removed "no anomalies" check - we now rank ALL nodes
         if not results:
@@ -423,7 +524,6 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         # 5. Validate Results
         top_candidate = results[0]['node']
         top_score = results[0]['score']
-        affected_pods = results[0].get('affected_pods', [])
         top_story = results[0].get('story', [])
 
         # Check if ground truth in top-K
@@ -438,8 +538,6 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         # 6. Print Report
         print(f"\n  Ground Truth: {ground_truth_node}")
         print(f"  Top Result:   {top_candidate} (Score: {top_score:.1f})")
-        if affected_pods:
-            print(f"     Affected pods: {', '.join(affected_pods[:3])}{'...' if len(affected_pods) > 3 else ''}")
 
         # Show score breakdown for top result
         top_result = results[0]
@@ -448,6 +546,19 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         print(f"       - Self score: {top_result.get('self_score', 0):.1f}")
         print(f"       - Temporal: {top_result.get('temporal_score', 0):.1f}")
         print(f"       - Trace: {top_result.get('trace_score', 0):.1f}")
+        print(f"       - Blamed by: {top_result.get('blamed_by', [])}")
+
+        # Show pod forensics if available
+        pod_forensics = top_result.get('pod_forensics')
+        if pod_forensics:
+            print(f"\n     Pod Forensics:")
+            print(f"       - Pattern: {pod_forensics['pattern']}")
+            print(f"       - Pods: {pod_forensics['degraded_count']}/{pod_forensics['pod_count']} degraded")
+            if pod_forensics['degraded_pods']:
+                print(f"       - Top degraded pods:")
+                for pod in pod_forensics['degraded_pods'][:3]:
+                    symptoms_str = ', '.join(pod['symptoms'][:2]) if pod['symptoms'] else 'No symptoms'
+                    print(f"         * {pod['pod_id']}: score={pod['self_score']:.1f} ({symptoms_str})")
 
         if rank == 1:
             print(f"  ✅ EXACT MATCH (Rank 1/{top_k})")
@@ -470,9 +581,7 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
             'found_in_top_k': is_in_top_k,
             'rank': rank,
             'service_level_candidates': results[:top_k],
-            'pod_level_candidates': pod_results[:top_k * 3] if pod_results else [],  # Save more pod details
-            'total_service_candidates': len(results),
-            'total_pod_candidates': len(pod_results) if pod_results else 0
+            'total_service_candidates': len(results)
         }
 
         output_file = episode_dir / 'rca_analysis.json'

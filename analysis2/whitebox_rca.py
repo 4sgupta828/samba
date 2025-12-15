@@ -39,7 +39,7 @@ class WhiteboxRCAEngine:
 
         # NEW: Advanced analyzers
         self.temporal_analyzer = TemporalAnalyzer(topology)
-        self.trace_analyzer = TraceAnalyzer()
+        self.trace_analyzer = TraceAnalyzer(topology)  # Pass topology for service-level aggregation
 
     def analyze_incident(self,
                          baseline_data: Dict[str, Dict[str, np.ndarray]],

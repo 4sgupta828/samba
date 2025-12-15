@@ -49,8 +49,12 @@ class TraceAnalyzer:
     Analyzes distributed traces to identify latency root causes.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, topology=None):
+        """
+        Args:
+            topology: Optional NetworkX graph for service-level aggregation
+        """
+        self.topology = topology
 
     def load_traces(self, traces_file: Path) -> List[SpanData]:
         """
@@ -154,6 +158,22 @@ class TraceAnalyzer:
         # Self-time cannot be negative (due to timing inaccuracies)
         return max(0.0, total_time - child_time)
 
+    def _map_to_service(self, component_id: str) -> str:
+        """
+        Map pod-level component ID to service-level.
+        If topology is provided, maps pods to their parent service.
+        Otherwise returns component_id as-is.
+        """
+        if not self.topology:
+            return component_id
+
+        node_attrs = self.topology.nodes.get(component_id, {})
+        parent_service = node_attrs.get('parent_service')
+
+        # If this is a pod, return parent service
+        # Otherwise return the component itself (Service, ExternalService, etc.)
+        return parent_service if parent_service else component_id
+
     def analyze_traces(
         self,
         traces_file: Path,
@@ -203,16 +223,17 @@ class TraceAnalyzer:
         # Calculate latency metrics for each component
         component_metrics = {}
 
-        # Get all unique components
-        all_components = set(s.component_id for s in all_spans)
+        # Get all unique components and map to service level
+        all_components_raw = set(s.component_id for s in all_spans)
+        all_components = set(self._map_to_service(c) for c in all_components_raw if c)
 
         for component_id in all_components:
             if not component_id:
                 continue
 
-            # Extract spans for this component
-            baseline_comp_spans = [s for s in baseline_spans if s.component_id == component_id]
-            fault_comp_spans = [s for s in fault_spans if s.component_id == component_id]
+            # Extract spans for this component (may include multiple pods mapped to same service)
+            baseline_comp_spans = [s for s in baseline_spans if self._map_to_service(s.component_id) == component_id]
+            fault_comp_spans = [s for s in fault_spans if self._map_to_service(s.component_id) == component_id]
 
             if not baseline_comp_spans or not fault_comp_spans:
                 continue
