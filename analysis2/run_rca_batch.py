@@ -48,10 +48,13 @@ METRIC_MAP = {
     'client.latency': 'dependency_latency',
     'dependency.latency': 'dependency_latency',
     'client.duration': 'dependency_latency',
+    '.dependency.duration': 'dependency_latency',  # Matches service.X.dependency.duration
     'client.errors': 'dependency_error_rate',
     'dependency.error_rate': 'dependency_error_rate',
+    '.dependency.errors': 'dependency_error_rate',  # Matches service.X.dependency.errors
     'client.requests': 'outbound_rps',
-    'dependency.request_rate': 'outbound_rps'
+    'dependency.request_rate': 'outbound_rps',
+    '.dependency.requests': 'outbound_rps'  # Matches service.X.dependency.requests
 }
 
 def remove_outliers_iqr(data: np.ndarray) -> np.ndarray:
@@ -81,18 +84,20 @@ def remove_outliers_iqr(data: np.ndarray) -> np.ndarray:
 
 class DatasetAdapter:
     """
-    Converts raw simulation output (metrics.jsonl, topology.json) 
+    Converts raw simulation output (metrics.jsonl, topology.json)
     into the clean Numpy-based dictionary format required by WhiteboxRCAEngine.
+
+    NEW: Also preserves full time-series DataFrame for temporal analysis.
     """
-    
+
     def __init__(self, episode_dir: Path):
         self.episode_dir = episode_dir
-        
+
         # Load static files
         self.label = self._load_json('label.json')
         self.topology = self._load_topology()
-        
-        # Load and prep metrics
+
+        # Load and prep metrics (KEEP FULL DF FOR TEMPORAL ANALYSIS)
         self.metrics_df = self._load_metrics()
 
     def _load_json(self, filename: str) -> Dict:
@@ -118,7 +123,9 @@ class DatasetAdapter:
             G.add_node(node['id'], **node_attrs)
 
         for edge in data.get('edges', []):
-            G.add_edge(edge['source'], edge['target'])
+            # Preserve all edge attributes (type, etc.)
+            edge_attrs = {k: v for k, v in edge.items() if k not in ['source', 'target']}
+            G.add_edge(edge['source'], edge['target'], **edge_attrs)
 
         return G
 
@@ -221,13 +228,14 @@ class DatasetAdapter:
                 values_list = []
                 for _, row in metric_rows.iterrows():
                     val = row.get('value')
-                    
+
                     # Handle Summary/Histogram metrics (e.g. latency p99)
-                    if val is None and 'summary' in row and isinstance(row['summary'], dict):
+                    # Check for None or NaN
+                    if (val is None or (isinstance(val, float) and np.isnan(val))) and 'summary' in row and isinstance(row['summary'], dict):
                         # For latency, prefer P99 (tail latency)
                         # For others, use Mean or Max
                         summary = row['summary']
-                        if 'latency' in signal_name:
+                        if 'latency' in signal_name or 'duration' in signal_name:
                             val = summary.get('p99', summary.get('p95', summary.get('mean')))
                         else:
                             val = summary.get('mean', summary.get('max'))
@@ -300,6 +308,10 @@ def aggregate_to_service_level(results: List[Dict], topology: nx.DiGraph) -> Lis
         'pods': [],
         'total_score': 0.0,
         'max_score': 0.0,
+        'guilt_ratio': 0.0,
+        'self_score': 0.0,
+        'temporal_score': 0.0,
+        'trace_score': 0.0,
         'symptoms': set(),
         'blamed_by': set(),
         'stories': []
@@ -309,14 +321,23 @@ def aggregate_to_service_level(results: List[Dict], topology: nx.DiGraph) -> Lis
         node_id = result['node']
         node_data = topology.nodes.get(node_id, {})
 
-        # Get parent service (for pods) or use node itself (for services)
-        parent_service = node_data.get('parent_service', node_id)
+        # Get parent service (for pods) or use node itself (for services/standalone nodes)
+        parent_service = node_data.get('parent_service')
+
+        # If no parent_service, this is a standalone node (Service, ExternalService, etc.)
+        # Use the node_id itself as the service name
+        if parent_service is None:
+            parent_service = node_id
 
         # Aggregate data
         group = service_groups[parent_service]
         group['pods'].append(node_id)
         group['total_score'] += result['score']
         group['max_score'] = max(group['max_score'], result['score'])
+        group['guilt_ratio'] = max(group['guilt_ratio'], result.get('guilt_ratio', 0))
+        group['self_score'] = max(group['self_score'], result.get('self_score', 0))
+        group['temporal_score'] = max(group['temporal_score'], result.get('temporal_score', 0))
+        group['trace_score'] = max(group['trace_score'], result.get('trace_score', 0))
         group['symptoms'].update(result.get('symptoms', []))
         group['blamed_by'].update(result.get('blamed_by', []))
         if result.get('story'):
@@ -332,6 +353,10 @@ def aggregate_to_service_level(results: List[Dict], topology: nx.DiGraph) -> Lis
         service_results.append({
             'node': service_name,
             'score': round(final_score, 2),
+            'guilt_ratio': round(group['guilt_ratio'], 2),
+            'self_score': round(group['self_score'], 2),
+            'temporal_score': round(group['temporal_score'], 2),
+            'trace_score': round(group['trace_score'], 2),
             'pod_count': len(group['pods']),
             'affected_pods': group['pods'],
             'symptoms': list(group['symptoms']),
@@ -365,25 +390,37 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         baseline, current = adapter.get_data_windows()
 
         ground_truth_node = adapter.label.get('root_cause_node')
+        fault_start_time = adapter.label.get('fault_start_time', 0)
 
-        # 2. Run Engine
+        # 2. Prepare optional data sources
+        traces_file = episode_dir / 'traces.jsonl'
+        if not traces_file.exists():
+            traces_file = None
+
+        # 3. Run Engine (NEW: Pass time-series and traces)
         engine = WhiteboxRCAEngine(adapter.topology)
-        pod_results = engine.analyze_incident(baseline, current)
+        pod_results = engine.analyze_incident(
+            baseline, current,
+            metrics_df=adapter.metrics_df,
+            fault_start_time=fault_start_time,
+            traces_file=traces_file
+        )
 
-        # 3. Aggregate to service level
+        # 4. Aggregate to service level
         results = aggregate_to_service_level(pod_results, adapter.topology)
 
+        # NOTE: Removed "no anomalies" check - we now rank ALL nodes
         if not results:
-            print("  ❌ No anomalies detected.")
-            error_info = {'error': 'No anomalies detected', 'error_type': 'NoAnomalies'}
+            print("  ⚠️  No nodes found in topology.")
+            error_info = {'error': 'No nodes in topology', 'error_type': 'EmptyTopology'}
             create_marker_file(episode_dir, 'Failed', error_info)
             return {
                 'episode': str(episode_dir),
-                'status': 'no_anomalies',
+                'status': 'empty_topology',
                 'ground_truth': ground_truth_node
             }
 
-        # 4. Validate Results
+        # 5. Validate Results
         top_candidate = results[0]['node']
         top_score = results[0]['score']
         affected_pods = results[0].get('affected_pods', [])
@@ -398,11 +435,19 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         else:
             rank = None
 
-        # 5. Print Report
+        # 6. Print Report
         print(f"\n  Ground Truth: {ground_truth_node}")
         print(f"  Top Result:   {top_candidate} (Score: {top_score:.1f})")
         if affected_pods:
             print(f"     Affected pods: {', '.join(affected_pods[:3])}{'...' if len(affected_pods) > 3 else ''}")
+
+        # Show score breakdown for top result
+        top_result = results[0]
+        print(f"     Score breakdown:")
+        print(f"       - Guilt ratio: {top_result.get('guilt_ratio', 0):.1f}")
+        print(f"       - Self score: {top_result.get('self_score', 0):.1f}")
+        print(f"       - Temporal: {top_result.get('temporal_score', 0):.1f}")
+        print(f"       - Trace: {top_result.get('trace_score', 0):.1f}")
 
         if rank == 1:
             print(f"  ✅ EXACT MATCH (Rank 1/{top_k})")
@@ -418,7 +463,7 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
             for line in top_story:
                 print(f"    {line}")
 
-        # 6. Save results to JSON file
+        # 7. Save results to JSON file
         output_data = {
             'ground_truth': ground_truth_node,
             'top_k': top_k,
@@ -434,7 +479,7 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         with open(output_file, 'w') as f:
             json.dump(output_data, f, indent=2)
 
-        # 7. Create marker file
+        # 8. Create marker file
         if is_in_top_k:
             create_marker_file(episode_dir, 'Investigated', {'rank': rank, 'top_k': top_k})
             status = 'success'
