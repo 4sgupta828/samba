@@ -486,9 +486,13 @@ class TrainingFailureInjector:
         # Note: memory_pressure is handled separately above with custom gradual logic
         # FIXED (2025-12-15): Added inject_latency and inject_errors - these need to apply to pods
         # because pods have dynamics engines, not services
-        pod_level_faults = ['cpu_saturation', 'memory_leak', 'inject_latency', 'inject_errors']
+        # FIXED (2025-12-15): ExternalServices don't have pods OR dynamics - apply directly to them
+        from src.components.external import ExternalService
 
-        if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
+        pod_level_faults = ['cpu_saturation', 'memory_leak', 'inject_latency', 'inject_errors']
+        is_external_service = isinstance(target, ExternalService)
+
+        if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods and not is_external_service:
             # Apply gradual change to all pods of the service
             print(f"   Applying gradual '{failure_mode}' to {len(target.pods)} pods of {target_id}")
             for pod in target.pods:
@@ -670,8 +674,12 @@ class TrainingFailureInjector:
         # Use negative deltas to reverse the fault
         # For pod-level faults, apply to all pods if target is a service
         # FIXED (2025-12-15): Added inject_latency and inject_errors to match injection logic
+        # FIXED (2025-12-15): ExternalServices don't have pods - apply revert directly to them
+        from src.components.external import ExternalService
+
         pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure', 'inject_latency', 'inject_errors']
-        is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
+        is_external_service = isinstance(target, ExternalService)
+        is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods and not is_external_service
         targets_to_revert = target.pods if is_pod_level_fault else [target]
 
         if failure_mode == 'inject_latency':

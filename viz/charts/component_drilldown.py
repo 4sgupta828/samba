@@ -1545,55 +1545,161 @@ def create_queue_drilldown(metrics_df: pd.DataFrame, component_id: str,
 
 def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
                              label_data: Dict) -> List[dcc.Graph]:
-    """Create drill-down charts for ExternalService."""
+    """Create drill-down charts for ExternalService.
+
+    FIXED (2025-12-15): External services don't emit their own metrics.
+    Instead, we aggregate metrics from all callers (services that depend on this external service).
+    """
     charts = []
 
-    # Get all metrics for this component
-    component_metrics = metrics_df[metrics_df['component_id'] == component_id]
-    available_metrics = set(component_metrics['metric_name'].unique())
+    # External services don't have their own metrics - they're called by other services
+    # Find all metrics where this external service is the dependency target
+    # These metrics have the pattern: service.<caller>.dependency.* with label dependency_id=<external_id>
 
-    # Request rate
-    if 'http.client.requests' in available_metrics:
-        charts.append(dcc.Graph(
-            figure=create_metric_chart(
-                metrics_df, component_id,
-                'http.client.requests',
-                'Request Rate',
-                'Requests'
-            ),
-            config={'displayModeBar': False}
-        ))
+    # Filter for dependency metrics targeting this external service
+    dependency_metrics = metrics_df[
+        (metrics_df['dependency_id'] == component_id) |
+        (metrics_df['dependency_name'].str.contains(component_id, na=False))
+    ].copy()
 
-    # Error rate
-    if 'http.client.errors' in available_metrics:
-        charts.append(dcc.Graph(
-            figure=create_metric_chart(
-                metrics_df, component_id,
-                'http.client.errors',
-                'Error Rate',
-                'Errors'
-            ),
-            config={'displayModeBar': False}
-        ))
-
-    # Latency percentiles
-    if 'http.client.request.duration' in available_metrics:
-        charts.append(dcc.Graph(
-            figure=create_percentile_chart(
-                metrics_df, component_id,
-                'http.client.request.duration',
-                'Request Latency'
-            ),
-            config={'displayModeBar': False}
-        ))
-
-    # If no charts were created, show a message
-    if not charts:
+    if dependency_metrics.empty:
         charts.append(html.Div([
-            html.P(f"No detailed metrics available for {component_id}"),
-            html.P(f"Available metrics: {', '.join(available_metrics)}",
-                   style={'fontSize': '0.8em', 'color': '#666'})
+            html.P(f"No caller metrics found for {component_id}"),
+            html.P("External services show metrics from their callers (services that depend on them).",
+                   style={'fontSize': '0.8em', 'color': '#9ca3af'}),
+            html.P(f"This external service may not have any callers, or the metrics may not be labeled correctly.",
+                   style={'fontSize': '0.8em', 'color': '#9ca3af'})
         ]))
+        return charts
+
+    # Get unique callers
+    callers = dependency_metrics['service.name'].dropna().unique() if 'service.name' in dependency_metrics.columns else []
+
+    # Add header showing callers
+    if len(callers) > 0:
+        charts.append(html.Div([
+            html.P([
+                html.Strong("Callers: "),
+                html.Span(", ".join(callers), style={'color': '#3b82f6'})
+            ], style={'marginBottom': '15px', 'fontSize': '0.9em'})
+        ]))
+
+    # Request rate chart (aggregate across all callers by status)
+    request_metrics = dependency_metrics[
+        dependency_metrics['metric_name'].str.contains('dependency.requests', na=False)
+    ].copy()
+
+    if not request_metrics.empty:
+        fig = go.Figure()
+
+        # Group by sim_time and status to show success vs error rates
+        if 'status' in request_metrics.columns:
+            for status in ['success', 'error']:
+                status_data = request_metrics[request_metrics['status'] == status]
+                if not status_data.empty:
+                    aggregated = status_data.groupby('sim_time')['value'].sum().reset_index()
+                    fig.add_trace(go.Scatter(
+                        x=aggregated['sim_time'],
+                        y=aggregated['value'],
+                        mode='lines+markers',
+                        name=f'{status.capitalize()} Requests',
+                        line=dict(width=2),
+                        marker=dict(size=4)
+                    ))
+        else:
+            # No status breakdown, just show total
+            aggregated = request_metrics.groupby('sim_time')['value'].sum().reset_index()
+            fig.add_trace(go.Scatter(
+                x=aggregated['sim_time'],
+                y=aggregated['value'],
+                mode='lines+markers',
+                name='Total Requests',
+                line=dict(width=2),
+                marker=dict(size=4)
+            ))
+
+        fig.update_layout(
+            title=f'Request Rate to {component_id} (from all callers)',
+            xaxis_title="Time (s)",
+            yaxis_title="Requests",
+            height=250,
+            margin=dict(l=50, r=20, t=40, b=30),
+            showlegend=True,
+            plot_bgcolor='#374151',
+            paper_bgcolor='#374151',
+            font=dict(color='#f9fafb')
+        )
+
+        charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    # Latency chart (aggregate across all callers)
+    latency_metrics = dependency_metrics[
+        dependency_metrics['metric_name'].str.contains('dependency.duration', na=False)
+    ].copy()
+
+    if not latency_metrics.empty and 'p50' in latency_metrics.columns:
+        fig = go.Figure()
+
+        # Show P50, P90, P99 aggregated across all callers
+        for percentile in ['p50', 'p90', 'p99']:
+            if percentile in latency_metrics.columns:
+                aggregated = latency_metrics.groupby('sim_time')[percentile].mean().reset_index()
+                fig.add_trace(go.Scatter(
+                    x=aggregated['sim_time'],
+                    y=aggregated[percentile] * 1000,  # Convert to ms
+                    mode='lines',
+                    name=f'P{percentile[1:]}',
+                    line=dict(width=2)
+                ))
+
+        fig.update_layout(
+            title=f'Request Latency to {component_id} (from all callers)',
+            xaxis_title="Time (s)",
+            yaxis_title="Latency (ms)",
+            height=250,
+            margin=dict(l=50, r=20, t=40, b=30),
+            showlegend=True,
+            plot_bgcolor='#374151',
+            paper_bgcolor='#374151',
+            font=dict(color='#f9fafb')
+        )
+
+        charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    # Error rate chart (if we have error metrics or can derive from status)
+    if 'status' in request_metrics.columns:
+        # Calculate error rate over time
+        error_data = request_metrics[request_metrics['status'] == 'error'].groupby('sim_time')['value'].sum()
+        total_data = request_metrics.groupby('sim_time')['value'].sum()
+
+        if not error_data.empty and not total_data.empty:
+            error_rate = (error_data / total_data * 100).fillna(0)
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=error_rate.index,
+                y=error_rate.values,
+                mode='lines+markers',
+                name='Error Rate',
+                line=dict(color='#ef4444', width=2),
+                marker=dict(size=4),
+                fill='tozeroy',
+                fillcolor='rgba(239, 68, 68, 0.2)'
+            ))
+
+            fig.update_layout(
+                title=f'Error Rate to {component_id} (from all callers)',
+                xaxis_title="Time (s)",
+                yaxis_title="Error Rate (%)",
+                height=250,
+                margin=dict(l=50, r=20, t=40, b=30),
+                showlegend=False,
+                plot_bgcolor='#374151',
+                paper_bgcolor='#374151',
+                font=dict(color='#f9fafb')
+            )
+
+            charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
 
     return charts
 

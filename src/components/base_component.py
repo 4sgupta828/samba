@@ -395,15 +395,29 @@ class SimulatedComponent:
 
         FIXED (2025-12-15): Now properly uses dynamics engine attributes for
         latency_ms and error_rate instead of legacy component attributes.
+        FIXED (2025-12-15): ExternalServices use direct attributes (forced_error_rate, injected_latency_ms)
+        instead of dynamics engine.
         """
         # Map parameter names to actual attributes
         # CRITICAL FIX: Use dynamics attributes for components with dynamics engine
-        param_mapping = {
-            'latency_ms': 'dynamics.fault_latency_additive_ms',  # ✅ Fixed: Use dynamics
-            'error_rate': 'dynamics.fault_error_additive',       # ✅ Fixed: Use dynamics
-            'cpu_cost_multiplier': 'cpu_cost_multiplier',
-            # Add more mappings as needed
-        }
+        # ExternalServices use direct attributes since they don't have dynamics engines
+        from src.components.external import ExternalService
+
+        if isinstance(self, ExternalService):
+            # ExternalServices use direct attributes, not dynamics
+            param_mapping = {
+                'latency_ms': 'injected_latency_ms',    # Direct attribute on ExternalService
+                'error_rate': 'forced_error_rate',      # Direct attribute on ExternalService
+                'cpu_cost_multiplier': 'cpu_cost_multiplier',
+            }
+        else:
+            # Other components use dynamics engine
+            param_mapping = {
+                'latency_ms': 'dynamics.fault_latency_additive_ms',  # ✅ Fixed: Use dynamics
+                'error_rate': 'dynamics.fault_error_additive',       # ✅ Fixed: Use dynamics
+                'cpu_cost_multiplier': 'cpu_cost_multiplier',
+                # Add more mappings as needed
+            }
 
         actual_param = param_mapping.get(parameter, parameter)
 
