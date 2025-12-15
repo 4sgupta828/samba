@@ -1549,9 +1549,8 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
 
     FIXED (2025-12-15): External services don't emit their own metrics.
     Instead, we aggregate metrics from all callers (services that depend on this external service).
+    FIXED (2025-12-15): Added tabs to filter metrics by individual callers.
     """
-    charts = []
-
     # External services don't have their own metrics - they're called by other services
     # Find all metrics where this external service is the dependency target
     # These metrics have the pattern: service.<caller>.dependency.* with label dependency_id=<external_id>
@@ -1563,31 +1562,110 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
     ].copy()
 
     if dependency_metrics.empty:
-        charts.append(html.Div([
+        return [html.Div([
             html.P(f"No caller metrics found for {component_id}"),
             html.P("External services show metrics from their callers (services that depend on them).",
                    style={'fontSize': '0.8em', 'color': '#9ca3af'}),
             html.P(f"This external service may not have any callers, or the metrics may not be labeled correctly.",
                    style={'fontSize': '0.8em', 'color': '#9ca3af'})
-        ]))
-        return charts
+        ])]
 
     # Get unique callers
-    callers = dependency_metrics['service.name'].dropna().unique() if 'service.name' in dependency_metrics.columns else []
+    callers = sorted(dependency_metrics['service.name'].dropna().unique()) if 'service.name' in dependency_metrics.columns else []
 
-    # Add header showing callers
-    if len(callers) > 0:
-        charts.append(html.Div([
+    if len(callers) == 0:
+        return [html.Div([
+            html.P(f"No caller information found for {component_id}"),
+            html.P("Metrics exist but don't have service.name labels.",
+                   style={'fontSize': '0.8em', 'color': '#9ca3af'})
+        ])]
+
+    # Create tabs - one for all callers, and one for each individual caller
+    tabs = []
+
+    # Tab 1: All Callers (aggregated)
+    all_callers_charts = _create_external_charts_for_caller(
+        dependency_metrics, component_id, None, callers
+    )
+    tabs.append(dbc.Tab(
+        label="All Callers",
+        tab_id="all-callers",
+        children=all_callers_charts
+    ))
+
+    # Individual caller tabs
+    for caller in callers:
+        caller_data = dependency_metrics[dependency_metrics['service.name'] == caller]
+        caller_charts = _create_external_charts_for_caller(
+            caller_data, component_id, caller, None
+        )
+        tabs.append(dbc.Tab(
+            label=caller,
+            tab_id=f"caller-{caller}",
+            children=caller_charts
+        ))
+
+    return [
+        html.Div([
             html.P([
                 html.Strong("Callers: "),
-                html.Span(", ".join(callers), style={'color': '#3b82f6'})
-            ], style={'marginBottom': '15px', 'fontSize': '0.9em'})
+                html.Span(f"{len(callers)} service(s)", style={'color': '#3b82f6'})
+            ], style={'marginBottom': '10px', 'fontSize': '0.9em'}),
+            html.P(
+                "Use tabs below to view metrics from all callers (aggregated) or from individual callers.",
+                style={'fontSize': '0.85em', 'color': '#9ca3af', 'marginBottom': '15px'}
+            )
+        ]),
+        dbc.Tabs(
+            tabs,
+            id=f"external-tabs-{component_id}",
+            active_tab="all-callers",
+            className="mb-3"
+        )
+    ]
+
+
+def _create_external_charts_for_caller(
+    dependency_metrics: pd.DataFrame,
+    component_id: str,
+    caller_filter: str = None,
+    all_callers: List[str] = None
+) -> List:
+    """Helper function to create charts for external service, optionally filtered by caller.
+
+    Args:
+        dependency_metrics: Pre-filtered metrics for this external service
+        component_id: External service ID
+        caller_filter: If provided, only show metrics from this caller
+        all_callers: List of all callers (used for "All Callers" tab header)
+    """
+    charts = []
+
+    # Add header if showing all callers
+    if caller_filter is None and all_callers:
+        charts.append(html.Div([
+            html.P([
+                html.Strong("Showing: "),
+                html.Span(f"Aggregated metrics from {len(all_callers)} caller(s): {', '.join(all_callers)}",
+                         style={'color': '#10b981'})
+            ], style={'marginBottom': '15px', 'fontSize': '0.9em', 'padding': '10px',
+                     'backgroundColor': '#1f2937', 'borderRadius': '5px'})
+        ]))
+    elif caller_filter:
+        charts.append(html.Div([
+            html.P([
+                html.Strong("Showing: "),
+                html.Span(f"Metrics from {caller_filter} only", style={'color': '#10b981'})
+            ], style={'marginBottom': '15px', 'fontSize': '0.9em', 'padding': '10px',
+                     'backgroundColor': '#1f2937', 'borderRadius': '5px'})
         ]))
 
-    # Request rate chart (aggregate across all callers by status)
+    # Request rate chart (aggregate by status)
     request_metrics = dependency_metrics[
         dependency_metrics['metric_name'].str.contains('dependency.requests', na=False)
     ].copy()
+
+    title_suffix = f" from {caller_filter}" if caller_filter else " (from all callers)"
 
     if not request_metrics.empty:
         fig = go.Figure()
@@ -1619,7 +1697,7 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
             ))
 
         fig.update_layout(
-            title=f'Request Rate to {component_id} (from all callers)',
+            title=f'Request Rate to {component_id}{title_suffix}',
             xaxis_title="Time (s)",
             yaxis_title="Requests",
             height=250,
@@ -1632,7 +1710,7 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
 
         charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
 
-    # Latency chart (aggregate across all callers)
+    # Latency chart
     latency_metrics = dependency_metrics[
         dependency_metrics['metric_name'].str.contains('dependency.duration', na=False)
     ].copy()
@@ -1640,7 +1718,7 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
     if not latency_metrics.empty and 'p50' in latency_metrics.columns:
         fig = go.Figure()
 
-        # Show P50, P90, P99 aggregated across all callers
+        # Show P50, P90, P99
         for percentile in ['p50', 'p90', 'p99']:
             if percentile in latency_metrics.columns:
                 aggregated = latency_metrics.groupby('sim_time')[percentile].mean().reset_index()
@@ -1653,7 +1731,7 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 ))
 
         fig.update_layout(
-            title=f'Request Latency to {component_id} (from all callers)',
+            title=f'Request Latency to {component_id}{title_suffix}',
             xaxis_title="Time (s)",
             yaxis_title="Latency (ms)",
             height=250,
@@ -1688,7 +1766,7 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
             ))
 
             fig.update_layout(
-                title=f'Error Rate to {component_id} (from all callers)',
+                title=f'Error Rate to {component_id}{title_suffix}',
                 xaxis_title="Time (s)",
                 yaxis_title="Error Rate (%)",
                 height=250,
@@ -1700,6 +1778,11 @@ def create_external_drilldown(metrics_df: pd.DataFrame, component_id: str,
             )
 
             charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    if not charts:
+        charts.append(html.Div([
+            html.P(f"No charts available for this view", style={'color': '#9ca3af'})
+        ]))
 
     return charts
 
