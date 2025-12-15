@@ -106,14 +106,20 @@ class DatasetAdapter:
         """Parses topology.json into a NetworkX DiGraph with node metadata."""
         data = self._load_json('topology.json')
         G = nx.DiGraph()
-        
+
         for node in data.get('nodes', []):
-            # Store type (Service, Pod, DB) for the SelfHealthAnalyzer
-            G.add_node(node['id'], type=node.get('type', 'Service'))
-            
+            # Store all node attributes (type, parent_service, role, etc.)
+            node_attrs = {
+                'type': node.get('type', 'Service'),
+                'parent_service': node.get('parent_service'),
+                'role': node.get('role'),
+                'service_name': node.get('service_name')
+            }
+            G.add_node(node['id'], **node_attrs)
+
         for edge in data.get('edges', []):
             G.add_edge(edge['source'], edge['target'])
-            
+
         return G
 
     def _load_metrics(self) -> pd.DataFrame:
@@ -276,6 +282,66 @@ def create_marker_file(episode_dir: Path, marker_type: str, data: Dict = None):
         else:
             f.write(f"Analysis completed: {marker_type}\n")
 
+def aggregate_to_service_level(results: List[Dict], topology: nx.DiGraph) -> List[Dict]:
+    """
+    Aggregate pod-level results to service-level for comparison with ground truth.
+
+    Args:
+        results: List of pod/node-level results
+        topology: NetworkX topology graph with node metadata
+
+    Returns:
+        List of service-level aggregated results
+    """
+    from collections import defaultdict
+
+    # Group results by parent service
+    service_groups = defaultdict(lambda: {
+        'pods': [],
+        'total_score': 0.0,
+        'max_score': 0.0,
+        'symptoms': set(),
+        'blamed_by': set(),
+        'stories': []
+    })
+
+    for result in results:
+        node_id = result['node']
+        node_data = topology.nodes.get(node_id, {})
+
+        # Get parent service (for pods) or use node itself (for services)
+        parent_service = node_data.get('parent_service', node_id)
+
+        # Aggregate data
+        group = service_groups[parent_service]
+        group['pods'].append(node_id)
+        group['total_score'] += result['score']
+        group['max_score'] = max(group['max_score'], result['score'])
+        group['symptoms'].update(result.get('symptoms', []))
+        group['blamed_by'].update(result.get('blamed_by', []))
+        if result.get('story'):
+            group['stories'].append((node_id, result['story']))
+
+    # Convert to result format
+    service_results = []
+    for service_name, group in service_groups.items():
+        # Use average score across pods, weighted by max
+        avg_score = group['total_score'] / len(group['pods'])
+        final_score = (avg_score + group['max_score']) / 2  # Blend average and max
+
+        service_results.append({
+            'node': service_name,
+            'score': round(final_score, 2),
+            'pod_count': len(group['pods']),
+            'affected_pods': group['pods'],
+            'symptoms': list(group['symptoms']),
+            'blamed_by': list(group['blamed_by']),
+            'story': group['stories'][0][1] if group['stories'] else []  # Use first pod's story
+        })
+
+    # Sort by score descending
+    return sorted(service_results, key=lambda x: x['score'], reverse=True)
+
 def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
     """
     Process a single episode with error handling and marker creation.
@@ -302,7 +368,10 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
 
         # 2. Run Engine
         engine = WhiteboxRCAEngine(adapter.topology)
-        results = engine.analyze_incident(baseline, current)
+        pod_results = engine.analyze_incident(baseline, current)
+
+        # 3. Aggregate to service level
+        results = aggregate_to_service_level(pod_results, adapter.topology)
 
         if not results:
             print("  ❌ No anomalies detected.")
@@ -314,9 +383,10 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
                 'ground_truth': ground_truth_node
             }
 
-        # 3. Validate Results
+        # 4. Validate Results
         top_candidate = results[0]['node']
         top_score = results[0]['score']
+        affected_pods = results[0].get('affected_pods', [])
         top_story = results[0].get('story', [])
 
         # Check if ground truth in top-K
@@ -328,9 +398,11 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         else:
             rank = None
 
-        # 4. Print Report
+        # 5. Print Report
         print(f"\n  Ground Truth: {ground_truth_node}")
         print(f"  Top Result:   {top_candidate} (Score: {top_score:.1f})")
+        if affected_pods:
+            print(f"     Affected pods: {', '.join(affected_pods[:3])}{'...' if len(affected_pods) > 3 else ''}")
 
         if rank == 1:
             print(f"  ✅ EXACT MATCH (Rank 1/{top_k})")
@@ -346,21 +418,23 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
             for line in top_story:
                 print(f"    {line}")
 
-        # 5. Save results to JSON file
+        # 6. Save results to JSON file
         output_data = {
             'ground_truth': ground_truth_node,
             'top_k': top_k,
             'found_in_top_k': is_in_top_k,
             'rank': rank,
-            'candidates': results[:top_k],
-            'total_candidates': len(results)
+            'service_level_candidates': results[:top_k],
+            'pod_level_candidates': pod_results[:top_k * 3] if pod_results else [],  # Save more pod details
+            'total_service_candidates': len(results),
+            'total_pod_candidates': len(pod_results) if pod_results else 0
         }
 
         output_file = episode_dir / 'rca_analysis.json'
         with open(output_file, 'w') as f:
             json.dump(output_data, f, indent=2)
 
-        # 6. Create marker file
+        # 7. Create marker file
         if is_in_top_k:
             create_marker_file(episode_dir, 'Investigated', {'rank': rank, 'top_k': top_k})
             status = 'success'

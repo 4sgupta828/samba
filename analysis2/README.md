@@ -91,6 +91,7 @@ Or use the wrapper script:
 
 #### Key Features:
 
+- **Service-Level Aggregation**: Automatically aggregates pod-level detections to service-level for ground truth matching
 - **Smart Processing**: Automatically skips already-processed episodes (detects `RCAInvestigated.marker` and `RCAFailed.marker` files)
 - **Reprocess Mode**: Use `--reprocess` flag to clear all markers and outputs and re-run analysis
 - **Progress Tracking**: Shows `[N/Total]` progress as it processes episodes
@@ -140,8 +141,9 @@ Processing: ../data/batch_run/data_20251212_135507/ep_0
 ================================================================================
 
   Ground Truth: tenant_service
-  Top Result:   pod_tenant_service_3 (Score: 51.2)
-  ✅ IN TOP-5 (Rank 1/5)
+  Top Result:   tenant_service (Score: 51.2)
+     Affected pods: pod_tenant_service_3, pod_tenant_service_0, pod_tenant_service_1
+  ✅ EXACT MATCH (Rank 1/5)
 
   📜 Causal Narrative:
     🔴 ROOT CAUSE: pod_tenant_service_3
