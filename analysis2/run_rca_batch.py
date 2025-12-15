@@ -234,26 +234,53 @@ class DatasetAdapter:
                     continue # Skip metrics we don't know how to use
                 
                 # 4. Extract Values (Handle simple floats vs summary dicts)
-                values_list = []
-                for _, row in metric_rows.iterrows():
-                    val = row.get('value')
+                # CRITICAL FIX: Aggregate by timestamp first!
+                # Metrics may have multiple dimensions (e.g., request_type)
+                # For counter metrics (errors, requests), SUM across dimensions
+                # For gauge metrics (latency, CPU), AVERAGE across dimensions
 
-                    # Handle Summary/Histogram metrics (e.g. latency p99)
-                    # Check for None or NaN
-                    if (val is None or (isinstance(val, float) and np.isnan(val))) and 'summary' in row and isinstance(row['summary'], dict):
-                        # For latency, prefer P99 (tail latency)
-                        # For others, use Mean or Max
-                        summary = row['summary']
-                        if 'latency' in signal_name or 'duration' in signal_name:
-                            val = summary.get('p99', summary.get('p95', summary.get('mean')))
+                # Determine if this is a counter or gauge metric
+                is_counter = any(keyword in signal_name for keyword in [
+                    'error', 'request', 'rps', 'count', 'total'
+                ])
+
+                # Group by timestamp
+                timestamp_groups = metric_rows.groupby('sim_time')
+                values_list = []
+
+                for timestamp, time_group in timestamp_groups:
+                    time_values = []
+
+                    for _, row in time_group.iterrows():
+                        val = row.get('value')
+
+                        # Handle Summary/Histogram metrics (e.g. latency p99)
+                        # Check for None or NaN
+                        if (val is None or (isinstance(val, float) and np.isnan(val))) and 'summary' in row and isinstance(row['summary'], dict):
+                            # For latency, prefer P99 (tail latency)
+                            # For others, use Mean or Max
+                            summary = row['summary']
+                            if 'latency' in signal_name or 'duration' in signal_name:
+                                val = summary.get('p99', summary.get('p95', summary.get('mean')))
+                            else:
+                                val = summary.get('mean', summary.get('max'))
+
+                        if val is not None:
+                            try:
+                                time_values.append(float(val))
+                            except (ValueError, TypeError):
+                                pass
+
+                    # Aggregate values at this timestamp
+                    if time_values:
+                        if is_counter:
+                            # Sum for counters (e.g., total errors across all request types)
+                            aggregated_value = sum(time_values)
                         else:
-                            val = summary.get('mean', summary.get('max'))
-                    
-                    if val is not None:
-                        try:
-                            values_list.append(float(val))
-                        except (ValueError, TypeError):
-                            pass
+                            # Average for gauges (e.g., average latency across request types)
+                            aggregated_value = np.mean(time_values)
+
+                        values_list.append(aggregated_value)
 
                 if not values_list:
                     continue
