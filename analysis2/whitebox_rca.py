@@ -1,14 +1,15 @@
 """
 whitebox_rca.py
 
-The SOTA Root Cause Analysis Engine (v4.0).
+The SOTA Root Cause Analysis Engine (v4.1).
 Integrates:
 1. Self-Health (Saturation + Deadlock detection)
 2. Edge Disambiguation (Traffic vs. Retry patterns)
 3. Hub Bias Correction (Guilt Ratio)
-4. Causal Narratives
-5. Temporal Causality Analysis (NEW - changepoint detection)
-6. Trace-Based Latency Analysis (NEW - self-time vs total-time)
+4. Probabilistic Blame Discounting (Solves Proxy/Middleman problem)
+5. Causal Narratives
+6. Temporal Causality Analysis (Changepoint detection)
+7. Trace-Based Latency Analysis (Self-time vs total-time)
 """
 
 import numpy as np
@@ -196,8 +197,9 @@ class WhiteboxRCAEngine:
                 print(f"  [!] Warning: Trace analysis failed: {e}")
 
         # --- PHASE 2: Graph Propagation (External Evidence) ---
-        # "Who blames who?"
+        # "Who blames who?" - Track both incoming votes and outgoing blame
         incoming_votes = defaultdict(list) # target -> [votes]
+        outgoing_blame = defaultdict(list) # source -> [confidence_scores]
 
         for u, v in self.topology.edges:
             edge_data = self.topology.edges[u, v]
@@ -231,11 +233,17 @@ class WhiteboxRCAEngine:
 
             if verdict.blames_callee:
                 # u blames v (standard)
-                incoming_votes[v].append({'source': u, 'weight': 1.0, 'reason': verdict.reason})
+                # Use confidence from disambiguator as the vote weight
+                weight = verdict.confidence
+                incoming_votes[v].append({'source': u, 'weight': weight, 'reason': verdict.reason})
+                outgoing_blame[u].append(weight)
 
             elif verdict.blames_caller:
                 # v implies u is attacking (DDoS)
-                incoming_votes[u].append({'source': v, 'weight': 0.5, 'reason': verdict.reason})
+                # Use confidence from disambiguator
+                weight = verdict.confidence
+                incoming_votes[u].append({'source': v, 'weight': weight, 'reason': verdict.reason})
+                outgoing_blame[v].append(weight)
 
         # --- PHASE 3: Global Ranking with Hub Bias Correction ---
         rankings = []
@@ -266,18 +274,45 @@ class WhiteboxRCAEngine:
             self_time_degradation = trace_info.get('self_time_degradation', 1.0)
             is_victim = (total_time_degradation > 3.0 and self_time_degradation < 1.5)
 
-            # 3. Guilt Ratio (Confirmatory Evidence)
+            # 3. Guilt Ratio (External Evidence) - Hub Bias Correction
+            # P_in: Probability node is faulty based on callers
             callers = list(self.topology.predecessors(node))
             votes = incoming_votes[node]
             vote_sum = sum(v['weight'] for v in votes)
 
             if len(callers) > 0:
                 guilt_ratio = vote_sum / len(callers)
-                # Dampen for small N to avoid noise
+                # Dampen for small N to avoid noise (Law of Large Numbers)
                 if len(callers) < 5:
                     guilt_ratio *= 0.8
             else:
                 guilt_ratio = 0.0
+
+            # 4. Probabilistic Blame Discounting (Solving Proxy/Middleman Problem)
+            # P_out: Probability node is blaming downstream dependencies
+            # If I am blaming downstream dependencies with high confidence,
+            # I am likely a conduit, not the root cause.
+            # Discount Factor = 1.0 - (Max_Outgoing_Confidence * 0.8)
+            # We use 0.8 as max discount because shared faults can exist
+            my_outgoing = outgoing_blame.get(node, [])
+            max_outgoing_conf = max(my_outgoing) if my_outgoing else 0.0
+            discount_factor = 1.0 - (max_outgoing_conf * 0.8)
+
+            # Net Fault Probability: P_root ≈ P_in × (1 - P_out)
+            adjusted_guilt = guilt_ratio * discount_factor
+
+            # 5. Impact Bonus (Log Traffic)
+            b_metrics = baseline_data.get(node, {})
+            traffic_metric = b_metrics.get('inbound_rps')
+            if traffic_metric is None or (hasattr(traffic_metric, '__len__') and len(traffic_metric) == 0):
+                traffic_metric = b_metrics.get('request_rate')
+
+            if traffic_metric is not None and hasattr(traffic_metric, '__len__') and len(traffic_metric) > 0:
+                traffic_vol = np.mean(traffic_metric)
+            else:
+                traffic_vol = 1.0
+
+            impact_bonus = math.log10(max(1.0, traffic_vol))
 
             # 6. Temporal Score
             temporal_info = temporal_scores.get(node, {})
@@ -297,9 +332,11 @@ class WhiteboxRCAEngine:
                 base_score = base_score * 0.1  # 90% penalty
 
             # Confirmation signals: External evidence is SECONDARY (0-40 points total)
+            # Use ADJUSTED guilt (with probabilistic discounting) instead of raw guilt
             confirmation_score = (
-                (guilt_ratio * 20.0) +        # Guilt: 0-20 (reduced from 100!)
-                (temporal_score * 2.0)        # Temporal: 0-40
+                (adjusted_guilt * 20.0) +     # Adjusted Guilt: 0-20 (with proxy discounting!)
+                (temporal_score * 2.0) +      # Temporal: 0-40
+                impact_bonus                  # Impact: 0-3 (log scale)
             )
 
             final_score = base_score + confirmation_score
@@ -309,7 +346,10 @@ class WhiteboxRCAEngine:
                 'node': node,
                 'score': round(final_score, 2),
                 'integrated_score': round(integrated_score, 2),
-                'guilt_ratio': round(guilt_ratio, 2),
+                'guilt_raw': round(guilt_ratio, 2),
+                'guilt_adjusted': round(adjusted_guilt, 2),
+                'discount_factor': round(discount_factor, 2),
+                'max_outgoing_conf': round(max_outgoing_conf, 2),
                 'self_score': round(service_self_score, 2),
                 'temporal_score': round(temporal_score, 2),
                 'trace_score': round(trace_score, 2),
