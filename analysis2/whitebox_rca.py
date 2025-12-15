@@ -53,8 +53,18 @@ class WhiteboxRCAEngine:
         symptoms_map = {}
 
         for node in self.topology.nodes:
+            # Skip pod-level nodes - they are analyzed separately in pod forensics
+            node_attrs = self.topology.nodes[node]
+            if node_attrs.get('parent_service') is not None:
+                # This is a pod - skip it
+                continue
+
             # Get node type from topology metadata if available
-            node_type = self.topology.nodes[node].get('type', 'Service')
+            node_type = node_attrs.get('type', 'Service')
+
+            # Skip infrastructure/control plane nodes
+            if node_type == 'DeploymentController':
+                continue
 
             b_metrics = baseline_data.get(node, {})
             c_metrics = current_data.get(node, {})
@@ -129,6 +139,15 @@ class WhiteboxRCAEngine:
         rankings = []
 
         for node in self.topology.nodes:
+            # Skip pod-level nodes - they are analyzed separately in pod forensics
+            node_attrs = self.topology.nodes[node]
+            if node_attrs.get('parent_service') is not None:
+                continue
+
+            # Skip infrastructure/control plane nodes
+            if node_attrs.get('type') == 'DeploymentController':
+                continue
+
             # 1. Guilt Ratio (SOTA Logic)
             # Fixes Hub Bias: A DB called by 100 svcs needs >50 complaints to be guilty.
             callers = list(self.topology.predecessors(node))

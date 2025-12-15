@@ -561,11 +561,11 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
                     print(f"         * {pod['pod_id']}: score={pod['self_score']:.1f} ({symptoms_str})")
 
         if rank == 1:
-            print(f"  ✅ EXACT MATCH (Rank 1/{top_k})")
+            print(f"  ✅ SUCCESS - EXACT MATCH (Rank 1)")
         elif is_in_top_k:
-            print(f"  ✅ IN TOP-{top_k} (Rank {rank}/{top_k})")
+            print(f"  ❌ FAILED - Found at Rank {rank}/{top_k} (requires Rank 1)")
         else:
-            print(f"  ❌ NOT IN TOP-{top_k}")
+            print(f"  ❌ FAILED - NOT IN TOP-{top_k}")
             print(f"     Top {min(3, len(top_k_nodes))}: {top_k_nodes[:3]}")
 
         # Print the Generated Story (Explanation)
@@ -580,7 +580,8 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
             'top_k': top_k,
             'found_in_top_k': is_in_top_k,
             'rank': rank,
-            'service_level_candidates': results[:top_k],
+            'top_candidates': results[:top_k],  # Top K for quick reference
+            'all_candidates': results,  # ALL nodes with full analysis
             'total_service_candidates': len(results)
         }
 
@@ -588,12 +589,12 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         with open(output_file, 'w') as f:
             json.dump(output_data, f, indent=2)
 
-        # 8. Create marker file
-        if is_in_top_k:
+        # 8. Create marker file (SUCCESS = Rank 1 only)
+        if rank == 1:
             create_marker_file(episode_dir, 'Investigated', {'rank': rank, 'top_k': top_k})
             status = 'success'
         else:
-            status = 'not_in_top_k'
+            status = 'failed'
 
         return {
             'episode': str(episode_dir),
@@ -667,26 +668,28 @@ def find_all_episodes(base_dir: str) -> List[Path]:
 
     return sorted(episodes)
 
-def print_summary(results: List[Dict], skipped: Dict[str, int], top_k: int):
+def print_summary(results: List[Dict], skipped: Dict[str, int]):
     """Print summary of batch processing."""
     total_processed = len(results)
     success_count = sum(1 for r in results if r['status'] == 'success')
-    not_in_top_k_count = sum(1 for r in results if r['status'] == 'not_in_top_k')
+    failed_count = sum(1 for r in results if r['status'] == 'failed')
     no_anomaly_count = sum(1 for r in results if r['status'] == 'no_anomalies')
     error_count = sum(1 for r in results if r['status'] == 'error')
+    empty_topology_count = sum(1 for r in results if r['status'] == 'empty_topology')
 
     print(f"\n{'='*80}")
     print("BATCH WHITEBOX RCA SUMMARY")
     print(f"{'='*80}")
     print(f"Total episodes found: {total_processed + skipped['investigated'] + skipped['failed']}")
-    print(f"  Already investigated: {skipped['investigated']}")
-    print(f"  Already failed: {skipped['failed']}")
+    print(f"  Already investigated (Rank 1): {skipped['investigated']}")
+    print(f"  Already failed (Not Rank 1): {skipped['failed']}")
     print(f"  Processed this run: {total_processed}")
     print()
     print(f"Results for {total_processed} processed episodes:")
-    print(f"  ✅ Success (found in top-{top_k}): {success_count} ({success_count/max(1,total_processed)*100:.1f}%)")
-    print(f"  ❌ Not in top-{top_k}: {not_in_top_k_count} ({not_in_top_k_count/max(1,total_processed)*100:.1f}%)")
+    print(f"  ✅ Success (Rank 1 only): {success_count} ({success_count/max(1,total_processed)*100:.1f}%)")
+    print(f"  ❌ Failed (Not Rank 1): {failed_count} ({failed_count/max(1,total_processed)*100:.1f}%)")
     print(f"  ⚠️  No anomalies: {no_anomaly_count} ({no_anomaly_count/max(1,total_processed)*100:.1f}%)")
+    print(f"  📭 Empty topology: {empty_topology_count} ({empty_topology_count/max(1,total_processed)*100:.1f}%)")
     print(f"  🔥 Errors: {error_count} ({error_count/max(1,total_processed)*100:.1f}%)")
     print(f"{'='*80}")
 
@@ -694,7 +697,20 @@ def print_summary(results: List[Dict], skipped: Dict[str, int], top_k: int):
     total_investigated = success_count + skipped['investigated']
     total_attempted = total_processed + skipped['investigated'] + skipped['failed']
     if total_attempted > 0:
-        print(f"\nOverall success rate: {total_investigated}/{total_attempted} ({total_investigated/total_attempted*100:.1f}%)")
+        print(f"\nOverall success rate (Rank 1): {total_investigated}/{total_attempted} ({total_investigated/total_attempted*100:.1f}%)")
+
+    # Show detailed breakdown of failures
+    if failed_count > 0:
+        rank_distribution = {}
+        for r in results:
+            if r['status'] == 'failed' and r.get('rank'):
+                rank = r['rank']
+                rank_distribution[rank] = rank_distribution.get(rank, 0) + 1
+
+        if rank_distribution:
+            print(f"\nFailure rank distribution:")
+            for rank in sorted(rank_distribution.keys()):
+                print(f"  - Rank {rank}: {rank_distribution[rank]} episodes")
 
     # Show errors if any
     if error_count > 0:
@@ -809,4 +825,4 @@ if __name__ == "__main__":
         results.append(result)
 
     # Print summary
-    print_summary(results, skipped, top_k)
+    print_summary(results, skipped)
