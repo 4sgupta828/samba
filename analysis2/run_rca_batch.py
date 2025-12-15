@@ -34,7 +34,12 @@ METRIC_MAP = {
     'jvm.memory.used': 'memory_usage',
     'thread_pool.threads.active': 'thread_pool_active',
     'thread_pool.queue.depth': 'thread_pool_queue',
-    
+
+    # Database Signals (Internal Health)
+    'db.connections.active': 'thread_pool_active',  # DB connection pool = thread pool
+    'db.cpu.utilization': 'cpu_usage',
+    'db.query.latency': 'avg_latency',
+
     # Golden Signals (Self Health)
     'service.latency': 'avg_latency',
     'service.duration': 'avg_latency', 
