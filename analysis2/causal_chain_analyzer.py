@@ -19,27 +19,40 @@ class CausalChainAnalyzer:
         story = []
         story.append(f"🔴 ROOT CAUSE: {root_cause_node}")
         story.append(f"   Internal Symptoms: {', '.join(symptoms)}")
-        
-        # BFS to find impacted downstream nodes
-        try:
-            layers = list(nx.bfs_layers(self.topology, root_cause_node))
-        except nx.NetworkXError:
-            return story # Node not in graph or isolated
 
-        if len(layers) > 1:
-            # Check immediate downstream
-            downstream = layers[1]
+        # Find downstream nodes that have dependency edges (not infrastructure edges)
+        downstream = []
+        for successor in self.topology.successors(root_cause_node):
+            # Filter out non-dependency edges (pod_pool, pod_placement, node_placement)
+            edge_data = self.topology.edges[root_cause_node, successor]
+            edge_type = edge_data.get('type', 'sync_http')
+
+            # Only include dependency edges (calls/requests)
+            if edge_type not in ['pod_pool', 'pod_placement', 'node_placement']:
+                downstream.append(successor)
+
+        if downstream:
             story.append(f"⬇️ Propagation:")
-            
+
             for victim in downstream:
-                # Did this victim actually blame the root cause?
-                votes = graph_votes.get(victim, [])
-                blamed_root = any(v['source'] == victim for v in votes) # Actually reverse logic in graph votes
-                
-                # Check for impact on victim
-                # In a real system, we'd check the victim's metrics here. 
-                # For this narrative generator, we assume impact if they voted.
-                
-                story.append(f"   - {victim} calls {root_cause_node} (Potential cascading latency)")
-                
+                # Check edge type for better description
+                edge_data = self.topology.edges[root_cause_node, victim]
+                edge_type = edge_data.get('type', 'sync_http')
+
+                # Generate appropriate message based on edge type
+                if edge_type in ['sync_http', 'sync_grpc']:
+                    story.append(f"   - {victim} calls {root_cause_node} (Potential cascading latency)")
+                elif edge_type == 'sync_db':
+                    story.append(f"   - {victim} queries {root_cause_node} (Potential query slowdown)")
+                elif edge_type == 'sync_cache':
+                    story.append(f"   - {victim} accesses {root_cause_node} (Potential cache delays)")
+                elif edge_type == 'sync_external':
+                    story.append(f"   - {victim} calls {root_cause_node} (External service dependency)")
+                elif edge_type == 'async_produce':
+                    story.append(f"   - {victim} publishes to {root_cause_node} (Queue backpressure)")
+                elif edge_type == 'async_consume':
+                    story.append(f"   - {victim} consumes from {root_cause_node} (Processing delays)")
+                else:
+                    story.append(f"   - {victim} depends on {root_cause_node} (Potential impact)")
+
         return story

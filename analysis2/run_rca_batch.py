@@ -487,13 +487,15 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         if not traces_file.exists():
             traces_file = None
 
-        # 4. LEVEL 1: Service-level RCA
+        # 4. LEVEL 1: Service-level RCA (with pod-level integration)
         engine = WhiteboxRCAEngine(adapter.topology)
         service_results = engine.analyze_incident(
             baseline_services, current_services,
             metrics_df=adapter.metrics_df,
             fault_start_time=fault_start_time,
-            traces_file=traces_file
+            traces_file=traces_file,
+            baseline_pods=baseline_pods,  # Pass pod data for integrated scoring
+            current_pods=current_pods
         )
 
         # 5. LEVEL 2: Pod-level forensics for top service(s)
@@ -542,19 +544,22 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         # Show score breakdown for top result
         top_result = results[0]
         print(f"     Score breakdown:")
+        print(f"       - Integrated score: {top_result.get('integrated_score', 0):.1f} (service: {top_result.get('self_score', 0):.1f})")
+        health_meta = top_result.get('health_metadata', {})
+        if health_meta.get('pod_score', 0) > 0:
+            print(f"         Pod contribution: {health_meta['pod_score']:.1f} (coverage: {health_meta.get('coverage', 0):.1%}, pattern: {health_meta.get('pattern', 'N/A')})")
         print(f"       - Guilt ratio: {top_result.get('guilt_ratio', 0):.1f}")
-        print(f"       - Self score: {top_result.get('self_score', 0):.1f}")
         print(f"       - Temporal: {top_result.get('temporal_score', 0):.1f}")
-        print(f"       - Trace: {top_result.get('trace_score', 0):.1f}")
+        print(f"       - Trace: {top_result.get('trace_score', 0):.1f} {'(authoritative)' if top_result.get('is_trace_authoritative') else ''}")
         print(f"       - Blamed by: {top_result.get('blamed_by', [])}")
 
         # Show pod forensics if available
         pod_forensics = top_result.get('pod_forensics')
-        if pod_forensics:
+        if pod_forensics and pod_forensics.get('pod_count', 0) > 0:
             print(f"\n     Pod Forensics:")
-            print(f"       - Pattern: {pod_forensics['pattern']}")
-            print(f"       - Pods: {pod_forensics['degraded_count']}/{pod_forensics['pod_count']} degraded")
-            if pod_forensics['degraded_pods']:
+            print(f"       - Pattern: {pod_forensics.get('pattern', 'N/A')}")
+            print(f"       - Pods: {pod_forensics.get('degraded_count', 0)}/{pod_forensics.get('pod_count', 0)} degraded")
+            if pod_forensics.get('degraded_pods'):
                 print(f"       - Top degraded pods:")
                 for pod in pod_forensics['degraded_pods'][:3]:
                     symptoms_str = ', '.join(pod['symptoms'][:2]) if pod['symptoms'] else 'No symptoms'
