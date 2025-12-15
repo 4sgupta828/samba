@@ -232,9 +232,11 @@ class ApiService(EnrichedComponent):
         if self.use_dynamics:
             self.env.process(self._update_dynamics_loop())
 
-        # Start queue consumer if this service consumes from a queue
-        if 'queue_in' in self.connections:
-            self.env.process(self._consume_from_queue())
+        # DISABLED: Queue consumers should run at POD level, not Service level
+        # In real systems, each pod/worker independently pulls from the queue
+        # Service-level consumption with distribution to pods is not realistic
+        # if 'queue_in' in self.connections:
+        #     self.env.process(self._consume_from_queue())
 
         # Now call parent run() which will run forever
         yield self.env.process(super().run())
@@ -575,6 +577,12 @@ class ApiService(EnrichedComponent):
                 msg = yield from queue.receive_message()
 
                 self._emit_log("DEBUG", f"[{self.service_name}] Received message {msg.id} from queue")
+
+                # Apply consumer processing slowdown if injected on the queue
+                if hasattr(queue, 'consumer_processing_latency_ms') and queue.consumer_processing_latency_ms > 0:
+                    slowdown_ms = queue.consumer_processing_latency_ms
+                    self._emit_log("DEBUG", f"[{self.service_name}] Applying consumer slowdown: +{slowdown_ms}ms for message {msg.id}")
+                    yield self.env.timeout(slowdown_ms / 1000.0)
 
                 # Process the message by calling handle_request
                 # Use a random request type from supported types
