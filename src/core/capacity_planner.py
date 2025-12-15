@@ -261,13 +261,26 @@ class CapacityPlanner:
 
         effective_processing_ms = base_processing_ms * latency_multiplier
 
+        # FIXED (2025-12-15): Make burst/drain factors workload-aware instead of hardcoded
         # BURST FACTOR: Account for P95 production spikes (not just mean)
-        # Workloads are bursty; P95 can be 1.3-1.5x mean
-        burst_factor = 1.3
+        # Different workload patterns have different burst characteristics
+        workload_pattern = 'steady'  # Default
+        if self.semantic_map and 'workload' in self.semantic_map:
+            workload_pattern = self.semantic_map['workload'].get('pattern', 'steady')
+
+        if workload_pattern == 'bursty' or workload_pattern == 'spike':
+            burst_factor = 2.0  # High variance: P95/P50 can be 2-3x
+        elif workload_pattern == 'diurnal' or workload_pattern == 'periodic':
+            burst_factor = 1.5  # Medium variance: gradual peaks
+        elif workload_pattern == 'steady' or workload_pattern == 'constant':
+            burst_factor = 1.2  # Low variance: stable traffic
+        else:
+            burst_factor = 1.5  # Conservative default for unknown patterns
 
         # DRAIN MARGIN: Consumer must exceed production to drain queue
-        # Need 20% excess capacity to handle accumulated backlog
-        drain_margin = 1.2
+        # High latency systems need more headroom to absorb variance
+        # Base margin + scaling with latency (every 100ms adds 10% margin)
+        drain_margin = 1.2 + min(0.3, (effective_processing_ms / 1000.0))  # Cap at 50% extra
 
         # REQUIRED consumption rate for queue stability
         required_consumer_rps = effective_rps * burst_factor * drain_margin

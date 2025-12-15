@@ -279,8 +279,15 @@ class FaultParameterTuner:
             # Calculate latency to reach target utilization
             required_total_latency_sec = (total_threads * target_util) / node_rps
             required_added_latency_ms = max(0, (required_total_latency_sec - baseline_latency_sec) * 1000)
-            # Bound to reasonable range
-            required_added_latency_ms = max(200.0, min(1000.0, required_added_latency_ms))
+
+            # FIXED (2025-12-15): Use capacity-relative bounds instead of hardcoded values
+            # Bounds scale with baseline latency to work for all topology sizes
+            # Small systems (baseline=20ms): bounds = [30ms, 200ms]
+            # Large systems (baseline=100ms): bounds = [150ms, 1000ms]
+            min_latency_ms = baseline_latency_ms * 1.5   # At least 50% increase
+            max_latency_ms = baseline_latency_ms * 10.0  # At most 10x increase
+
+            required_added_latency_ms = max(min_latency_ms, min(max_latency_ms, required_added_latency_ms))
             tuned['latency_ms'] = int(required_added_latency_ms)
 
         if verbose:

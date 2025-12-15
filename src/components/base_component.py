@@ -392,22 +392,43 @@ class SimulatedComponent:
     ):
         """
         Background process that applies the change gradually over time.
+
+        FIXED (2025-12-15): Now properly uses dynamics engine attributes for
+        latency_ms and error_rate instead of legacy component attributes.
         """
         # Map parameter names to actual attributes
+        # CRITICAL FIX: Use dynamics attributes for components with dynamics engine
         param_mapping = {
-            'latency_ms': 'injected_latency_ms',
-            'error_rate': 'forced_error_rate',
+            'latency_ms': 'dynamics.fault_latency_additive_ms',  # ✅ Fixed: Use dynamics
+            'error_rate': 'dynamics.fault_error_additive',       # ✅ Fixed: Use dynamics
             'cpu_cost_multiplier': 'cpu_cost_multiplier',
             # Add more mappings as needed
         }
 
         actual_param = param_mapping.get(parameter, parameter)
 
-        if not hasattr(self, actual_param):
-            print(f"[{self.id}] WARNING: Component does not have parameter '{actual_param}'")
+        # Handle nested attributes (e.g., 'dynamics.fault_latency_additive_ms')
+        if '.' in actual_param:
+            parts = actual_param.split('.')
+            obj = self
+            for part in parts[:-1]:
+                if not hasattr(obj, part):
+                    print(f"[{self.id}] WARNING: Cannot access '{part}' in nested attribute '{actual_param}'")
+                    return
+                obj = getattr(obj, part)
+                if obj is None:
+                    print(f"[{self.id}] WARNING: Nested object '{part}' is None in '{actual_param}'")
+                    return
+            actual_param_name = parts[-1]
+        else:
+            obj = self
+            actual_param_name = actual_param
+
+        if not hasattr(obj, actual_param_name):
+            print(f"[{self.id}] WARNING: Object does not have parameter '{actual_param_name}'")
             return
 
-        initial_value = getattr(self, actual_param)
+        initial_value = getattr(obj, actual_param_name)
         target_value = initial_value + delta
 
         print(f"[{self.id}] Starting infrastructure change: {parameter} "
@@ -415,7 +436,7 @@ class SimulatedComponent:
 
         if duration <= 0:
             # Instant change
-            setattr(self, actual_param, target_value)
+            setattr(obj, actual_param_name, target_value)
             print(f"[{self.id}] Applied instant change: {parameter} = {target_value:.2f}")
             return
 
@@ -448,13 +469,13 @@ class SimulatedComponent:
             progress = min(1.0, max(0.0, progress))  # Clamp to [0, 1]
             current_value = initial_value + (delta * progress)
 
-            setattr(self, actual_param, current_value)
+            setattr(obj, actual_param_name, current_value)
 
             if i < num_updates:
                 yield self.env.timeout(update_interval)
 
         # Ensure we reach the exact target value
-        setattr(self, actual_param, target_value)
+        setattr(obj, actual_param_name, target_value)
         print(f"[{self.id}] Completed infrastructure change: {parameter} = {target_value:.2f}")
 
     def __repr__(self):

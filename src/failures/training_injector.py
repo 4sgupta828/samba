@@ -482,9 +482,11 @@ class TrainingFailureInjector:
             return
 
         # Apply the change gradually
-        # For pod-level faults (cpu_saturation, memory_leak), apply to all pods if target is a service
+        # For pod-level faults, apply to all pods if target is a service
         # Note: memory_pressure is handled separately above with custom gradual logic
-        pod_level_faults = ['cpu_saturation', 'memory_leak']
+        # FIXED (2025-12-15): Added inject_latency and inject_errors - these need to apply to pods
+        # because pods have dynamics engines, not services
+        pod_level_faults = ['cpu_saturation', 'memory_leak', 'inject_latency', 'inject_errors']
 
         if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
             # Apply gradual change to all pods of the service
@@ -655,7 +657,8 @@ class TrainingFailureInjector:
         # Apply GRADUAL revert using infrastructure change mechanism
         # Use negative deltas to reverse the fault
         # For pod-level faults, apply to all pods if target is a service
-        pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
+        # FIXED (2025-12-15): Added inject_latency and inject_errors to match injection logic
+        pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure', 'inject_latency', 'inject_errors']
         is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
         targets_to_revert = target.pods if is_pod_level_fault else [target]
 

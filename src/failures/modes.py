@@ -380,14 +380,24 @@ def memory_thrashing(component: ComputeAgent, params: Dict[str, Any]):
 
     burst_size_mb = base_burst_mb * scale
 
+    # FIXED (2025-12-15): Make timing capacity-aware instead of hardcoded
     # Burst frequency: How often to thrash (seconds between bursts)
-    # Higher severity = more frequent thrashing
-    base_period_sec = 10.0  # Base: every 10 seconds
-    burst_period_sec = base_period_sec * (1.5 - severity)  # At severity=1.0: every 5 seconds
+    # Goal: Thrash frequently enough to impact metrics, but not so often system can't recover
+    # Calculate based on estimated RPS and latency characteristics
+    estimated_rps = getattr(component, '_estimated_rps', 10.0)  # Default if not set by capacity planner
+    avg_latency_ms = getattr(component.dynamics, 'latency_ms', 100.0)
 
-    # Burst duration: How long each allocation burst lasts
-    base_duration_sec = 2.0  # Base: 2 second burst
-    burst_duration_sec = base_duration_sec * (0.5 + severity)  # At severity=1.0: 3 seconds
+    # Period scales inversely with RPS (higher RPS = shorter period to maintain impact)
+    # Range: 5-30 seconds depending on traffic
+    base_period_sec = max(5.0, min(30.0, 100.0 / max(1.0, estimated_rps)))
+    burst_period_sec = base_period_sec * (1.5 - severity)  # Severity increases frequency
+
+    # Burst duration: Should cover multiple requests to show impact in metrics
+    # Cover ~10-20 requests worth of time
+    avg_latency_sec = avg_latency_ms / 1000.0
+    requests_to_cover = 10.0 + (severity * 10.0)  # 10-20 requests based on severity
+    base_duration_sec = max(1.0, min(5.0, avg_latency_sec * requests_to_cover))
+    burst_duration_sec = base_duration_sec * (0.5 + severity)  # Severity increases duration
 
     # Store parameters for background process
     component._memory_thrashing_enabled = True
