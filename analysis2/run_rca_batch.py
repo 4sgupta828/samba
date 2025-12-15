@@ -55,7 +55,15 @@ METRIC_MAP = {
     '.dependency.errors': 'dependency_error_rate',  # Matches service.X.dependency.errors
     'client.requests': 'outbound_rps',
     'dependency.request_rate': 'outbound_rps',
-    '.dependency.requests': 'outbound_rps'  # Matches service.X.dependency.requests
+    '.dependency.requests': 'outbound_rps',  # Matches service.X.dependency.requests
+
+    # Queue Signals
+    'queue.depth': 'queue_depth',
+    'queue_depth': 'queue_depth',
+    'queue.size': 'queue_depth',
+    'queue.lag': 'queue_lag',
+    'queue_lag': 'queue_lag',
+    'consumer.lag': 'queue_lag'
 }
 
 def remove_outliers_iqr(data: np.ndarray) -> np.ndarray:

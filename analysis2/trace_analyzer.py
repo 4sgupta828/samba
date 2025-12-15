@@ -314,9 +314,10 @@ class TraceAnalyzer:
             reason = ""
 
             # Check self-time degradation (MOST IMPORTANT)
+            # STRICTER: Only mark as authoritative if self-time is SIGNIFICANTLY degraded
+            # and the degradation is primarily internal (not just waiting on deps)
             if metrics.self_time_degradation_factor > 2.0:
                 # This component's INTERNAL processing is slow
-                # This is authoritative evidence
                 if metrics.self_time_degradation_factor > 5.0:
                     trace_score = 20.0
                     reason = f"Self-time increased {metrics.self_time_degradation_factor:.1f}x (critical)"
@@ -327,7 +328,12 @@ class TraceAnalyzer:
                     trace_score = 10.0
                     reason = f"Self-time increased {metrics.self_time_degradation_factor:.1f}x"
 
-                is_authoritative = True
+                # Only mark as AUTHORITATIVE if:
+                # 1. Self-time degradation is significant (> 3.0x)
+                # 2. Self-time degradation dominates total degradation (> 80% of total)
+                if (metrics.self_time_degradation_factor > 3.0 and
+                    metrics.self_time_degradation_factor > metrics.total_degradation_factor * 0.8):
+                    is_authoritative = True
 
             # Check total-time degradation (LESS IMPORTANT - could be waiting on deps)
             elif metrics.total_degradation_factor > 5.0:
