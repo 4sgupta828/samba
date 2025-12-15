@@ -335,10 +335,16 @@ class CapacityPlanner:
         timeout_margin = 1.05 + (0.45 * (1.0 - phi))
         timeout_sec = (total_expected_ms * timeout_margin) / 1000.0
 
+        # Right-size memory for async consumers
+        # Consumers are low-throughput, so smaller instances are appropriate
+        # This ensures memory leaks have visible impact despite low concurrent requests
+        consumer_memory_mb = 256  # vs 512 for standard services
+
         config = {
             'desired_replicas': final_replicas,
             'thread_pool_size': threads,
             'db_connection_pool_capacity': db_connections,
+            'memory_capacity_mb': consumer_memory_mb,  # Right-sized for low throughput
             'timeouts': {
                 'database_call_seconds': max(0.2, timeout_sec),
                 'service_call_seconds': max(0.2, timeout_sec),

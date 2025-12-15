@@ -408,6 +408,10 @@ class TopologyAdapter:
                 # Service doesn't need database connections, set to None
                 component.db_connection_pool = None
 
+        # Apply memory capacity (for Pods - right-sizing based on workload)
+        if 'memory_capacity_mb' in overrides and hasattr(component, 'memory_capacity_mb'):
+            component.memory_capacity_mb = overrides['memory_capacity_mb']
+
         # Apply Timeouts (update the component's config object)
         if 'timeouts' in overrides and hasattr(component, 'iac_config'):
             if not component.iac_config:

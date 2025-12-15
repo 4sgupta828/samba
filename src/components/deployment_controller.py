@@ -186,6 +186,12 @@ class DeploymentController(EnrichedComponent):
             event_tracker=self.event_tracker if hasattr(self, 'event_tracker') else None
         )
 
+        # Apply resource overrides from parent service's capacity planning
+        # This ensures pods inherit right-sized resources (e.g., smaller memory for consumers)
+        if hasattr(service, 'iac_config') and service.iac_config:
+            if 'memory_capacity_mb' in service.iac_config:
+                new_pod.memory_capacity_mb = service.iac_config['memory_capacity_mb']
+
         self._emit_log("INFO",
             f"Created pod {pod_id} for service {service.service_name} "
             f"on node {target_node.id}")

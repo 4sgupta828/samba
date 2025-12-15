@@ -67,7 +67,12 @@ def revert_latency(component: SimulatedComponent, params: Dict[str, Any]):
         component._emit_log("WARN", "Component does not support latency injection")
     
 def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
-    """Starts or accelerates a memory leak in a ComputeAgent/Pod via dynamics engine."""
+    """
+    Starts or accelerates a memory leak in a ComputeAgent/Pod via dynamics engine.
+
+    Models memory leaking per request - memory accumulates based on concurrent requests
+    and naturally has bigger impact on smaller instances (e.g., right-sized consumers).
+    """
     if not isinstance(component, (ComputeAgent, Pod)):
         component._emit_log("WARN", "start_memory_leak can only be applied to ComputeAgent/Pod components.")
         return
@@ -77,31 +82,57 @@ def start_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
         return
 
     leak_rate = params.get("leak_mb_per_request", 0.5)
+
+    # Store original value for revert
+    if not hasattr(component, '_memory_leak_original_per_request'):
+        component._memory_leak_original_per_request = component.dynamics.config.memory_per_request_mb
+
     # Increase memory per request in dynamics engine
     component.dynamics.config.memory_per_request_mb += leak_rate
-    component._emit_log("WARN", f"Starting memory leak: +{leak_rate} MB/request (dynamics: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f})")
+
+    component._emit_log("WARN",
+        f"Starting memory leak: +{leak_rate:.1f} MB/request "
+        f"(memory_per_request_mb: {component.dynamics.config.memory_per_request_mb:.2f}MB)")
 
 def stop_memory_leak(component: ComputeAgent, params: Dict[str, Any]):
-    """Stops an injected memory leak via dynamics engine and forces memory to drop."""
+    """
+    Stops an injected memory leak via dynamics engine and forces memory to drop.
+    """
     if not isinstance(component, (ComputeAgent, Pod)):
         return
 
-    if hasattr(component, 'dynamics') and component.dynamics is not None:
-        leak_rate = params.get("leak_mb_per_request", 0.5)
-        # Reduce memory per request back to normal (careful not to go negative)
-        component.dynamics.config.memory_per_request_mb = max(0.1, component.dynamics.config.memory_per_request_mb - leak_rate)
+    if not hasattr(component, 'dynamics') or component.dynamics is None:
+        component._emit_log("WARN", "Component does not have dynamics engine")
+        return
 
-        # BUGFIX: Force memory to drop immediately by resetting accumulated memory
-        # Calculate target memory with restored memory_per_request
+    # Restore original memory_per_request_mb
+    if hasattr(component, '_memory_leak_original_per_request'):
+        original_per_request = component._memory_leak_original_per_request
+        component.dynamics.config.memory_per_request_mb = original_per_request
+
+        # Force memory to drop immediately
         target_memory = (component.dynamics.config.memory_base +
-                        component.dynamics.config.memory_per_request_mb * component.dynamics.concurrent_requests)
-
-        # Set current memory to target (or slightly above to avoid sudden drop artifacts)
+                       component.dynamics.config.memory_per_request_mb * component.dynamics.concurrent_requests)
         component.dynamics.memory_percent = target_memory
 
-        component._emit_log("INFO", f"Stopping memory leak (dynamics: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f}, memory reset to {target_memory:.0f}MB)")
+        # Clean up tracking attribute
+        delattr(component, '_memory_leak_original_per_request')
+
+        component._emit_log("WARN",
+            f"Stopping memory leak: memory_per_request_mb restored to {original_per_request:.2f}MB "
+            f"(current memory: {target_memory:.0f}MB)")
     else:
-        component._emit_log("WARN", "Component does not have dynamics engine")
+        # Fallback to legacy behavior
+        leak_rate = params.get("leak_mb_per_request", 0.5)
+        component.dynamics.config.memory_per_request_mb = max(0.1, component.dynamics.config.memory_per_request_mb - leak_rate)
+
+        target_memory = (component.dynamics.config.memory_base +
+                       component.dynamics.config.memory_per_request_mb * component.dynamics.concurrent_requests)
+        component.dynamics.memory_percent = target_memory
+
+        component._emit_log("WARN",
+            f"Stopping memory leak: memory_per_request_mb={component.dynamics.config.memory_per_request_mb:.2f}MB "
+            f"(current memory: {target_memory:.0f}MB)")
 
 # Deprecated database-specific faults removed (2025-12-10)
 # - start_db_background_job → Use cpu_saturation instead
