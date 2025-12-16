@@ -23,9 +23,13 @@ class SelfHealthResult:
     confidence: str # 'high', 'medium', 'low'
 
 class SelfHealthAnalyzer:
-    def __init__(self, config_extractor: ConfigExtractor = None):
+    def __init__(self, config_extractor: ConfigExtractor = None, threshold_config=None):
         self.config_extractor = config_extractor or ConfigExtractor()
-        
+
+        # Load threshold configuration
+        from rca_config import get_thresholds
+        self.thresholds = get_thresholds(threshold_config)
+
         self.resource_metrics = [
             'cpu_usage', 'memory_usage', 'thread_pool_active',
             'garbage_collection_time', 'internal_error_rate'
@@ -53,17 +57,17 @@ class SelfHealthAnalyzer:
                 
                 # Check for Limit Saturation (e.g., Active Threads near Max Threads)
                 curr_max = np.max(current[metric]) if len(current[metric]) > 0 else 0
-                
+
                 limit_hit = False
-                if metric == 'thread_pool_active' and curr_max > limits['max_threads'] * 0.9:
+                if metric == 'thread_pool_active' and curr_max > limits['max_threads'] * self.thresholds.resource_saturation_threshold:
                     symptoms.append(f"Thread Pool Saturation ({curr_max}/{limits['max_threads']})")
                     limit_hit = True
-                
-                if stat.significant and stat.effect_size > 0.5:
+
+                if stat.significant and stat.effect_size > self.thresholds.min_effect_size_small:
                     symptoms.append(f"{metric} increased (d={stat.effect_size:.2f})")
                     max_effect_size = max(max_effect_size, stat.effect_size)
-                    
-                    if limit_hit or stat.effect_size > 2.0:
+
+                    if limit_hit or stat.effect_size > self.thresholds.min_effect_size_large:
                         resource_score = max(resource_score, 10.0) # Definite saturation
                     else:
                         resource_score = max(resource_score, min(10.0, stat.effect_size * 2.5))
@@ -74,14 +78,14 @@ class SelfHealthAnalyzer:
         # Check Latency Degradation
         if 'avg_latency' in current and 'avg_latency' in baseline:
             lat_stat = compare_distributions(baseline['avg_latency'], current['avg_latency'])
-            if lat_stat.significant and lat_stat.effect_size > 1.0:
+            if lat_stat.significant and lat_stat.effect_size > self.thresholds.min_effect_size_medium:
                 symptoms.append(f"Latency increased (d={lat_stat.effect_size:.2f})")
                 max_effect_size = max(max_effect_size, lat_stat.effect_size)
 
                 # Latency increase is strong evidence of root cause
-                if lat_stat.effect_size > 3.0:
+                if lat_stat.effect_size > self.thresholds.min_effect_size_very_large:
                     performance_score = max(performance_score, 10.0)
-                elif lat_stat.effect_size > 2.0:
+                elif lat_stat.effect_size > self.thresholds.min_effect_size_large:
                     performance_score = max(performance_score, 8.0)
                 else:
                     performance_score = max(performance_score, min(10.0, lat_stat.effect_size * 3.0))
@@ -92,15 +96,15 @@ class SelfHealthAnalyzer:
             curr_err_mean = np.mean(current['internal_error_rate']) if len(current['internal_error_rate']) > 0 else 0
             base_err_mean = np.mean(baseline['internal_error_rate']) if len(baseline['internal_error_rate']) > 0 else 0
 
-            # Check for significant absolute increase (> 5% error rate) or relative increase
-            if (curr_err_mean > 0.05 and curr_err_mean > base_err_mean * 1.5) or err_stat.effect_size > 1.0:
+            # Check for significant absolute increase or relative increase
+            if (curr_err_mean > self.thresholds.error_rate_minor and curr_err_mean > base_err_mean * 1.5) or err_stat.effect_size > self.thresholds.min_effect_size_medium:
                 symptoms.append(f"Error rate increased ({curr_err_mean:.1%})")
                 max_effect_size = max(max_effect_size, err_stat.effect_size)
 
                 # Error rate increase is strong evidence
-                if curr_err_mean > 0.2:  # > 20% errors
+                if curr_err_mean > self.thresholds.error_rate_severe:
                     performance_score = max(performance_score, 10.0)
-                elif curr_err_mean > 0.1:  # > 10% errors
+                elif curr_err_mean > self.thresholds.error_rate_moderate:
                     performance_score = max(performance_score, 8.0)
                 else:
                     performance_score = max(performance_score, 6.0)
@@ -120,15 +124,32 @@ class SelfHealthAnalyzer:
                         performance_score = max(performance_score, min(10.0, q_stat.effect_size * 2.5))
                     break  # Only report once for queue metrics
 
-        # 3. Check for "Limp Mode" / Deadlock
-        # High Latency + LOW CPU = Process is hung/deadlocked
+        # 3. Check for "Limp Mode" / Deadlock Patterns
         lat_stat = self._check_metric('avg_latency', baseline, current)
         cpu_stat = self._check_metric('cpu_usage', baseline, current)
 
         limp_mode_score = 0.0
+
+        # Pattern A: High Latency + LOW CPU = Process is hung/deadlocked
         if lat_stat.effect_size > 1.5 and cpu_stat.effect_size < -0.2:
             symptoms.append("⚠️ Potential Deadlock (High Latency / Low CPU)")
             limp_mode_score = 10.0 # Critical finding
+
+        # Pattern B: Thread Saturation + Zero Throughput = Zombie Pod (all threads deadlocked)
+        # This catches pods that have all threads blocked but aren't serving any traffic
+        if 'thread_pool_active' in current and 'inbound_rps' in current:
+            curr_threads = np.mean(current['thread_pool_active']) if len(current['thread_pool_active']) > 0 else 0
+            curr_rps = np.mean(current['inbound_rps']) if len(current['inbound_rps']) > 0 else 0
+            base_rps = np.mean(baseline.get('inbound_rps', np.array([0]))) if 'inbound_rps' in baseline else 0
+
+            # High thread usage but zero/minimal throughput + was previously active
+            thread_saturation = curr_threads > limits['max_threads'] * self.thresholds.thread_saturation_threshold
+            zero_throughput = curr_rps < self.thresholds.throughput_near_zero_absolute
+            was_active = base_rps > self.thresholds.was_active_absolute
+
+            if thread_saturation and zero_throughput and was_active:
+                symptoms.append(f"⚠️ Zombie Pod (Thread Deadlock): {curr_threads:.0f}/{limits['max_threads']} threads saturated, RPS dropped from {base_rps:.1f} to {curr_rps:.1f}")
+                limp_mode_score = max(limp_mode_score, 10.0) # Critical finding
 
         # 4. Final Scoring
         final_score = max(resource_score, performance_score, limp_mode_score)

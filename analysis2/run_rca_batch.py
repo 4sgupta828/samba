@@ -66,6 +66,8 @@ METRIC_MAP = {
     'queue.depth': 'queue_depth',
     'queue_depth': 'queue_depth',
     'queue.size': 'queue_depth',
+    'mq.messages.visible': 'queue_depth',  # RabbitMQ-style queue depth
+    'mq.messages.in_flight': 'queue_depth',
     'queue.lag': 'queue_lag',
     'queue_lag': 'queue_lag',
     'consumer.lag': 'queue_lag'

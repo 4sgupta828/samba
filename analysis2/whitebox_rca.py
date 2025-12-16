@@ -31,10 +31,16 @@ from temporal_analyzer import TemporalAnalyzer
 from trace_analyzer import TraceAnalyzer
 
 class WhiteboxRCAEngine:
-    def __init__(self, topology: nx.DiGraph, config: Dict = None):
+    def __init__(self, topology: nx.DiGraph, config: Dict = None, threshold_config: Dict = None):
         self.topology = topology
         self.config_extractor = ConfigExtractor(config)
-        self.self_analyzer = SelfHealthAnalyzer(self.config_extractor)
+
+        # NEW: Threshold configuration (reduces brittleness)
+        from rca_config import get_thresholds
+        self.thresholds = get_thresholds(threshold_config)
+
+        # Pass threshold config to all analyzers
+        self.self_analyzer = SelfHealthAnalyzer(self.config_extractor, threshold_config)
         self.disambiguator = CallerCalleeDisambiguator()
         self.storyteller = CausalChainAnalyzer(topology)
 
@@ -196,7 +202,121 @@ class WhiteboxRCAEngine:
             except Exception as e:
                 print(f"  [!] Warning: Trace analysis failed: {e}")
 
-        # --- PHASE 2: Graph Propagation (External Evidence) ---
+        # --- PHASE 2: Network Partition Detection (NEW) ---
+        # Detect network partitions: completely blocked communication between nodes
+        # Strategy: If two nodes have zero throughput on their connection edge,
+        # this indicates a network partition
+        network_partitions = []
+
+        for u, v in self.topology.edges:
+            edge_data = self.topology.edges[u, v]
+            edge_type = edge_data.get('type', 'sync_http')
+
+            # Skip non-dependency edges
+            if edge_type in ['pod_pool', 'pod_placement', 'node_placement']:
+                continue
+
+            # Check for blocked throughput indicating network partition
+            # For async_consume edges: check for queue backlog explosion
+            if edge_type == 'async_consume':
+                # Strategy: Network partition causes queue to build up massively
+                # because consumer cannot pull messages from queue
+                queue_metrics_base = baseline_data.get(u, {})
+                queue_metrics_curr = current_data.get(u, {})
+                consumer_metrics_base = baseline_data.get(v, {})
+
+                # Check queue depth growth using STATISTICAL methods
+                baseline_depth = queue_metrics_base.get('queue_depth', np.array([]))
+                current_depth = queue_metrics_curr.get('queue_depth', np.array([]))
+
+                if len(baseline_depth) > 0 and len(current_depth) > 0:
+                    # Check if consumer was active using percentile-based threshold
+                    baseline_consumer_rps = consumer_metrics_base.get('inbound_rps', np.array([]))
+                    activity_threshold = self.thresholds.get_dynamic_threshold(
+                        baseline_consumer_rps, 'consumer_rps',
+                        self.thresholds.consumer_activity_percentile
+                    )
+                    was_active = len(baseline_consumer_rps) > 0 and np.mean(baseline_consumer_rps) > activity_threshold
+
+                    # Detect partition using EFFECT SIZE instead of absolute thresholds
+                    has_large_growth = self.thresholds.has_large_effect(baseline_depth, current_depth, 'queue')
+
+                    # Additional check: current depth should be significantly high
+                    # Use 90th percentile of baseline as minimum threshold
+                    baseline_p90 = np.percentile(baseline_depth, 90)
+                    current_avg = np.mean(current_depth)
+                    is_significantly_high = current_avg > max(baseline_p90 * 2, 10)  # At least 2x p90 or 10 msgs
+
+                    if was_active and has_large_growth and is_significantly_high:
+                        baseline_avg_depth = np.mean(baseline_depth)
+                        current_avg_depth = np.mean(current_depth)
+
+                        network_partitions.append({
+                            'source': u,
+                            'target': v,
+                            'edge_type': edge_type,
+                            'reason': f'Blocked async consumption: {u} -> {v} (queue backlog exploded from {baseline_avg_depth:.0f} to {current_avg_depth:.0f} messages, consumer unreachable)',
+                            'confidence': 0.95
+                        })
+
+            # For sync edges: check for complete failure (100% errors + zero throughput)
+            elif edge_type in ['sync_http', 'sync_db', 'sync_cache', 'sync_external']:
+                caller_metrics = current_data.get(u, {})
+                dep_error_rate = caller_metrics.get('dependency_error_rate', np.array([]))
+                dep_rps = caller_metrics.get('outbound_rps', np.array([]))
+
+                if len(dep_error_rate) > 0 and len(dep_rps) > 0:
+                    avg_error = np.mean(dep_error_rate)
+                    avg_rps = np.mean(dep_rps)
+
+                    # High error rate but RPS exists (trying but failing)
+                    if avg_error > 0.95 and avg_rps > 0.1:
+                        # Check baseline to confirm degradation
+                        baseline_error = baseline_data.get(u, {}).get('dependency_error_rate', np.array([]))
+                        baseline_avg_error = np.mean(baseline_error) if len(baseline_error) > 0 else 0
+
+                        if baseline_avg_error < 0.1:  # Was healthy before
+                            network_partitions.append({
+                                'source': u,
+                                'target': v,
+                                'edge_type': edge_type,
+                                'reason': f'Complete connection failure: {u} -> {v} ({avg_error*100:.0f}% errors)',
+                                'confidence': 0.95
+                            })
+
+        # If network partitions detected, return early with global_network as root cause
+        if network_partitions:
+            print(f"  [!] Network partition detected: {len(network_partitions)} blocked edge(s)")
+            for partition in network_partitions:
+                print(f"      - {partition['reason']}")
+
+            # Return global_network as the root cause
+            return [{
+                'node': 'global_network',
+                'score': 100.0,
+                'integrated_score': 0.0,
+                'guilt_raw': 0.0,
+                'guilt_adjusted': 0.0,
+                'discount_factor': 1.0,
+                'max_outgoing_conf': 0.0,
+                'self_score': 0.0,
+                'temporal_score': 0.0,
+                'trace_score': 0.0,
+                'symptoms': ['Network partition detected between components'],
+                'blamed_by': [],
+                'temporal_info': {},
+                'trace_info': {},
+                'health_metadata': {},
+                'is_trace_authoritative': True,
+                'story': [
+                    '🔴 ROOT CAUSE: global_network (Network Partition)',
+                    '   Network partitions detected:',
+                    *[f'   - {p["reason"]}' for p in network_partitions]
+                ],
+                'network_partitions': network_partitions
+            }]
+
+        # --- PHASE 2.5: Graph Propagation (External Evidence) ---
         # "Who blames who?" - Track both incoming votes and outgoing blame
         incoming_votes = defaultdict(list) # target -> [votes]
         outgoing_blame = defaultdict(list) # source -> [confidence_scores]
@@ -264,6 +384,38 @@ class WhiteboxRCAEngine:
                 node, service_self_score, baseline_pods, current_pods
             )
 
+            # 1.5. Capacity Degradation Detection (Zombie Pod Detection)
+            # Check if some pods are zombies (not serving traffic) causing capacity loss
+            capacity_degradation_bonus = 0.0
+            if health_metadata.get('source') == 'pod-level':
+                degraded_count = health_metadata.get('degraded_count', 0)
+                total_count = health_metadata.get('total_count', 0)
+
+                if total_count > 0 and degraded_count > 0:
+                    # Check if any degraded pods have zombie symptoms
+                    zombie_count = 0
+                    for pod_id in [n for n in self.topology.nodes
+                                   if self.topology.nodes[n].get('parent_service') == node]:
+                        pod_curr = current_pods.get(pod_id, {})
+                        pod_base = baseline_pods.get(pod_id, {})
+
+                        if not pod_curr:
+                            continue
+
+                        # Check for zombie pattern: was active, now has zero throughput
+                        base_rps = np.mean(pod_base.get('inbound_rps', np.array([0])))
+                        curr_rps = np.mean(pod_curr.get('inbound_rps', np.array([0])))
+
+                        if base_rps > self.thresholds.was_active_absolute and curr_rps < self.thresholds.throughput_near_zero_absolute:
+                            zombie_count += 1
+
+                    # If we have zombie pods, this indicates capacity degradation
+                    if zombie_count > 0:
+                        capacity_loss_pct = (zombie_count / total_count) * 100
+                        capacity_degradation_bonus = min(20.0, zombie_count * 5.0)  # Up to 20 bonus points
+                        health_metadata['zombie_pods'] = zombie_count
+                        health_metadata['capacity_loss_pct'] = capacity_loss_pct
+
             # 2. Trace Analysis (for victim detection and authoritative evidence)
             trace_info = trace_scores.get(node, {})
             trace_score = trace_info.get('trace_score', 0.0)
@@ -318,7 +470,60 @@ class WhiteboxRCAEngine:
             temporal_info = temporal_scores.get(node, {})
             temporal_score = temporal_info.get('temporal_score', 0.0)
 
-            # 7. Calculate Final Score (First Principles Formula)
+            # 7. Healthy Node Filtering (NEW) - Eliminate false positives
+            # Filter out nodes that are clearly healthy to avoid noise
+            is_healthy = False
+            health_filter_reason = None
+
+            # Check pod-level only detections with low coverage
+            if health_metadata.get('source') == 'pod-level':
+                coverage = health_metadata.get('coverage', 0.0)
+                degraded_count = health_metadata.get('degraded_count', 0)
+                max_severity = health_metadata.get('max_severity', 0.0)
+
+                # Low coverage outliers: use configurable threshold
+                if coverage < self.thresholds.pod_coverage_threshold and service_self_score < self.thresholds.min_absolute_severity:
+                    # Also check: no external blame (not being blamed by others)
+                    if guilt_ratio < self.thresholds.guilt_ratio_threshold:
+                        # Apply multiple safeguards to avoid filtering true root causes
+                        # Use RELATIVE thresholds based on distribution, not absolute values
+
+                        # SAFEGUARD 1: Severe pod degradation (top 10% of all scores)
+                        # Compare against the distribution of all node scores
+                        all_scores = [self_scores.get(n, 0.0) for n in self.topology.nodes]
+                        severity_threshold = np.percentile(all_scores, 90) if len(all_scores) > 5 else 20.0
+
+                        if max_severity >= severity_threshold and max_severity > 5.0:
+                            # Don't filter - severe pod is significant relative to others
+                            pass
+                        # SAFEGUARD 2: Temporal correlation (statistically significant)
+                        # Use relative ranking: top 20% of temporal scores
+                        elif temporal_score > 0 and integrated_score > 0:
+                            temporal_ratio = temporal_score / max(1.0, integrated_score)
+                            if temporal_ratio > 2.0:  # Temporal evidence is 2x stronger than symptoms
+                                # Don't filter - strong timing correlation
+                                pass
+                        # SAFEGUARD 3: Trace analysis (authoritative or strong signal)
+                        elif is_trace_authoritative or (trace_score > 0 and trace_score / max(1.0, integrated_score) > 3.0):
+                            # Don't filter - traces confirm service involvement
+                            pass
+                        # SAFEGUARD 4: Capacity loss (zombie pods detected)
+                        elif health_metadata.get('zombie_pods', 0) > 0:
+                            # Don't filter - capacity degradation detected
+                            pass
+                        else:
+                            # All safeguards passed - safe to filter as healthy noise
+                            is_healthy = True
+                            health_filter_reason = f"Outlier pod detection ({degraded_count} pod(s), {coverage*100:.0f}% coverage) with no service-level symptoms"
+
+            # Check nodes with zero symptoms but appearing in rankings due to noise
+            if service_self_score == 0.0 and integrated_score < 1.0:
+                # If no symptoms, no guilt, and no temporal signal, likely healthy
+                if guilt_ratio == 0.0 and temporal_score == 0.0:
+                    is_healthy = True
+                    health_filter_reason = "No symptoms detected"
+
+            # 8. Calculate Final Score (First Principles Formula)
             # Base score: Internal evidence is PRIMARY (0-100 points)
             base_score = integrated_score * 10.0
 
@@ -331,12 +536,17 @@ class WhiteboxRCAEngine:
             if is_victim and integrated_score < 2.0:
                 base_score = base_score * 0.1  # 90% penalty
 
+            # Healthy node penalty: Strongly penalize clearly healthy nodes
+            if is_healthy:
+                base_score = base_score * 0.05  # 95% penalty (stronger than victim penalty)
+
             # Confirmation signals: External evidence is SECONDARY (0-40 points total)
             # Use ADJUSTED guilt (with probabilistic discounting) instead of raw guilt
             confirmation_score = (
                 (adjusted_guilt * 20.0) +     # Adjusted Guilt: 0-20 (with proxy discounting!)
                 (temporal_score * 2.0) +      # Temporal: 0-40
-                impact_bonus                  # Impact: 0-3 (log scale)
+                impact_bonus +                # Impact: 0-3 (log scale)
+                capacity_degradation_bonus    # Capacity Loss: 0-20 (zombie pods)
             )
 
             final_score = base_score + confirmation_score
@@ -359,6 +569,8 @@ class WhiteboxRCAEngine:
                 'trace_info': trace_info,
                 'health_metadata': health_metadata,
                 'is_trace_authoritative': is_trace_authoritative,
+                'is_healthy': is_healthy,
+                'health_filter_reason': health_filter_reason,
                 'story': []  # Populated later
             })
 
