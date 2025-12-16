@@ -27,6 +27,7 @@ from charts.failure_analysis import (create_failure_analysis_view,
                                       create_rca_not_run_message,
                                       create_rca_success_message)
 from charts.batch_analysis import create_batch_analysis_view
+from charts.whitebox_rca_display import create_whitebox_rca_display
 
 # Add parent directory to path for analysis imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -991,6 +992,13 @@ app.layout = dbc.Container([
         ])
     ], className="mb-3"),
 
+    # Whitebox RCA Analysis Container
+    dbc.Row([
+        dbc.Col([
+            html.Div(id='whitebox-rca-container', style={'display': 'none'})
+        ])
+    ], className="mb-3"),
+
     # Hidden div to store episode data
     dcc.Store(id='episode-data-store'),
 
@@ -1242,6 +1250,53 @@ def reset_fault_analysis_on_load(episode_id):
     # Hide the analysis container when switching episodes
     # User must click the button to show it
     return [], {'display': 'none'}
+
+
+@app.callback(
+    [Output('whitebox-rca-container', 'children'),
+     Output('whitebox-rca-container', 'style')],
+    [Input('episode-data-store', 'data')],
+    [State('datarun-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def load_whitebox_rca_on_episode_load(episode_id, datarun):
+    """Automatically load and display whitebox RCA analysis when episode is loaded."""
+    if not episode_id or not datarun:
+        return [], {'display': 'none'}
+
+    try:
+        # Construct episode directory path
+        episode_dir = os.path.join(datarun, episode_id)
+        rca_analysis_path = os.path.join(episode_dir, 'rca_analysis.json')
+
+        # Check if RCA analysis exists
+        if not os.path.exists(rca_analysis_path):
+            # No RCA analysis available - don't show anything
+            return [], {'display': 'none'}
+
+        # Debug: Print path for troubleshooting
+        print(f"Loading whitebox RCA analysis from: {rca_analysis_path}")
+
+        # Load and display the whitebox RCA analysis
+        analysis_view = create_whitebox_rca_display(episode_dir)
+
+        return analysis_view, {'display': 'block'}
+
+    except Exception as e:
+        import traceback
+        print(f"Error loading whitebox RCA analysis: {str(e)}")
+        traceback.print_exc()
+
+        error_alert = dbc.Alert([
+            html.H5("Error loading Whitebox RCA Analysis", className="alert-heading"),
+            html.P(f"Error: {str(e)}"),
+            html.Hr(),
+            html.Pre(traceback.format_exc(), style={'fontSize': '0.8em'})
+        ],
+            color="danger",
+            className="mt-3"
+        )
+        return error_alert, {'display': 'block'}
 
 
 # Forensic analysis callbacks removed - use RCA Failure Analysis instead

@@ -21,6 +21,7 @@ from multiprocessing import Process
 # Add src to path for imports
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent / 'analysis2'))
 
 from src.topology.generator import TopologyGenerator
 from src.topology.adapter import TopologyAdapter, print_topology_summary
@@ -41,6 +42,15 @@ from validate_baseline_health import validate_episode_health
 from src.validation.health_validator import validate_system_health
 from src.core.capacity_planner import CapacityPlanner
 import networkx as nx
+
+# Whitebox RCA imports
+try:
+    from run_rca_batch import DatasetAdapter
+    from whitebox_rca import WhiteboxRCAEngine
+    WHITEBOX_RCA_AVAILABLE = True
+except ImportError:
+    WHITEBOX_RCA_AVAILABLE = False
+    print("Warning: Whitebox RCA not available (analysis2 folder not found)")
 
 
 def load_random_template(bank_dir: str = "data/topology_bank", topology_name: str = None) -> tuple:
@@ -1269,29 +1279,69 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
 
         phase_timings['simulation_run'] = time.time() - phase_start
 
-        # 11. Auto-generate Fault Propagation Analysis
+        # 11. Run Whitebox RCA Analysis
         phase_start = time.time()
         if verbose:
-            print(f"\n[Fault Propagation Analysis]")
-            print(f"  Analyzing fault propagation...")
+            print(f"\n[Whitebox RCA Analysis]")
+            print(f"  Running root cause analysis...")
 
         try:
-            output_path = os.path.join(episode_dir, 'fault_propagation.json')
-            summary = analyze_episode(
-                episode_dir=episode_dir,
-                sample_interval=5,
-                output_file=output_path,
-                enable_enhanced_analysis=enable_enhanced_analysis
-            )
+            if WHITEBOX_RCA_AVAILABLE:
+                # Load episode data using DatasetAdapter
+                adapter = DatasetAdapter(Path(episode_dir))
+                baseline_pods, current_pods = adapter.get_data_windows()
 
-            if verbose:
-                print(f"  Fault propagation analysis saved to: {output_path}")
-                print(f"  Quality Score: {summary.validation['quality_score']:.2f}/1.0")
-                print(f"  Blast Radius: {summary.validation['blast_radius']} nodes")
+                # Aggregate to service level
+                baseline_services = adapter.aggregate_pods_to_services(baseline_pods)
+                current_services = adapter.aggregate_pods_to_services(current_pods)
+
+                # Get fault metadata
+                ground_truth_node = adapter.label.get('root_cause_node')
+                fault_start_time = adapter.label.get('fault_start_time', 0)
+
+                # Check for traces file
+                traces_file = Path(episode_dir) / 'traces.jsonl'
+                if not traces_file.exists():
+                    traces_file = None
+
+                # Run whitebox RCA analysis
+                engine = WhiteboxRCAEngine(adapter.topology)
+                results = engine.analyze_incident(
+                    baseline_services, current_services,
+                    metrics_df=adapter.metrics_df,
+                    fault_start_time=fault_start_time,
+                    traces_file=traces_file,
+                    baseline_pods=baseline_pods,
+                    current_pods=current_pods
+                )
+
+                # Save results (using backward-compatible filename)
+                output_path = os.path.join(episode_dir, 'rca_analysis.json')
+                with open(output_path, 'w') as f:
+                    json.dump({
+                        'rankings': results,
+                        'ground_truth': ground_truth_node,
+                        'fault_start_time': fault_start_time
+                    }, f, indent=2)
+
+                if verbose:
+                    print(f"  Whitebox RCA analysis saved to: {output_path}")
+                    if results:
+                        top_result = results[0]
+                        print(f"  Top candidate: {top_result['node']} (Score: {top_result['score']:.1f})")
+                        print(f"  Ground truth: {ground_truth_node}")
+                        top_k_nodes = [r['node'] for r in results[:5]]
+                        if ground_truth_node in top_k_nodes:
+                            rank = top_k_nodes.index(ground_truth_node) + 1
+                            print(f"  Ground truth rank: {rank}/5")
+                        else:
+                            print(f"  Ground truth rank: >5")
+            else:
+                print(f"  Warning: Whitebox RCA not available, skipping analysis")
 
         except Exception as e:
             # Don't fail the entire episode if analysis fails
-            print(f"  Warning: Fault propagation analysis failed: {e}")
+            print(f"  Warning: Whitebox RCA analysis failed: {e}")
             if verbose:
                 import traceback
                 traceback.print_exc()
