@@ -670,7 +670,8 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
             'ground_truth': ground_truth_node,
             'top_result': top_candidate,
             'rank': rank,
-            'in_top_k': is_in_top_k
+            'in_top_k': is_in_top_k,
+            'gt_valid': gt_validation['is_valid']
         }
 
     except Exception as e:
@@ -745,6 +746,10 @@ def print_summary(results: List[Dict], skipped: Dict[str, int]):
     error_count = sum(1 for r in results if r['status'] == 'error')
     empty_topology_count = sum(1 for r in results if r['status'] == 'empty_topology')
 
+    # Ground truth validation stats
+    valid_gt_count = sum(1 for r in results if r.get('gt_valid', False))
+    invalid_gt_count = sum(1 for r in results if 'gt_valid' in r and not r['gt_valid'])
+
     print(f"\n{'='*80}")
     print("BATCH WHITEBOX RCA SUMMARY")
     print(f"{'='*80}")
@@ -759,6 +764,10 @@ def print_summary(results: List[Dict], skipped: Dict[str, int]):
     print(f"  ⚠️  No anomalies: {no_anomaly_count} ({no_anomaly_count/max(1,total_processed)*100:.1f}%)")
     print(f"  📭 Empty topology: {empty_topology_count} ({empty_topology_count/max(1,total_processed)*100:.1f}%)")
     print(f"  🔥 Errors: {error_count} ({error_count/max(1,total_processed)*100:.1f}%)")
+    print()
+    print(f"Ground Truth Validation:")
+    print(f"  ✅ Valid: {valid_gt_count} ({valid_gt_count/max(1,total_processed)*100:.1f}%)")
+    print(f"  ❌ Invalid: {invalid_gt_count} ({invalid_gt_count/max(1,total_processed)*100:.1f}%)")
     print(f"{'='*80}")
 
     # Show success rate including previously investigated

@@ -35,6 +35,11 @@ def create_batch_analysis_summary(all_results: List[Dict], successful_results: L
     # Calculate statistics
     found_in_top_k = sum(1 for r in all_results if r.get('found_in_top_k', False))
 
+    # Ground truth validation statistics
+    gt_valid_count = sum(1 for r in all_results if r.get('ground_truth_validation', {}).get('is_valid', False))
+    gt_invalid_count = total - gt_valid_count
+    gt_valid_rate = (gt_valid_count / total * 100) if total > 0 else 0
+
     # Rank distribution for failures
     rank_2 = sum(1 for r in failed_results if r.get('rank') == 2)
     rank_3 = sum(1 for r in failed_results if r.get('rank') == 3)
@@ -46,55 +51,76 @@ def create_batch_analysis_summary(all_results: List[Dict], successful_results: L
     fault_types = Counter(r.get('fault_type', 'Unknown') for r in all_results)
     datasets = Counter(r.get('dataset_dir', 'Unknown') for r in all_results)
 
-    summary_cards = dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H3(str(total), className="text-primary"),
-                    html.P("Total Episodes", className="mb-0 text-muted small")
-                ])
-            ], className="text-center shadow-sm")
-        ], width=2),
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H3(f"{success_count}", className="text-success"),
-                    html.P(f"Rank 1 ({success_rate:.1f}%)", className="mb-0 text-muted small")
-                ])
-            ], className="text-center shadow-sm")
-        ], width=2),
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H3(f"{fail_count}", className="text-danger"),
-                    html.P(f"Failures ({100-success_rate:.1f}%)", className="mb-0 text-muted small")
-                ])
-            ], className="text-center shadow-sm")
-        ], width=2),
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H3(f"{found_in_top_k}/{total}", className="text-info"),
-                    html.P("In Top-K", className="mb-0 text-muted small")
-                ])
-            ], className="text-center shadow-sm")
-        ], width=2),
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H3(f"{not_in_top_k}", className="text-warning"),
-                    html.P("Not in Top-K", className="mb-0 text-muted small")
-                ])
-            ], className="text-center shadow-sm")
-        ], width=2),
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H3(f"{rank_2 + rank_3}", className="text-secondary"),
-                    html.P("Rank 2-3", className="mb-0 text-muted small")
-                ])
-            ], className="text-center shadow-sm")
-        ], width=2),
+    summary_cards = html.Div([
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H3(str(total), className="text-primary"),
+                        html.P("Total Episodes", className="mb-0 text-muted small")
+                    ])
+                ], className="text-center shadow-sm")
+            ], width=2),
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H3(f"{success_count}", className="text-success"),
+                        html.P(f"Rank 1 ({success_rate:.1f}%)", className="mb-0 text-muted small")
+                    ])
+                ], className="text-center shadow-sm")
+            ], width=2),
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H3(f"{fail_count}", className="text-danger"),
+                        html.P(f"Failures ({100-success_rate:.1f}%)", className="mb-0 text-muted small")
+                    ])
+                ], className="text-center shadow-sm")
+            ], width=2),
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H3(f"{found_in_top_k}/{total}", className="text-info"),
+                        html.P("In Top-K", className="mb-0 text-muted small")
+                    ])
+                ], className="text-center shadow-sm")
+            ], width=2),
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H3(f"{not_in_top_k}", className="text-warning"),
+                        html.P("Not in Top-K", className="mb-0 text-muted small")
+                    ])
+                ], className="text-center shadow-sm")
+            ], width=2),
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H3(f"{rank_2 + rank_3}", className="text-secondary"),
+                        html.P("Rank 2-3", className="mb-0 text-muted small")
+                    ])
+                ], className="text-center shadow-sm")
+            ], width=2),
+        ], className="mb-3"),
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H5("Ground Truth Validation", className="mb-2 text-center"),
+                        dbc.Row([
+                            dbc.Col([
+                                html.H4(f"{gt_valid_count}", className="text-success mb-0"),
+                                html.P(f"Valid ({gt_valid_rate:.1f}%)", className="mb-0 text-muted small")
+                            ], width=6, className="text-center"),
+                            dbc.Col([
+                                html.H4(f"{gt_invalid_count}", className="text-danger mb-0"),
+                                html.P(f"Invalid ({100-gt_valid_rate:.1f}%)", className="mb-0 text-muted small")
+                            ], width=6, className="text-center")
+                        ])
+                    ])
+                ], className="shadow-sm", color="light")
+            ], width=12)
+        ], className="mb-3")
     ], className="mb-4")
 
     # Fault type breakdown
@@ -173,6 +199,13 @@ def create_episode_card(result: Dict, index: int, is_success: bool) -> dbc.Card:
     found_in_top_k = result.get('found_in_top_k', False)
     top_candidates = result.get('top_candidates', [])
 
+    # Ground truth validation
+    gt_validation = result.get('ground_truth_validation', {})
+    gt_is_valid = gt_validation.get('is_valid', False)
+    gt_confidence = gt_validation.get('confidence', 'N/A')
+    gt_evidence_score = gt_validation.get('evidence_score', 0)
+    gt_max_evidence = gt_validation.get('max_evidence_score', 12)
+
     # Determine status badge
     if is_success:
         status_badge = dbc.Badge("✓ Rank 1", color="success", className="ms-2")
@@ -228,6 +261,14 @@ def create_episode_card(result: Dict, index: int, is_success: bool) -> dbc.Card:
                 dbc.Col([
                     html.Strong("Ground Truth: "),
                     html.Span(ground_truth, className="text-danger"),
+                    html.Br(),
+                    html.Strong("GT Validation: "),
+                    dbc.Badge(
+                        "Valid" if gt_is_valid else "Invalid",
+                        color="success" if gt_is_valid else "danger",
+                        className="me-1"
+                    ),
+                    html.Span(f"({gt_confidence}, {gt_evidence_score}/{gt_max_evidence})", className="small text-muted"),
                     html.Br(),
                     html.Strong("Rank: "),
                     html.Span(str(rank)),

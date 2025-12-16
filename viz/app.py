@@ -3710,6 +3710,7 @@ def analyze_batch_folder(n_clicks, folder_path):
                 rank = rca_data.get('rank')
                 found_in_top_k = rca_data.get('found_in_top_k', False)
                 top_candidates = rca_data.get('top_candidates', [])
+                ground_truth_validation = rca_data.get('ground_truth_validation', {})
 
                 result = {
                     'episode': str(episode_dir),
@@ -3721,6 +3722,7 @@ def analyze_batch_folder(n_clicks, folder_path):
                     'found_in_top_k': found_in_top_k,
                     'top_candidates': top_candidates[:5],  # Top 5
                     'total_candidates': rca_data.get('total_service_candidates', len(rca_data.get('all_candidates', []))),
+                    'ground_truth_validation': ground_truth_validation,  # Add ground truth validation
                     'rca_data': rca_data  # Store full data for detailed view
                 }
 
