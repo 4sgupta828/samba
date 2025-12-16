@@ -621,12 +621,33 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
             for line in top_story:
                 print(f"    {line}")
 
+        # 6.5. Validate Ground Truth
+        # Check if ground truth label is valid (shows evidence of being faulty)
+        gt_validation = engine.validate_ground_truth(ground_truth_node, results)
+        gt_validation['ground_truth_rank'] = rank  # Add rank to validation
+
+        # Print validation results
+        print(f"\n  Ground Truth Validation:")
+        print(f"     Status: {'✅ Valid' if gt_validation['is_valid'] else '❌ Invalid/Questionable'}")
+        print(f"     Confidence: {gt_validation['confidence']}")
+        print(f"     Evidence Score: {gt_validation['evidence_score']}/{gt_validation['max_evidence_score']}")
+        print(f"     {gt_validation['verdict']}")
+
+        if not gt_validation['is_valid']:
+            print(f"\n  ⚠️  WARNING: Ground truth shows insufficient evidence of being faulty.")
+            print(f"      This may indicate:")
+            print(f"        - Fault injection didn't work properly")
+            print(f"        - Incorrect ground truth label")
+            print(f"        - Component fault doesn't produce detectable signals")
+            print(f"      Consider excluding this case from RCA evaluation metrics.")
+
         # 7. Save results to JSON file
         output_data = {
             'ground_truth': ground_truth_node,
             'top_k': top_k,
             'found_in_top_k': is_in_top_k,
             'rank': rank,
+            'ground_truth_validation': gt_validation,  # NEW: Include validation
             'top_candidates': results[:top_k],  # Top K for quick reference
             'all_candidates': results,  # ALL nodes with full analysis
             'total_service_candidates': len(results)

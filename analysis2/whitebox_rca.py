@@ -48,6 +48,118 @@ class WhiteboxRCAEngine:
         self.temporal_analyzer = TemporalAnalyzer(topology)
         self.trace_analyzer = TraceAnalyzer(topology)  # Pass topology for service-level aggregation
 
+    def validate_ground_truth(self, ground_truth_node: str, candidates: List[Dict]) -> Dict:
+        """
+        Validate that the ground truth label actually shows evidence of being faulty.
+
+        This helps identify:
+        1. Invalid ground truth labels (fault injection didn't work)
+        2. Data quality issues
+        3. Cases where RCA should not be evaluated
+
+        Returns:
+            Dict with validation results including is_valid, confidence, reasons, and evidence_score
+        """
+        # Find ground truth in candidates
+        gt_candidate = None
+        for c in candidates:
+            if c['node'] == ground_truth_node:
+                gt_candidate = c
+                break
+
+        if not gt_candidate:
+            return {
+                'is_valid': False,
+                'confidence': 'unknown',
+                'evidence_score': 0,
+                'reasons': [f"Ground truth node '{ground_truth_node}' not found in topology"],
+                'verdict': "❌ Ground truth node not found in analysis"
+            }
+
+        # Score evidence using adaptive thresholds
+        evidence_score = 0
+        reasons = []
+
+        # 1. Check for symptoms (0-3 points)
+        symptom_count = len(gt_candidate.get('symptoms', []))
+        if symptom_count > 0:
+            evidence_score += min(3, symptom_count)
+            reasons.append(f"✓ Has {symptom_count} symptoms detected")
+        else:
+            reasons.append("⚠️ No symptoms detected")
+
+        # 2. Check trace evidence (0-5 points)
+        trace_info = gt_candidate.get('trace_info', {})
+        if trace_info:
+            is_authoritative = trace_info.get('is_authoritative', False)
+            self_time_deg = trace_info.get('self_time_degradation', 1.0)
+
+            if is_authoritative:
+                if self_time_deg > self.thresholds.min_effect_size_large:
+                    evidence_score += 5
+                    reasons.append(f"✓ Strong authoritative trace evidence: {self_time_deg:.1f}x degradation")
+                elif self_time_deg > self.thresholds.min_effect_size_medium:
+                    evidence_score += 3
+                    reasons.append(f"✓ Moderate authoritative trace evidence: {self_time_deg:.1f}x degradation")
+                else:
+                    evidence_score += 1
+                    reasons.append(f"⚠️ Weak authoritative trace evidence: {self_time_deg:.1f}x degradation")
+            else:
+                reasons.append("⚠️ Non-authoritative trace evidence (might be victim)")
+        else:
+            reasons.append("⚠️ No trace evidence")
+
+        # 3. Check health status (0-2 points)
+        is_healthy = gt_candidate.get('is_healthy', True)
+        if not is_healthy:
+            evidence_score += 2
+            reasons.append("✓ Marked as unhealthy by health filter")
+        else:
+            reasons.append("⚠️ Marked as healthy by health filter")
+
+        # 4. Check integrated score (0-2 points)
+        integrated_score = gt_candidate.get('integrated_score', 0)
+        if integrated_score > self.thresholds.min_absolute_severity:
+            evidence_score += 2
+            reasons.append(f"✓ High integrated_score: {integrated_score:.1f}")
+        elif integrated_score > 0:
+            evidence_score += 1
+            reasons.append(f"⚠️ Low integrated_score: {integrated_score:.1f}")
+        else:
+            reasons.append("⚠️ Zero integrated_score")
+
+        # Determine validity using statistical thresholds
+        # Max score: 12 points
+        # High confidence: 8+, Medium: 5-7, Low: 2-4, Very low: 0-1
+        if evidence_score >= 8:
+            is_valid = True
+            confidence = 'high'
+            verdict = "✅ Strong evidence that ground truth is actually faulty"
+        elif evidence_score >= 5:
+            is_valid = True
+            confidence = 'medium'
+            verdict = "⚠️ Moderate evidence of fault - RCA should catch this"
+        elif evidence_score >= 2:
+            is_valid = False
+            confidence = 'low'
+            verdict = "⚠️ Weak evidence of fault - possibly invalid ground truth"
+        else:
+            is_valid = False
+            confidence = 'very_low'
+            verdict = "❌ No evidence of fault - likely invalid ground truth label"
+
+        return {
+            'is_valid': is_valid,
+            'confidence': confidence,
+            'evidence_score': evidence_score,
+            'max_evidence_score': 12,
+            'reasons': reasons,
+            'verdict': verdict,
+            'ground_truth_node': ground_truth_node,
+            'ground_truth_rank': None,  # Will be filled in by caller
+            'ground_truth_score': gt_candidate.get('score', 0),
+        }
+
     def calculate_integrated_health_score(self,
                                           node: str,
                                           service_self_score: float,
@@ -527,9 +639,49 @@ class WhiteboxRCAEngine:
             # Base score: Internal evidence is PRIMARY (0-100 points)
             base_score = integrated_score * 10.0
 
-            # Authoritative trace evidence is strong confirmation
+            # FIX 1: Enhanced symptom detection using trace data
+            # For infrastructure components (cache, queue, external) with no symptoms
+            # but strong trace evidence, treat trace as symptom
+            node_type = self.topology.nodes[node].get('type', 'Service')
+            is_infrastructure = node_type in ['ExternalCache', 'MessageQueue', 'ExternalService', 'SqlDatabase']
+
+            if is_infrastructure and service_self_score == 0 and is_trace_authoritative:
+                # Use trace degradation as symptom for infrastructure
+                if self_time_degradation > self.thresholds.min_effect_size_medium:
+                    # Add symptom-equivalent score based on trace evidence
+                    trace_symptom_bonus = min(10.0, self_time_degradation * 2.0)
+                    base_score += trace_symptom_bonus
+
+            # FIX 1B: Boost strong symptom evidence when NO trace data available
+            # Services with multiple symptoms but no traces get unfairly penalized
+            symptom_count = len(symptoms_map.get(node, []))
+            has_no_trace = trace_score == 0
+
+            # Don't boost if this is likely a victim (NOT the root cause)
+            # Victim indicators: high blame on dependencies, low self-time if traces exist
+            is_likely_victim = is_victim or (max_outgoing_conf > 0.7)
+
+            if has_no_trace and symptom_count >= 2 and service_self_score > 2.0 and not is_healthy and not is_likely_victim:
+                # Multiple symptoms with no trace = strong local evidence
+                # Boost to compete with trace-based scores
+                # Use adaptive boost based on symptom strength
+                symptom_strength_bonus = min(100.0, symptom_count * 20.0 + integrated_score * 10.0)
+                base_score += symptom_strength_bonus
+
+            # FIX 2: Authoritative trace evidence boost (adaptive multiplier)
+            # Instead of flat +50, use multiplier based on degradation severity
+            # Authoritative trace = definitive evidence, should dominate symptom-only scores
             if is_trace_authoritative:
-                base_score += 50.0
+                if self_time_degradation > self.thresholds.min_effect_size_very_large:
+                    # Critical degradation (>3x): large boost
+                    trace_boost = trace_score * 6.0 + 80.0
+                elif self_time_degradation > self.thresholds.min_effect_size_large:
+                    # Severe degradation (>2x): moderate boost
+                    trace_boost = trace_score * 5.0 + 60.0
+                else:
+                    # Moderate degradation: standard boost
+                    trace_boost = trace_score * 4.0 + 40.0
+                base_score += trace_boost
 
             # Victim penalty: If confirmed victim, heavily penalize
             # (Keep in rankings but score very low)
@@ -537,7 +689,8 @@ class WhiteboxRCAEngine:
                 base_score = base_score * 0.1  # 90% penalty
 
             # Healthy node penalty: Strongly penalize clearly healthy nodes
-            if is_healthy:
+            # EXCEPTION: Don't penalize if has authoritative trace evidence
+            if is_healthy and not is_trace_authoritative:
                 base_score = base_score * 0.05  # 95% penalty (stronger than victim penalty)
 
             # Confirmation signals: External evidence is SECONDARY (0-40 points total)
