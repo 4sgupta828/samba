@@ -1298,6 +1298,11 @@ def create_database_drilldown(metrics_df: pd.DataFrame, component_id: str,
     """Create drill-down charts for SqlDatabase."""
     charts = []
 
+    # === SECTION 1: Internal Database Metrics ===
+    charts.append(html.Div([
+        html.H5("Database Internal Metrics", style={'marginTop': '10px', 'marginBottom': '15px', 'color': '#f9fafb'}),
+    ]))
+
     # Get all metrics for this component
     component_metrics = metrics_df[metrics_df['component_id'] == component_id]
     available_metrics = set(component_metrics['metric_name'].unique())
@@ -1361,21 +1366,83 @@ def create_database_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
-    # If no charts were created, show a message
-    if not charts:
-        charts.append(html.Div([
-            html.P(f"No detailed metrics available for {component_id}"),
+    # === SECTION 2: Per-Caller Breakdown ===
+    # Find all metrics where this database is the dependency target
+    dependency_metrics = metrics_df[
+        (metrics_df['dependency_id'] == component_id) |
+        (metrics_df['dependency_name'].str.contains(component_id, na=False))
+    ].copy()
+
+    if not dependency_metrics.empty:
+        # Get unique callers
+        callers = sorted(dependency_metrics['service.name'].dropna().unique()) if 'service.name' in dependency_metrics.columns else []
+
+        if len(callers) > 0:
+            charts.append(html.Hr(style={'marginTop': '25px', 'marginBottom': '15px', 'borderColor': '#4b5563'}))
+            charts.append(html.Div([
+                html.H5("Caller Breakdown", style={'marginBottom': '10px', 'color': '#f9fafb'}),
+                html.P([
+                    html.Strong("Callers: "),
+                    html.Span(f"{len(callers)} service(s)", style={'color': '#3b82f6'})
+                ], style={'marginBottom': '10px', 'fontSize': '0.9em'}),
+                html.P(
+                    "Metrics from services calling this database (request rate, latency, errors).",
+                    style={'fontSize': '0.85em', 'color': '#9ca3af', 'marginBottom': '15px'}
+                )
+            ]))
+
+            # Create tabs - one for all callers, and one for each individual caller
+            tabs = []
+
+            # Tab 1: All Callers (aggregated)
+            all_callers_charts = _create_external_charts_for_caller(
+                dependency_metrics, component_id, None, callers
+            )
+            tabs.append(dbc.Tab(
+                label="All Callers",
+                tab_id=f"db-all-callers-{component_id}",
+                children=all_callers_charts
+            ))
+
+            # Individual caller tabs
+            for caller in callers:
+                caller_data = dependency_metrics[dependency_metrics['service.name'] == caller]
+                caller_charts = _create_external_charts_for_caller(
+                    caller_data, component_id, caller, None
+                )
+                tabs.append(dbc.Tab(
+                    label=caller,
+                    tab_id=f"db-caller-{component_id}-{caller}",
+                    children=caller_charts
+                ))
+
+            charts.append(dbc.Tabs(
+                tabs,
+                id=f"database-tabs-{component_id}",
+                active_tab=f"db-all-callers-{component_id}",
+                className="mb-3"
+            ))
+
+    # If no internal metrics were found, show a message
+    if len([c for c in charts if isinstance(c, dcc.Graph)]) == 0 and dependency_metrics.empty:
+        return [html.Div([
+            html.P(f"No metrics available for {component_id}"),
             html.P(f"Available metrics: {', '.join(available_metrics)}",
                    style={'fontSize': '0.8em', 'color': '#666'})
-        ]))
+        ])]
 
     return charts
 
 
 def create_cache_drilldown(metrics_df: pd.DataFrame, component_id: str,
                           label_data: Dict) -> List[dcc.Graph]:
-    """Create drill-down charts for InMemoryCache."""
+    """Create drill-down charts for cache components (InMemoryCache, ExternalCache)."""
     charts = []
+
+    # === SECTION 1: Internal Cache Metrics ===
+    charts.append(html.Div([
+        html.H5("Cache Internal Metrics", style={'marginTop': '10px', 'marginBottom': '15px', 'color': '#f9fafb'}),
+    ]))
 
     # Get all metrics for this component
     component_metrics = metrics_df[metrics_df['component_id'] == component_id]
@@ -1429,13 +1496,70 @@ def create_cache_drilldown(metrics_df: pd.DataFrame, component_id: str,
             config={'displayModeBar': False}
         ))
 
-    # If no charts were created, show a message
-    if not charts:
-        charts.append(html.Div([
-            html.P(f"No detailed metrics available for {component_id}"),
+    # === SECTION 2: Per-Caller Breakdown ===
+    # Find all metrics where this cache is the dependency target
+    dependency_metrics = metrics_df[
+        (metrics_df['dependency_id'] == component_id) |
+        (metrics_df['dependency_name'].str.contains(component_id, na=False))
+    ].copy()
+
+    if not dependency_metrics.empty:
+        # Get unique callers
+        callers = sorted(dependency_metrics['service.name'].dropna().unique()) if 'service.name' in dependency_metrics.columns else []
+
+        if len(callers) > 0:
+            charts.append(html.Hr(style={'marginTop': '25px', 'marginBottom': '15px', 'borderColor': '#4b5563'}))
+            charts.append(html.Div([
+                html.H5("Caller Breakdown", style={'marginBottom': '10px', 'color': '#f9fafb'}),
+                html.P([
+                    html.Strong("Callers: "),
+                    html.Span(f"{len(callers)} service(s)", style={'color': '#3b82f6'})
+                ], style={'marginBottom': '10px', 'fontSize': '0.9em'}),
+                html.P(
+                    "Metrics from services calling this cache (request rate, latency, errors).",
+                    style={'fontSize': '0.85em', 'color': '#9ca3af', 'marginBottom': '15px'}
+                )
+            ]))
+
+            # Create tabs - one for all callers, and one for each individual caller
+            tabs = []
+
+            # Tab 1: All Callers (aggregated)
+            all_callers_charts = _create_external_charts_for_caller(
+                dependency_metrics, component_id, None, callers
+            )
+            tabs.append(dbc.Tab(
+                label="All Callers",
+                tab_id=f"cache-all-callers-{component_id}",
+                children=all_callers_charts
+            ))
+
+            # Individual caller tabs
+            for caller in callers:
+                caller_data = dependency_metrics[dependency_metrics['service.name'] == caller]
+                caller_charts = _create_external_charts_for_caller(
+                    caller_data, component_id, caller, None
+                )
+                tabs.append(dbc.Tab(
+                    label=caller,
+                    tab_id=f"cache-caller-{component_id}-{caller}",
+                    children=caller_charts
+                ))
+
+            charts.append(dbc.Tabs(
+                tabs,
+                id=f"cache-tabs-{component_id}",
+                active_tab=f"cache-all-callers-{component_id}",
+                className="mb-3"
+            ))
+
+    # If no internal metrics were found, show a message
+    if len([c for c in charts if isinstance(c, dcc.Graph)]) == 0 and dependency_metrics.empty:
+        return [html.Div([
+            html.P(f"No metrics available for {component_id}"),
             html.P(f"Available metrics: {', '.join(available_metrics)}",
                    style={'fontSize': '0.8em', 'color': '#666'})
-        ]))
+        ])]
 
     return charts
 
@@ -1724,7 +1848,7 @@ def _create_external_charts_for_caller(
                 aggregated = latency_metrics.groupby('sim_time')[percentile].mean().reset_index()
                 fig.add_trace(go.Scatter(
                     x=aggregated['sim_time'],
-                    y=aggregated[percentile] * 1000,  # Convert to ms
+                    y=aggregated[percentile],  # Already in ms
                     mode='lines',
                     name=f'P{percentile[1:]}',
                     line=dict(width=2)
@@ -2873,7 +2997,7 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
         charts = create_pod_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'SqlDatabase':
         charts = create_database_drilldown(metrics_df, component_id, label_data)
-    elif component_type == 'InMemoryCache':
+    elif component_type in ['InMemoryCache', 'ExternalCache']:
         charts = create_cache_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'MessageQueue':
         charts = create_queue_drilldown(metrics_df, component_id, label_data)
