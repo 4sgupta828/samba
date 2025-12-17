@@ -636,8 +636,15 @@ class WhiteboxRCAEngine:
                     health_filter_reason = "No symptoms detected"
 
             # 8. Calculate Final Score (First Principles Formula)
-            # Base score: Internal evidence is PRIMARY (0-100 points)
-            base_score = integrated_score * 10.0
+            # Initialize all score components for explainability
+            base_health_score = integrated_score * 10.0
+            trace_symptom_bonus = 0.0
+            symptom_strength_bonus = 0.0
+            trace_boost = 0.0
+            victim_penalty_applied = False
+            healthy_penalty_applied = False
+
+            base_score = base_health_score
 
             # FIX 1: Enhanced symptom detection using trace data
             # For infrastructure components (cache, queue, external) with no symptoms
@@ -683,28 +690,36 @@ class WhiteboxRCAEngine:
                     trace_boost = trace_score * 4.0 + 40.0
                 base_score += trace_boost
 
+            # Store base score before penalties for explainability
+            base_score_before_penalties = base_score
+
             # Victim penalty: If confirmed victim, heavily penalize
             # (Keep in rankings but score very low)
             if is_victim and integrated_score < 2.0:
                 base_score = base_score * 0.1  # 90% penalty
+                victim_penalty_applied = True
 
             # Healthy node penalty: Strongly penalize clearly healthy nodes
             # EXCEPTION: Don't penalize if has authoritative trace evidence
             if is_healthy and not is_trace_authoritative:
                 base_score = base_score * 0.05  # 95% penalty (stronger than victim penalty)
+                healthy_penalty_applied = True
 
             # Confirmation signals: External evidence is SECONDARY (0-40 points total)
             # Use ADJUSTED guilt (with probabilistic discounting) instead of raw guilt
+            guilt_component = adjusted_guilt * 20.0
+            temporal_component = temporal_score * 2.0
+
             confirmation_score = (
-                (adjusted_guilt * 20.0) +     # Adjusted Guilt: 0-20 (with proxy discounting!)
-                (temporal_score * 2.0) +      # Temporal: 0-40
-                impact_bonus +                # Impact: 0-3 (log scale)
-                capacity_degradation_bonus    # Capacity Loss: 0-20 (zombie pods)
+                guilt_component +              # Adjusted Guilt: 0-20 (with proxy discounting!)
+                temporal_component +           # Temporal: 0-40
+                impact_bonus +                 # Impact: 0-3 (log scale)
+                capacity_degradation_bonus     # Capacity Loss: 0-20 (zombie pods)
             )
 
             final_score = base_score + confirmation_score
 
-            # Store results
+            # Store results with complete score breakdown for explainability
             rankings.append({
                 'node': node,
                 'score': round(final_score, 2),
@@ -724,7 +739,23 @@ class WhiteboxRCAEngine:
                 'is_trace_authoritative': is_trace_authoritative,
                 'is_healthy': is_healthy,
                 'health_filter_reason': health_filter_reason,
-                'story': []  # Populated later
+                'story': [],  # Populated later
+                # NEW: Complete score breakdown for UI explainability
+                'score_breakdown': {
+                    'base_health_score': round(base_health_score, 2),
+                    'trace_symptom_bonus': round(trace_symptom_bonus, 2),
+                    'symptom_strength_bonus': round(symptom_strength_bonus, 2),
+                    'trace_boost': round(trace_boost, 2),
+                    'base_before_penalties': round(base_score_before_penalties, 2),
+                    'victim_penalty_applied': victim_penalty_applied,
+                    'healthy_penalty_applied': healthy_penalty_applied,
+                    'base_after_penalties': round(base_score, 2),
+                    'guilt_component': round(guilt_component, 2),
+                    'temporal_component': round(temporal_component, 2),
+                    'impact_bonus': round(impact_bonus, 2),
+                    'capacity_bonus': round(capacity_degradation_bonus, 2),
+                    'confirmation_score': round(confirmation_score, 2),
+                }
             })
 
         # Sort descending
