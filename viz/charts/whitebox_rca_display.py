@@ -88,13 +88,18 @@ def create_whitebox_rca_display(episode_dir):
                 fault_type = label_data.get('fault_type', 'Unknown')
                 fault_role = label_data.get('root_cause_component_type', 'Unknown')
 
-        # Find rank of ground truth
-        top_k_nodes = [r['node'] for r in rankings[:10]]
-        if ground_truth in top_k_nodes:
-            gt_rank = top_k_nodes.index(ground_truth) + 1
-            rank_status = "success" if gt_rank == 1 else "warning"
+        # Find rank of ground truth in ALL rankings
+        all_nodes = [r['node'] for r in rankings]
+        if ground_truth in all_nodes:
+            gt_rank = all_nodes.index(ground_truth) + 1
+            if gt_rank == 1:
+                rank_status = "success"
+            elif gt_rank <= 10:
+                rank_status = "warning"
+            else:
+                rank_status = "danger"
         else:
-            gt_rank = ">10"
+            gt_rank = "Not Found"
             rank_status = "danger"
 
         # Top result
@@ -143,9 +148,41 @@ def create_whitebox_rca_display(episode_dir):
             ], width=3),
         ], className="mb-4")
 
+        # Determine which rankings to show
+        # Always show top 10, plus ground truth if it's outside top 10
+        rankings_to_show = []
+
+        # Add ground truth card first if it's outside top 10
+        gt_outside_top10 = isinstance(gt_rank, int) and gt_rank > 10
+        if gt_outside_top10:
+            gt_result = rankings[gt_rank - 1]
+            rankings_to_show.append((gt_rank, gt_result, True))  # (rank, result, is_special_gt)
+
+        # Add top 10
+        for i, result in enumerate(rankings[:10], 1):
+            rankings_to_show.append((i, result, False))
+
         # Create detailed ranking cards - clean version without duplication
         ranking_cards = []
-        for i, result in enumerate(rankings[:10], 1):  # Top 10
+
+        # Add warning banner if ground truth is outside top 10
+        if gt_outside_top10:
+            ranking_cards.append(
+                dbc.Alert([
+                    html.Strong("⚠️ Ground Truth Outside Top 10", className="me-2"),
+                    html.Span(f"Ground truth '{ground_truth}' ranked #{gt_rank}. Showing it here for analysis."),
+                ], color="warning", className="mb-3")
+            )
+
+        for rank_idx, (i, result, is_special_gt) in enumerate(rankings_to_show):
+            # Add separator after ground truth card
+            if rank_idx == 1 and gt_outside_top10:
+                ranking_cards.append(
+                    html.Div([
+                        html.Hr(className="my-4"),
+                        html.H5("📋 Top 10 Predictions", className="mb-3 text-primary")
+                    ])
+                )
             node = result['node']
             score = result['score']
             symptoms = result.get('symptoms', [])
@@ -181,8 +218,12 @@ def create_whitebox_rca_display(episode_dir):
 
             # Determine styling - clean and consistent
             is_ground_truth = (node == ground_truth)
-            if is_ground_truth:
-                border_color = "#198754"  # Green for ground truth
+            if is_special_gt:
+                # Special styling for ground truth outside top 10
+                border_color = "#dc3545"  # Red to indicate it's poorly ranked
+                rank_badge_bg = "#dc3545"
+            elif is_ground_truth:
+                border_color = "#198754"  # Green for ground truth in top 10
                 rank_badge_bg = "#198754"
             elif i == 1:
                 border_color = "#0d6efd"  # Blue for top prediction
