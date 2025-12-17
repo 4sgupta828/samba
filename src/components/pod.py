@@ -79,9 +79,20 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.connection_queue_samples = []
         self.sample_window = get_simulation_config().defaults.sample_window_seconds
 
+        # Track error rate samples for calculating error rates (errors / total requests)
+        self.error_rate_samples = []  # List of (timestamp, error_count, request_count) tuples
+        self.dependency_error_rate_samples = {}  # {dep_id: [(timestamp, error_count, request_count)]}
+
         # Initialize dynamics engine (always enabled - single source of truth)
         self.request_count = 0
         self.last_request_count = 0
+
+        # Track request/error counts for error rate calculation (windowed)
+        self.total_requests_window = 0
+        self.total_errors_window = 0
+        self.dependency_requests_window = {}  # {dep_id: count}
+        self.dependency_errors_window = {}    # {dep_id: count}
+        self.dependency_names = {}            # {dep_id: name} - for display
         global_config = get_simulation_config()
 
         # Load dynamics configuration with sensible defaults
@@ -160,6 +171,10 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             description="Number of requests queued waiting for thread"
         )
 
+        # Error rate metrics (will be fully initialized after parent_service is set)
+        self.error_rate_gauge = None
+        self.dependency_error_rate_gauge = None
+
         # Request-level metrics will be initialized after parent_service is set
         # (See _initialize_request_metrics() method)
         self.request_counter = None
@@ -229,6 +244,18 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             f"service.{service_id}.dependency.errors",
             unit="1",
             description=f"External dependency call errors from {service_name}"
+        )
+
+        # Error rate gauges (ratio of errors to total requests, 0-1)
+        self.error_rate_gauge = self.meter.create_observable_gauge(
+            f"service.{service_id}.error_rate",
+            callbacks=[self._report_error_rate],
+            description=f"Error rate for {service_name} (errors/total_requests)"
+        )
+        self.dependency_error_rate_gauge = self.meter.create_observable_gauge(
+            f"service.{service_id}.dependency.error_rate",
+            callbacks=[self._report_dependency_error_rate],
+            description=f"Dependency error rate for {service_name} (dep_errors/total_dep_requests)"
         )
 
         # Initialize propagation metrics (circuit breakers, retries, timeouts)
@@ -322,6 +349,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.env.process(self._sample_cpu_periodically())
         self.env.process(self._monitor_oom())
         self.env.process(self._update_dynamics_loop())
+        self.env.process(self._error_rate_window_reset_process())
 
         # Start queue consumer if parent service has queue_in connection
         if self.parent_service and 'queue_in' in getattr(self.parent_service, 'connections', {}):
@@ -531,6 +559,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "service.name": self.parent_service.service_name,
                     "service.id": self.parent_service.id
                 })
+                # Track for error rate calculation
+                self._track_request(is_error=False)
 
             # Record dependency metrics for queue consumption
             if self.dependency_requests and self.dependency_duration and self.parent_service:
@@ -552,6 +582,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "service.name": self.parent_service.service_name,
                     "service.id": self.parent_service.id
                 })
+                # Track dependency request for error rate calculation
+                self._track_dependency_request(queue.id, dependency_name="queue (consumer)", is_error=False)
 
         except Exception as e:
             # Processing failed - message will become visible again after timeout
@@ -580,6 +612,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "service.name": self.parent_service.service_name,
                     "service.id": self.parent_service.id
                 })
+                # Track error for error rate calculation
+                self._track_request(is_error=True)
 
             # Record dependency error metrics for queue consumption
             if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
@@ -610,6 +644,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "service.name": self.parent_service.service_name,
                     "service.id": self.parent_service.id
                 })
+                # Track dependency error for error rate calculation
+                self._track_dependency_request(queue.id, dependency_name="queue (consumer)", is_error=True)
 
             # Don't delete - let visibility timeout return it to queue for retry
             # Re-raise so circuit breaker in _consume_from_queue can track failures
@@ -891,6 +927,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             "service.name": self.parent_service.service_name,
                             "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                         })
+                        # Track for error rate calculation
+                        self._track_request(is_error=False)
 
                 except Exception as e:
                     # Record error metrics (only if metrics are initialized and not skipped)
@@ -917,6 +955,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             "service.name": self.parent_service.service_name,
                             "service.id": self.parent_service.id  # NEW: Add service ID for UI filtering
                         })
+                        # Track error for error rate calculation
+                        self._track_request(is_error=True)
                     # Re-raise exception so caller knows the request failed
                     raise
         finally:
@@ -1063,6 +1103,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "service.name": self.parent_service.service_name,
                         "service.id": self.parent_service.id
                     })
+                    # Track for dependency error rate calculation
+                    self._track_dependency_request(cache.id, dependency_name="cache", is_error=False)
 
                 return (True, None, None)  # Cache hit - no need to track key
 
@@ -1091,6 +1133,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         "service.name": self.parent_service.service_name,
                         "service.id": self.parent_service.id
                     })
+                    # Track for dependency error rate calculation
+                    self._track_dependency_request(cache.id, dependency_name="cache", is_error=False)
 
                 return (False, cache_key, cache)  # Cache miss - return key for later population
 
@@ -1121,6 +1165,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "component.id": self.id,
                     "service.name": self.parent_service.service_name
                 })
+                # Track dependency error for error rate calculation
+                self._track_dependency_request(cache.id, dependency_name="cache", is_error=True)
 
             # Treat cache error as miss, but don't propagate error - DB will be tried
             if span:
@@ -1223,6 +1269,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             "component.id": self.id,
                             "service.name": self.parent_service.service_name
                         })
+                        # Track for dependency error rate calculation
+                        self._track_dependency_request(db.id, dependency_name="database", is_error=False)
 
                     break  # Success
                 except Exception as e:
@@ -1254,6 +1302,8 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                                 "component.id": self.id,
                                 "service.name": self.parent_service.service_name
                             })
+                            # Track dependency error for error rate calculation
+                            self._track_dependency_request(db.id, dependency_name="database", is_error=True)
                         raise
 
     def _execute_service_calls(self, step, span, request_type=None):
@@ -1891,3 +1941,109 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
             attributes["service.name"] = self.parent_service.service_name
 
         yield Observation(queue_depth, attributes)
+
+    def _report_error_rate(self, options):
+        """Callback for error rate gauge - ratio of errors to total requests (0-1)."""
+        from opentelemetry.metrics import Observation
+
+        # Calculate error rate from windowed counters
+        if self.total_requests_window > 0:
+            error_rate = self.total_errors_window / self.total_requests_window
+        else:
+            error_rate = 0.0
+
+        attributes = {
+            "component.id": self.id,
+            "sim.time": self.env.now
+        }
+        if self.parent_service:
+            attributes["service.name"] = self.parent_service.service_name
+            attributes["service.id"] = self.parent_service.id
+
+        yield Observation(error_rate, attributes)
+
+    def _report_dependency_error_rate(self, options):
+        """Callback for dependency error rate gauge - emits per-dependency error rates (0-1)."""
+        from opentelemetry.metrics import Observation
+
+        # Emit error rate for EACH dependency separately
+        for dep_id in self.dependency_requests_window.keys():
+            dep_requests = self.dependency_requests_window.get(dep_id, 0)
+            dep_errors = self.dependency_errors_window.get(dep_id, 0)
+
+            if dep_requests > 0:
+                dep_error_rate = dep_errors / dep_requests
+            else:
+                dep_error_rate = 0.0
+
+            # Get dependency name (or use dep_id as fallback)
+            dep_name = self.dependency_names.get(dep_id, dep_id)
+
+            attributes = {
+                "component.id": self.id,
+                "dependency_id": dep_id,
+                "dependency_name": dep_name,  # Add name for UI display
+                "sim.time": self.env.now
+            }
+            if self.parent_service:
+                attributes["service.name"] = self.parent_service.service_name
+                attributes["service.id"] = self.parent_service.id
+
+            yield Observation(dep_error_rate, attributes)
+
+        # Also emit aggregate dependency error rate (for overall monitoring)
+        total_dep_requests = sum(self.dependency_requests_window.values())
+        total_dep_errors = sum(self.dependency_errors_window.values())
+
+        if total_dep_requests > 0:
+            aggregate_error_rate = total_dep_errors / total_dep_requests
+        else:
+            aggregate_error_rate = 0.0
+
+        aggregate_attributes = {
+            "component.id": self.id,
+            "sim.time": self.env.now
+        }
+        if self.parent_service:
+            aggregate_attributes["service.name"] = self.parent_service.service_name
+            aggregate_attributes["service.id"] = self.parent_service.id
+
+        yield Observation(aggregate_error_rate, aggregate_attributes)
+
+    def _track_request(self, is_error: bool = False):
+        """Track a request for error rate calculation."""
+        self.total_requests_window += 1
+        if is_error:
+            self.total_errors_window += 1
+
+    def _track_dependency_request(self, dependency_id: str, dependency_name: str = None, is_error: bool = False):
+        """Track a dependency request for error rate calculation."""
+        if dependency_id not in self.dependency_requests_window:
+            self.dependency_requests_window[dependency_id] = 0
+            self.dependency_errors_window[dependency_id] = 0
+
+        # Store dependency name for display
+        if dependency_name and dependency_id not in self.dependency_names:
+            self.dependency_names[dependency_id] = dependency_name
+
+        self.dependency_requests_window[dependency_id] += 1
+        if is_error:
+            self.dependency_errors_window[dependency_id] += 1
+
+    def _error_rate_window_reset_process(self):
+        """
+        Background process to periodically reset error rate tracking windows.
+        This creates a sliding window for error rate calculation.
+        """
+        while True:
+            try:
+                # Wait for sample window duration
+                yield self.env.timeout(self.sample_window)
+
+                # Reset windowed counters to create sliding window
+                self.total_requests_window = 0
+                self.total_errors_window = 0
+                self.dependency_requests_window.clear()
+                self.dependency_errors_window.clear()
+            except simpy.Interrupt:
+                break

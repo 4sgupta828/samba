@@ -837,6 +837,21 @@ def create_pod_drilldown(metrics_df: pd.DataFrame, component_id: str,
                             config={'displayModeBar': False}
                         ))
 
+                    # NEW: Error Rate chart (per-dependency)
+                    dependency_error_rate_metric = f'service.{component_id}.dependency.error_rate'
+                    if dependency_error_rate_metric in available_metrics:
+                        dep_charts.append(dcc.Graph(
+                            figure=create_metric_chart_filtered(
+                                metrics_df, component_id,
+                                dependency_error_rate_metric,
+                                f'Error Rate',
+                                'Error Rate (0-1)',
+                                filter_col='dependency_id',
+                                filter_val=dep_id
+                            ),
+                            config={'displayModeBar': False}
+                        ))
+
                     # Create accordion item
                     accordion_items.append(
                         dbc.AccordionItem(
@@ -944,15 +959,43 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                 config={'displayModeBar': False}
             ))
 
-    # Error rate (aggregate from Pod metrics)
+    # Error count (aggregate from Pod metrics)
     error_metric = f'service.{component_id}.errors'
     if error_metric in pod_metrics_available:
         charts.append(dcc.Graph(
             figure=create_service_aggregated_chart(
                 metrics_df, component_id,
                 error_metric,
-                'Error Rate',
+                'Error Count',
                 'Errors',
+                pod_ids=pod_ids
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Error rate gauge (NEW: 0-1 ratio from pods)
+    error_rate_metric = f'service.{component_id}.error_rate'
+    if error_rate_metric in pod_metrics_available:
+        charts.append(dcc.Graph(
+            figure=create_service_aggregated_chart(
+                metrics_df, component_id,
+                error_rate_metric,
+                'Error Rate',
+                'Error Rate (0-1)',
+                pod_ids=pod_ids
+            ),
+            config={'displayModeBar': False}
+        ))
+
+    # Dependency error rate gauge (NEW: 0-1 ratio from pods)
+    dep_error_rate_metric = f'service.{component_id}.dependency.error_rate'
+    if dep_error_rate_metric in pod_metrics_available:
+        charts.append(dcc.Graph(
+            figure=create_service_aggregated_chart(
+                metrics_df, component_id,
+                dep_error_rate_metric,
+                'Dependency Error Rate',
+                'Error Rate (0-1)',
                 pod_ids=pod_ids
             ),
             config={'displayModeBar': False}
@@ -1268,6 +1311,22 @@ def create_service_drilldown(metrics_df: pd.DataFrame, component_id: str,
                             dependency_error_metric,
                             f'Errors',
                             'Errors',
+                            filter_col='dependency_id',
+                            filter_val=dep_id,
+                            pod_ids=pod_ids
+                        ),
+                        config={'displayModeBar': False}
+                    ))
+
+                # NEW: Error Rate chart (per-dependency, aggregated from pods)
+                dependency_error_rate_metric = f'service.{component_id}.dependency.error_rate'
+                if dependency_error_rate_metric in pod_metrics_available:
+                    dep_charts.append(dcc.Graph(
+                        figure=create_service_aggregated_chart_filtered(
+                            metrics_df, component_id,
+                            dependency_error_rate_metric,
+                            f'Error Rate',
+                            'Error Rate (0-1)',
                             filter_col='dependency_id',
                             filter_val=dep_id,
                             pod_ids=pod_ids

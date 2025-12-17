@@ -42,22 +42,21 @@ METRIC_MAP = {
 
     # Golden Signals (Self Health)
     'service.latency': 'avg_latency',
-    'service.duration': 'avg_latency', 
+    'service.duration': 'avg_latency',
     'service.response_time': 'avg_latency',
-    'service.errors': 'internal_error_rate',
-    'service.error_rate': 'internal_error_rate',
+    'service.error_rate': 'internal_error_rate',  # NEW: Error rate gauge (0-1) emitted by pods
+    '.error_rate': 'internal_error_rate',  # Matches service.X.error_rate
     'service.requests': 'inbound_rps',
     'service.request_rate': 'inbound_rps',
     'service.throughput': 'inbound_rps',
-    
+
     # Edge Signals (Client-side view of dependencies)
     'client.latency': 'dependency_latency',
     'dependency.latency': 'dependency_latency',
     'client.duration': 'dependency_latency',
     '.dependency.duration': 'dependency_latency',  # Matches service.X.dependency.duration
-    'client.errors': 'dependency_error_rate',
-    'dependency.error_rate': 'dependency_error_rate',
-    '.dependency.errors': 'dependency_error_rate',  # Matches service.X.dependency.errors
+    'dependency.error_rate': 'dependency_error_rate',  # NEW: Dependency error rate gauge (0-1)
+    '.dependency.error_rate': 'dependency_error_rate',  # Matches service.X.dependency.error_rate
     'client.requests': 'outbound_rps',
     'dependency.request_rate': 'outbound_rps',
     '.dependency.requests': 'outbound_rps',  # Matches service.X.dependency.requests
