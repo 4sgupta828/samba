@@ -1315,13 +1315,29 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                     current_pods=current_pods
                 )
 
+                # Compute rank and found_in_top_k for UI display
+                rank = None
+                found_in_top_k = False
+                top_k = 5  # Standard top-K threshold
+
+                if results:
+                    # Find rank of ground truth in rankings
+                    for i, result in enumerate(results, 1):
+                        if result['node'] == ground_truth_node:
+                            rank = i
+                            found_in_top_k = (i <= top_k)
+                            break
+
                 # Save results (using backward-compatible filename)
                 output_path = os.path.join(episode_dir, 'rca_analysis.json')
                 with open(output_path, 'w') as f:
                     json.dump({
                         'rankings': results,
                         'ground_truth': ground_truth_node,
-                        'fault_start_time': fault_start_time
+                        'fault_start_time': fault_start_time,
+                        'rank': rank,
+                        'found_in_top_k': found_in_top_k,
+                        'top_k': top_k
                     }, f, indent=2)
 
                 if verbose:

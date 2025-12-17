@@ -4043,6 +4043,32 @@ def analyze_batch_folder(n_clicks, folder_path):
                 top_candidates = rca_data.get('top_candidates', [])
                 ground_truth_validation = rca_data.get('ground_truth_validation', {})
 
+                # If rank/found_in_top_k are missing, compute them from rankings
+                if rank is None and 'rankings' in rca_data:
+                    rankings = rca_data.get('rankings', [])
+                    top_k = rca_data.get('top_k', 5)  # Default to top-5
+
+                    # Find rank of ground truth in rankings
+                    for i, result in enumerate(rankings, 1):
+                        if result.get('node') == ground_truth:
+                            rank = i
+                            found_in_top_k = (i <= top_k)
+                            break
+
+                    # Build top_candidates list if not present
+                    if not top_candidates and rankings:
+                        top_candidates = [
+                            {
+                                'node': r.get('node'),
+                                'score': r.get('score', 0),
+                                'self_score': r.get('integrated_score', 0),
+                                'integrated_score': r.get('integrated_score', 0),
+                                'guilt_ratio': r.get('guilt_adjusted'),
+                                'temporal_score': r.get('temporal_score', 0)
+                            }
+                            for r in rankings[:5]
+                        ]
+
                 result = {
                     'episode': str(episode_dir),
                     'episode_name': episode_name,
