@@ -1656,38 +1656,65 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
     semantic_map = episode_data.get('semantic_map')
     if semantic_map and 'description' in semantic_map:
         domain = semantic_map.get('domain', 'Unknown')
+        architecture_name = semantic_map.get('architecture_name', '')
+        archetype = semantic_map.get('archetype', '')
         description = semantic_map.get('description', '')
         pros = semantic_map.get('pros', [])
         cons = semantic_map.get('cons', [])
-
-        # Split description into paragraphs for better formatting
-        paragraphs = [p.strip() for p in description.split('.') if p.strip()]
-
-        # Group sentences into logical paragraphs (roughly 2-3 sentences each)
-        formatted_paragraphs = []
-        current_para = []
-        for i, sentence in enumerate(paragraphs):
-            current_para.append(sentence + '.')
-            # Create paragraph every 2-3 sentences or if we detect topic change keywords
-            if (len(current_para) >= 2 and any(keyword in sentence.lower() for keyword in
-                ['bottleneck', 'fault mode', 'common', 'key', 'failure'])) or len(current_para) >= 3:
-                formatted_paragraphs.append(' '.join(current_para))
-                current_para = []
-
-        # Add any remaining sentences
-        if current_para:
-            formatted_paragraphs.append(' '.join(current_para))
+        request_flows = semantic_map.get('request_flows', {})
+        topology_analysis = semantic_map.get('topology_analysis', {})
 
         # Build the content sections
-        content_sections = [
-            html.Div([
-                html.P(para, className="mb-3", style={
-                    'lineHeight': '1.8',
-                    'fontSize': '0.95rem',
-                    'textAlign': 'justify'
-                }) for para in formatted_paragraphs
-            ])
-        ]
+        content_sections = []
+
+        # Add architecture metadata at the top
+        if architecture_name or archetype:
+            metadata_badges = []
+            if archetype:
+                metadata_badges.append(
+                    dbc.Badge(
+                        f"🏗️ {archetype.upper()}",
+                        color="primary",
+                        className="me-2",
+                        style={'fontSize': '0.85rem'}
+                    )
+                )
+
+            content_sections.append(
+                html.Div([
+                    html.Div(metadata_badges, className="mb-2") if metadata_badges else None,
+                    html.H5(architecture_name, className="mb-3 text-primary") if architecture_name else None
+                ], className="mb-3")
+            )
+
+        # Split description into paragraphs for better formatting
+        if description:
+            paragraphs = [p.strip() for p in description.split('.') if p.strip()]
+
+            # Group sentences into logical paragraphs (roughly 2-3 sentences each)
+            formatted_paragraphs = []
+            current_para = []
+            for i, sentence in enumerate(paragraphs):
+                current_para.append(sentence + '.')
+                # Create paragraph every 2-3 sentences or if we detect topic change keywords
+                if (len(current_para) >= 2 and any(keyword in sentence.lower() for keyword in
+                    ['bottleneck', 'fault mode', 'common', 'key', 'failure'])) or len(current_para) >= 3:
+                    formatted_paragraphs.append(' '.join(current_para))
+                    current_para = []
+
+            # Add any remaining sentences
+            if current_para:
+                formatted_paragraphs.append(' '.join(current_para))
+
+            content_sections.append(
+                html.Div([
+                    html.P(para, className="mb-3", style={
+                        'lineHeight': '1.8',
+                        'fontSize': '0.95rem',
+                        'textAlign': 'justify'
+                    }) for para in formatted_paragraphs
+                ])
+            )
 
         # Add pros and cons if available
         if pros or cons:
@@ -1729,6 +1756,310 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
 
             content_sections.append(dbc.Row(pros_cons_row))
 
+        # Add request flows section
+        if request_flows:
+            content_sections.append(html.Hr(className="my-4"))
+            content_sections.append(
+                html.H5([
+                    html.Span("🔄 ", style={'fontSize': '1.3rem'}),
+                    "Request Flows"
+                ], className="mb-3 mt-2")
+            )
+
+            for http_method, flow_data in request_flows.items():
+                if isinstance(flow_data, dict) and 'use_case' in flow_data:
+                    # Method badge colors
+                    method_colors = {
+                        'GET': 'info',
+                        'POST': 'success',
+                        'PUT': 'warning',
+                        'DELETE': 'danger',
+                        'PATCH': 'secondary'
+                    }
+
+                    use_case = flow_data.get('use_case', '')
+
+                    # Build flow visualization
+                    flow_items = []
+                    for service_name, dependencies in flow_data.items():
+                        if service_name != 'use_case' and isinstance(dependencies, list):
+                            if dependencies:  # Only show if there are dependencies
+                                deps_formatted = ' → '.join(dependencies)
+                                flow_items.append(
+                                    html.Li([
+                                        html.Code(service_name, style={
+                                            'backgroundColor': '#e7f3ff',
+                                            'color': '#004085',
+                                            'padding': '3px 8px',
+                                            'borderRadius': '4px',
+                                            'fontSize': '0.85rem',
+                                            'fontWeight': 'bold',
+                                            'border': '1px solid #b8daff'
+                                        }),
+                                        html.Span(' → ', style={'color': '#212529', 'margin': '0 8px', 'fontWeight': 'bold'}),
+                                        html.Span(deps_formatted, style={
+                                            'fontSize': '0.85rem',
+                                            'color': '#212529',
+                                            'fontWeight': '500'
+                                        })
+                                    ], className="mb-2", style={'lineHeight': '1.8'})
+                                )
+
+                    if use_case or flow_items:
+                        # Border color based on HTTP method
+                        border_colors = {
+                            'GET': '#17a2b8',
+                            'POST': '#28a745',
+                            'PUT': '#ffc107',
+                            'DELETE': '#dc3545',
+                            'PATCH': '#6c757d'
+                        }
+                        border_color = border_colors.get(http_method, '#6c757d')
+
+                        content_sections.append(
+                            html.Div([
+                                html.Div([
+                                    dbc.Badge(
+                                        http_method,
+                                        color=method_colors.get(http_method, 'secondary'),
+                                        className="me-2",
+                                        style={'fontSize': '0.8rem', 'fontWeight': 'bold'}
+                                    ),
+                                    html.Span(use_case, style={
+                                        'fontSize': '0.9rem',
+                                        'fontStyle': 'italic',
+                                        'color': '#212529',
+                                        'fontWeight': '500'
+                                    })
+                                ], className="mb-2"),
+                                html.Ul(flow_items, style={
+                                    'listStyleType': 'none',
+                                    'paddingLeft': '1.5rem',
+                                    'marginBottom': '0'
+                                }) if flow_items else None
+                            ], className="mb-3 p-2", style={
+                                'backgroundColor': '#fff',
+                                'border': '1px solid #dee2e6',
+                                'borderLeft': f'3px solid {border_color}',
+                                'borderRadius': '4px'
+                            })
+                        )
+
+        # Add topology analysis section
+        if topology_analysis:
+            content_sections.append(html.Hr(className="my-4"))
+            content_sections.append(
+                html.H5([
+                    html.Span("🔍 ", style={'fontSize': '1.3rem'}),
+                    "Topology Analysis"
+                ], className="mb-3 mt-2")
+            )
+
+            # Critical Paths
+            critical_paths = topology_analysis.get('critical_paths', [])
+            if critical_paths:
+                content_sections.append(
+                    html.Div([
+                        html.H6([
+                            html.Span("⚡ ", style={'color': '#ffc107', 'fontSize': '1.1rem'}),
+                            "Critical Paths"
+                        ], className="mb-2 text-warning"),
+                        html.Div([
+                            html.Div([
+                                html.Div([
+                                    dbc.Badge(
+                                        path.get('criticality', 'unknown').upper(),
+                                        color='danger' if path.get('criticality') == 'high' else 'warning' if path.get('criticality') == 'medium' else 'info',
+                                        className="me-2"
+                                    ),
+                                    html.Span(f"{path.get('latency_ms', 0)}ms", style={
+                                        'fontSize': '0.85rem',
+                                        'color': '#6c757d',
+                                        'fontWeight': 'bold'
+                                    })
+                                ], className="mb-1"),
+                                html.Code(' → '.join(path.get('path', [])), style={
+                                    'backgroundColor': '#fff3cd',
+                                    'color': '#664d03',
+                                    'padding': '4px 8px',
+                                    'borderRadius': '4px',
+                                    'fontSize': '0.85rem',
+                                    'display': 'block',
+                                    'marginBottom': '6px',
+                                    'fontWeight': '600'
+                                }),
+                                html.P(path.get('reason', ''), style={
+                                    'fontSize': '0.85rem',
+                                    'color': '#212529',
+                                    'marginBottom': '0',
+                                    'fontStyle': 'italic'
+                                })
+                            ], className="mb-3 p-2", style={
+                                'backgroundColor': '#fffbf0',
+                                'borderLeft': '3px solid #ffc107',
+                                'borderRadius': '4px'
+                            }) for path in critical_paths
+                        ])
+                    ], className="mb-4")
+                )
+
+            # Bottlenecks
+            bottlenecks = topology_analysis.get('bottlenecks', [])
+            if bottlenecks:
+                content_sections.append(
+                    html.Div([
+                        html.H6([
+                            html.Span("🚧 ", style={'color': '#dc3545', 'fontSize': '1.1rem'}),
+                            "Bottlenecks"
+                        ], className="mb-2 text-danger"),
+                        html.Div([
+                            html.Div([
+                                html.Div([
+                                    html.Code(bn.get('node_id', ''), style={
+                                        'backgroundColor': '#f8d7da',
+                                        'color': '#721c24',
+                                        'padding': '2px 6px',
+                                        'borderRadius': '3px',
+                                        'fontSize': '0.9rem',
+                                        'fontWeight': 'bold'
+                                    }),
+                                    html.Span(' - ', style={'margin': '0 6px'}),
+                                    dbc.Badge(
+                                        bn.get('severity', 'unknown').upper(),
+                                        color='danger' if bn.get('severity') == 'high' else 'warning',
+                                        className="me-2"
+                                    ),
+                                    html.Span(bn.get('type', '').replace('_', ' ').title(), style={
+                                        'fontSize': '0.85rem',
+                                        'color': '#721c24'
+                                    })
+                                ], className="mb-2"),
+                                html.P(bn.get('reason', ''), style={
+                                    'fontSize': '0.85rem',
+                                    'marginBottom': '8px',
+                                    'color': '#212529'
+                                }),
+                                html.Div([
+                                    html.Strong("Symptoms: ", style={'fontSize': '0.8rem', 'color': '#212529'}),
+                                    html.Span(', '.join(bn.get('symptoms', [])), style={
+                                        'fontSize': '0.8rem',
+                                        'color': '#495057'
+                                    })
+                                ]) if bn.get('symptoms') else None
+                            ], className="mb-3 p-2", style={
+                                'backgroundColor': '#fff',
+                                'border': '1px solid #dee2e6',
+                                'borderLeft': '3px solid #dc3545',
+                                'borderRadius': '4px'
+                            }) for bn in bottlenecks
+                        ])
+                    ], className="mb-4")
+                )
+
+            # Failure Modes
+            failure_modes = topology_analysis.get('failure_modes', [])
+            if failure_modes:
+                content_sections.append(
+                    html.Div([
+                        html.H6([
+                            html.Span("💥 ", style={'color': '#dc3545', 'fontSize': '1.1rem'}),
+                            "Failure Modes"
+                        ], className="mb-2 text-danger"),
+                        html.Div([
+                            html.Div([
+                                html.Div([
+                                    html.Code(fm.get('target', ''), style={
+                                        'backgroundColor': '#f8d7da',
+                                        'color': '#721c24',
+                                        'padding': '2px 6px',
+                                        'borderRadius': '3px',
+                                        'fontSize': '0.9rem',
+                                        'fontWeight': 'bold'
+                                    }),
+                                    html.Span(' - ', style={'margin': '0 6px'}),
+                                    html.Span(fm.get('fault_type', '').replace('_', ' ').title(), style={
+                                        'fontSize': '0.9rem',
+                                        'fontWeight': 'bold'
+                                    })
+                                ], className="mb-2"),
+                                html.Div([
+                                    dbc.Badge(f"Likelihood: {fm.get('likelihood', 'unknown')}", color='secondary', className="me-2"),
+                                    dbc.Badge(f"Impact: {fm.get('impact', 'unknown')}",
+                                             color='danger' if fm.get('impact') == 'critical' else 'warning' if fm.get('impact') == 'high' else 'info')
+                                ], className="mb-2"),
+                                html.Div([
+                                    html.Strong("Propagation:", style={'fontSize': '0.85rem', 'display': 'block', 'marginBottom': '4px', 'color': '#212529'}),
+                                    html.Ul([
+                                        html.Li(prop, style={'fontSize': '0.8rem', 'color': '#212529'})
+                                        for prop in fm.get('propagation', [])
+                                    ], style={'marginBottom': '8px', 'paddingLeft': '20px'})
+                                ]) if fm.get('propagation') else None,
+                                html.Div([
+                                    html.Strong("Detection Signals: ", style={'fontSize': '0.8rem', 'color': '#212529'}),
+                                    html.Span(', '.join(fm.get('detection_signals', [])), style={
+                                        'fontSize': '0.8rem',
+                                        'color': '#495057'
+                                    })
+                                ]) if fm.get('detection_signals') else None
+                            ], className="mb-3 p-2", style={
+                                'backgroundColor': '#fff',
+                                'border': '1px solid #f8d7da',
+                                'borderLeft': '3px solid #dc3545',
+                                'borderRadius': '4px'
+                            }) for fm in failure_modes
+                        ])
+                    ], className="mb-4")
+                )
+
+            # Dependencies
+            dependencies = topology_analysis.get('dependencies', [])
+            if dependencies:
+                content_sections.append(
+                    html.Div([
+                        html.H6([
+                            html.Span("🔗 ", style={'color': '#17a2b8', 'fontSize': '1.1rem'}),
+                            "Service Dependencies"
+                        ], className="mb-2 text-info"),
+                        html.Div([
+                            html.Div([
+                                html.Div([
+                                    html.Code(dep.get('service', ''), style={
+                                        'backgroundColor': '#d1ecf1',
+                                        'color': '#0c5460',
+                                        'padding': '2px 6px',
+                                        'borderRadius': '3px',
+                                        'fontSize': '0.9rem',
+                                        'fontWeight': 'bold'
+                                    }),
+                                    html.Span(' → ', style={'margin': '0 6px', 'color': '#6c757d'}),
+                                    html.Span(', '.join(dep.get('depends_on', [])), style={
+                                        'fontSize': '0.85rem',
+                                        'color': '#495057'
+                                    })
+                                ], className="mb-2"),
+                                html.Div([
+                                    dbc.Badge(
+                                        f"{dep.get('dependency_strength', 'unknown')} dependency",
+                                        color='danger' if dep.get('dependency_strength') == 'hard' else 'secondary',
+                                        className="me-2"
+                                    )
+                                ], className="mb-1"),
+                                html.P(dep.get('failure_behavior', ''), style={
+                                    'fontSize': '0.8rem',
+                                    'color': '#212529',
+                                    'marginBottom': '0',
+                                    'fontStyle': 'italic'
+                                })
+                            ], className="mb-3 p-2", style={
+                                'backgroundColor': '#fff',
+                                'border': '1px solid #d1ecf1',
+                                'borderLeft': '3px solid #17a2b8',
+                                'borderRadius': '4px'
+                            }) for dep in dependencies
+                        ])
+                    ], className="mb-4")
+                )
+
         semantic_content = dbc.Card([
             dbc.CardHeader([
                 html.Div([
@@ -1747,7 +2078,7 @@ def update_topology(episode_id, visible_types, use_filtered, hide_healthy, layou
                 ], className="clearfix")
             ]),
             dbc.Collapse([
-                dbc.CardBody(content_sections, style={'backgroundColor': '#f8f9fa'})
+                dbc.CardBody(content_sections, style={'backgroundColor': '#ffffff'})
             ], id="semantic-description-collapse", is_open=False)
         ], className="border-secondary mt-3")
     else:
