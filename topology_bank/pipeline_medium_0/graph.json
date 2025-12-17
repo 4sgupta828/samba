@@ -3,61 +3,126 @@
   "multigraph": false,
   "graph": {
     "meta": {
-      "architecture_name": "IoT Telemetry Processing Pipeline",
+      "architecture_name": "Video Processing Pipeline",
       "archetype": "pipeline",
-      "domain": "IoT Telemetry Processing",
-      "description": "Real-time IoT data processing pipeline that ingests telemetry from devices, validates and enriches data, performs anomaly detection, stores metrics, and triggers alerts. Sequential processing stages ensure data quality and proper transformation at each step.",
+      "domain": "Video Content Platform",
+      "description": "Sequential video processing pipeline with upload validation, transcoding, quality checks, thumbnail generation, and content delivery",
       "pros": [
-        "Scalable processing stages can be tuned independently",
-        "Fault isolation between pipeline stages",
-        "Easy to add new processing stages",
-        "Built-in backpressure handling with queues",
-        "Real-time anomaly detection and alerting"
+        "Clear separation of concerns",
+        "Parallel processing stages",
+        "Easy to scale individual stages",
+        "Fault isolation between stages",
+        "Easy to add new processing steps"
       ],
       "cons": [
-        "Higher latency due to multi-stage processing",
-        "Complex monitoring across pipeline stages",
+        "High latency for full pipeline",
+        "Complex error handling across stages",
         "Queue management overhead",
-        "Potential data loss if queues overflow"
+        "Potential for stage imbalances",
+        "Difficult end-to-end debugging"
       ]
     },
     "request_flows": {
       "GET": {
+        "use_case": "User retrieves video metadata and processing status",
         "gateway": [
-          "query_service"
+          "metadata_service"
         ],
-        "query_service": [
-          "query_cache",
-          "timeseries_db"
-        ]
+        "metadata_service": [
+          "video_metadata_db",
+          "redis_cache",
+          "session_cache"
+        ],
+        "upload_service": [],
+        "validation_service": [],
+        "transcoding_service": [],
+        "quality_check_service": [],
+        "thumbnail_service": [],
+        "publishing_service": [],
+        "analytics_service": [
+          "analytics_db"
+        ],
+        "notification_service": []
       },
       "POST": {
+        "use_case": "User uploads new video file and triggers processing pipeline",
         "gateway": [
-          "ingestion_service"
+          "upload_service"
         ],
-        "ingestion_service": [
-          "metadata_cache",
-          "device_registry_db",
-          "raw_data_queue"
+        "upload_service": [
+          "video_metadata_db",
+          "redis_cache",
+          "upload_queue"
+        ],
+        "metadata_service": [],
+        "validation_service": [
+          "video_metadata_db",
+          "validation_queue"
+        ],
+        "transcoding_service": [
+          "video_metadata_db",
+          "transcoding_queue"
+        ],
+        "quality_check_service": [
+          "video_metadata_db",
+          "quality_queue"
+        ],
+        "thumbnail_service": [
+          "video_metadata_db",
+          "thumbnail_queue"
+        ],
+        "publishing_service": [
+          "video_metadata_db",
+          "cdn_service",
+          "publishing_queue"
+        ],
+        "analytics_service": [
+          "analytics_db"
+        ],
+        "notification_service": [
+          "notification_provider"
         ]
       },
       "PUT": {
+        "use_case": "User updates video metadata or reprocesses failed video",
         "gateway": [
-          "query_service"
+          "metadata_service"
         ],
-        "query_service": [
-          "query_cache",
-          "timeseries_db"
-        ]
+        "metadata_service": [
+          "video_metadata_db",
+          "redis_cache"
+        ],
+        "upload_service": [
+          "video_metadata_db",
+          "upload_queue"
+        ],
+        "validation_service": [],
+        "transcoding_service": [],
+        "quality_check_service": [],
+        "thumbnail_service": [],
+        "publishing_service": [],
+        "analytics_service": [],
+        "notification_service": []
       },
       "DELETE": {
+        "use_case": "User removes video from platform",
         "gateway": [
-          "query_service"
+          "metadata_service"
         ],
-        "query_service": [
-          "query_cache",
-          "timeseries_db"
-        ]
+        "metadata_service": [
+          "video_metadata_db",
+          "redis_cache"
+        ],
+        "upload_service": [],
+        "validation_service": [],
+        "transcoding_service": [],
+        "quality_check_service": [],
+        "thumbnail_service": [],
+        "publishing_service": [
+          "cdn_service"
+        ],
+        "analytics_service": [],
+        "notification_service": []
       }
     }
   },
@@ -75,10 +140,10 @@
     {
       "type": "Service",
       "role": "service",
-      "service_name": "ingestion_service",
-      "semantic_name": "ingestion_service",
+      "service_name": "upload_service",
+      "semantic_name": "upload_service",
       "resource_profile": "io_intensive",
-      "desired_replicas": 4,
+      "desired_replicas": 3,
       "supported_request_types": [
         "GET",
         "POST",
@@ -86,7 +151,7 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "ingestion_service"
+      "id": "upload_service"
     },
     {
       "type": "Service",
@@ -94,7 +159,7 @@
       "service_name": "validation_service",
       "semantic_name": "validation_service",
       "resource_profile": "cpu_intensive",
-      "desired_replicas": 3,
+      "desired_replicas": 4,
       "supported_request_types": [
         "GET",
         "POST",
@@ -107,9 +172,25 @@
     {
       "type": "Service",
       "role": "service",
-      "service_name": "enrichment_service",
-      "semantic_name": "enrichment_service",
-      "resource_profile": "io_intensive",
+      "service_name": "transcoding_service",
+      "semantic_name": "transcoding_service",
+      "resource_profile": "cpu_intensive",
+      "desired_replicas": 6,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "transcoding_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "quality_check_service",
+      "semantic_name": "quality_check_service",
+      "resource_profile": "cpu_intensive",
       "desired_replicas": 3,
       "supported_request_types": [
         "GET",
@@ -118,13 +199,13 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "enrichment_service"
+      "id": "quality_check_service"
     },
     {
       "type": "Service",
       "role": "service",
-      "service_name": "anomaly_detection_service",
-      "semantic_name": "anomaly_detection_service",
+      "service_name": "thumbnail_service",
+      "semantic_name": "thumbnail_service",
       "resource_profile": "cpu_intensive",
       "desired_replicas": 4,
       "supported_request_types": [
@@ -134,14 +215,46 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "anomaly_detection_service"
+      "id": "thumbnail_service"
     },
     {
       "type": "Service",
       "role": "service",
-      "service_name": "storage_service",
-      "semantic_name": "storage_service",
+      "service_name": "metadata_service",
+      "semantic_name": "metadata_service",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "metadata_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "publishing_service",
+      "semantic_name": "publishing_service",
       "resource_profile": "io_intensive",
+      "desired_replicas": 3,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "publishing_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "analytics_service",
+      "semantic_name": "analytics_service",
+      "resource_profile": "standard",
       "desired_replicas": 2,
       "supported_request_types": [
         "GET",
@@ -150,7 +263,7 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "storage_service"
+      "id": "analytics_service"
     },
     {
       "type": "Service",
@@ -169,135 +282,121 @@
       "id": "notification_service"
     },
     {
-      "type": "Service",
-      "role": "service",
-      "service_name": "query_service",
-      "semantic_name": "query_service",
-      "resource_profile": "io_intensive",
+      "type": "SqlDatabase",
+      "role": "database",
+      "service_name": "video_metadata_db",
+      "semantic_name": "video_metadata_db",
+      "resource_profile": "standard",
       "desired_replicas": 3,
-      "supported_request_types": [
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE"
-      ],
-      "processing_pipeline": null,
-      "id": "query_service"
-    },
-    {
-      "type": "Service",
-      "role": "service",
-      "service_name": "analytics_service",
-      "semantic_name": "analytics_service",
-      "resource_profile": "cpu_intensive",
-      "desired_replicas": 3,
-      "supported_request_types": [
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE"
-      ],
-      "processing_pipeline": null,
-      "id": "analytics_service"
+      "id": "video_metadata_db"
     },
     {
       "type": "SqlDatabase",
       "role": "database",
-      "service_name": "device_registry_db",
-      "semantic_name": "device_registry_db",
+      "service_name": "analytics_db",
+      "semantic_name": "analytics_db",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "device_registry_db"
-    },
-    {
-      "type": "SqlDatabase",
-      "role": "database",
-      "service_name": "timeseries_db",
-      "semantic_name": "timeseries_db",
-      "resource_profile": "standard",
-      "desired_replicas": 3,
-      "id": "timeseries_db"
+      "id": "analytics_db"
     },
     {
       "type": "ExternalCache",
       "role": "cache",
-      "service_name": "metadata_cache",
-      "semantic_name": "metadata_cache",
+      "service_name": "redis_cache",
+      "semantic_name": "redis_cache",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "metadata_cache"
+      "id": "redis_cache"
     },
     {
       "type": "ExternalCache",
       "role": "cache",
-      "service_name": "query_cache",
-      "semantic_name": "query_cache",
+      "service_name": "session_cache",
+      "semantic_name": "session_cache",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "query_cache"
+      "id": "session_cache"
     },
     {
       "type": "MessageQueue",
       "role": "queue",
-      "service_name": "raw_data_queue",
-      "semantic_name": "raw_data_queue",
+      "service_name": "upload_queue",
+      "semantic_name": "upload_queue",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "raw_data_queue"
+      "id": "upload_queue"
     },
     {
       "type": "MessageQueue",
       "role": "queue",
-      "service_name": "validated_data_queue",
-      "semantic_name": "validated_data_queue",
+      "service_name": "validation_queue",
+      "semantic_name": "validation_queue",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "validated_data_queue"
+      "id": "validation_queue"
     },
     {
       "type": "MessageQueue",
       "role": "queue",
-      "service_name": "enriched_data_queue",
-      "semantic_name": "enriched_data_queue",
+      "service_name": "transcoding_queue",
+      "semantic_name": "transcoding_queue",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "enriched_data_queue"
+      "id": "transcoding_queue"
     },
     {
       "type": "MessageQueue",
       "role": "queue",
-      "service_name": "processed_data_queue",
-      "semantic_name": "processed_data_queue",
+      "service_name": "quality_queue",
+      "semantic_name": "quality_queue",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "processed_data_queue"
+      "id": "quality_queue"
     },
     {
       "type": "MessageQueue",
       "role": "queue",
-      "service_name": "alerts_queue",
-      "semantic_name": "alerts_queue",
+      "service_name": "thumbnail_queue",
+      "semantic_name": "thumbnail_queue",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "alerts_queue"
+      "id": "thumbnail_queue"
     },
     {
       "type": "MessageQueue",
       "role": "queue",
-      "service_name": "analytics_queue",
-      "semantic_name": "analytics_queue",
+      "service_name": "publishing_queue",
+      "semantic_name": "publishing_queue",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "analytics_queue"
+      "id": "publishing_queue"
+    },
+    {
+      "type": "MessageQueue",
+      "role": "queue",
+      "service_name": "events_queue",
+      "semantic_name": "events_queue",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "events_queue"
     },
     {
       "type": "ExternalService",
       "role": "external",
-      "service_name": "notification_service_ext",
-      "semantic_name": "notification_service_ext",
+      "service_name": "cdn_service",
+      "semantic_name": "cdn_service",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "notification_service_ext"
+      "id": "cdn_service"
+    },
+    {
+      "type": "ExternalService",
+      "role": "external",
+      "service_name": "notification_provider",
+      "semantic_name": "notification_provider",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "notification_provider"
     },
     {
       "type": "ComputeNode",
@@ -340,172 +439,222 @@
       "id": "node_4"
     },
     {
+      "type": "ComputeNode",
+      "role": "node",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "network_bandwidth_gbps": 10,
+      "id": "node_5"
+    },
+    {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "ingestion_service",
+      "parent_service": "upload_service",
       "compute_node": "node_0",
-      "id": "pod_ingestion_service_0"
+      "id": "pod_upload_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "ingestion_service",
+      "parent_service": "upload_service",
       "compute_node": "node_1",
-      "id": "pod_ingestion_service_1"
+      "id": "pod_upload_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "ingestion_service",
+      "parent_service": "upload_service",
       "compute_node": "node_2",
-      "id": "pod_ingestion_service_2"
-    },
-    {
-      "type": "Pod",
-      "role": "pod",
-      "parent_service": "ingestion_service",
-      "compute_node": "node_3",
-      "id": "pod_ingestion_service_3"
+      "id": "pod_upload_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
       "parent_service": "validation_service",
-      "compute_node": "node_4",
+      "compute_node": "node_3",
       "id": "pod_validation_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
       "parent_service": "validation_service",
-      "compute_node": "node_0",
+      "compute_node": "node_4",
       "id": "pod_validation_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
       "parent_service": "validation_service",
-      "compute_node": "node_1",
+      "compute_node": "node_5",
       "id": "pod_validation_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "enrichment_service",
-      "compute_node": "node_2",
-      "id": "pod_enrichment_service_0"
-    },
-    {
-      "type": "Pod",
-      "role": "pod",
-      "parent_service": "enrichment_service",
-      "compute_node": "node_3",
-      "id": "pod_enrichment_service_1"
-    },
-    {
-      "type": "Pod",
-      "role": "pod",
-      "parent_service": "enrichment_service",
-      "compute_node": "node_4",
-      "id": "pod_enrichment_service_2"
-    },
-    {
-      "type": "Pod",
-      "role": "pod",
-      "parent_service": "anomaly_detection_service",
+      "parent_service": "validation_service",
       "compute_node": "node_0",
-      "id": "pod_anomaly_detection_service_0"
+      "id": "pod_validation_service_3"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "anomaly_detection_service",
+      "parent_service": "transcoding_service",
       "compute_node": "node_1",
-      "id": "pod_anomaly_detection_service_1"
+      "id": "pod_transcoding_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "anomaly_detection_service",
+      "parent_service": "transcoding_service",
       "compute_node": "node_2",
-      "id": "pod_anomaly_detection_service_2"
+      "id": "pod_transcoding_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "anomaly_detection_service",
+      "parent_service": "transcoding_service",
       "compute_node": "node_3",
-      "id": "pod_anomaly_detection_service_3"
+      "id": "pod_transcoding_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "storage_service",
+      "parent_service": "transcoding_service",
       "compute_node": "node_4",
-      "id": "pod_storage_service_0"
+      "id": "pod_transcoding_service_3"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "storage_service",
+      "parent_service": "transcoding_service",
+      "compute_node": "node_5",
+      "id": "pod_transcoding_service_4"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "transcoding_service",
       "compute_node": "node_0",
-      "id": "pod_storage_service_1"
+      "id": "pod_transcoding_service_5"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "notification_service",
+      "parent_service": "quality_check_service",
       "compute_node": "node_1",
-      "id": "pod_notification_service_0"
+      "id": "pod_quality_check_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "notification_service",
+      "parent_service": "quality_check_service",
       "compute_node": "node_2",
-      "id": "pod_notification_service_1"
+      "id": "pod_quality_check_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "query_service",
+      "parent_service": "quality_check_service",
       "compute_node": "node_3",
-      "id": "pod_query_service_0"
+      "id": "pod_quality_check_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "query_service",
+      "parent_service": "thumbnail_service",
       "compute_node": "node_4",
-      "id": "pod_query_service_1"
+      "id": "pod_thumbnail_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "query_service",
+      "parent_service": "thumbnail_service",
+      "compute_node": "node_5",
+      "id": "pod_thumbnail_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "thumbnail_service",
       "compute_node": "node_0",
-      "id": "pod_query_service_2"
+      "id": "pod_thumbnail_service_2"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "thumbnail_service",
+      "compute_node": "node_1",
+      "id": "pod_thumbnail_service_3"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "metadata_service",
+      "compute_node": "node_2",
+      "id": "pod_metadata_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "metadata_service",
+      "compute_node": "node_3",
+      "id": "pod_metadata_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "metadata_service",
+      "compute_node": "node_4",
+      "id": "pod_metadata_service_2"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "publishing_service",
+      "compute_node": "node_5",
+      "id": "pod_publishing_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "publishing_service",
+      "compute_node": "node_0",
+      "id": "pod_publishing_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "publishing_service",
+      "compute_node": "node_1",
+      "id": "pod_publishing_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
       "parent_service": "analytics_service",
-      "compute_node": "node_1",
+      "compute_node": "node_2",
       "id": "pod_analytics_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
       "parent_service": "analytics_service",
-      "compute_node": "node_2",
+      "compute_node": "node_3",
       "id": "pod_analytics_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "analytics_service",
-      "compute_node": "node_3",
-      "id": "pod_analytics_service_2"
+      "parent_service": "notification_service",
+      "compute_node": "node_4",
+      "id": "pod_notification_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "notification_service",
+      "compute_node": "node_5",
+      "id": "pod_notification_service_1"
     },
     {
       "type": "DeploymentController",
@@ -518,67 +667,61 @@
       "type": "sync_http",
       "base_latency": 5.0,
       "source": "gateway",
-      "target": "ingestion_service"
+      "target": "upload_service"
     },
     {
       "type": "sync_http",
       "base_latency": 5.0,
       "source": "gateway",
-      "target": "query_service"
+      "target": "metadata_service"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
-      "source": "ingestion_service",
-      "target": "device_registry_db"
+      "source": "upload_service",
+      "target": "video_metadata_db"
     },
     {
       "type": "sync_cache",
       "base_latency": 5.0,
-      "source": "ingestion_service",
-      "target": "metadata_cache"
+      "source": "upload_service",
+      "target": "redis_cache"
     },
     {
       "type": "async_produce",
       "base_latency": 5.0,
-      "source": "ingestion_service",
-      "target": "raw_data_queue"
+      "source": "upload_service",
+      "target": "upload_queue"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "ingestion_service",
-      "target": "pod_ingestion_service_0"
+      "source": "upload_service",
+      "target": "pod_upload_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "ingestion_service",
-      "target": "pod_ingestion_service_1"
+      "source": "upload_service",
+      "target": "pod_upload_service_1"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "ingestion_service",
-      "target": "pod_ingestion_service_2"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "ingestion_service",
-      "target": "pod_ingestion_service_3"
+      "source": "upload_service",
+      "target": "pod_upload_service_2"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
       "source": "validation_service",
-      "target": "device_registry_db"
+      "target": "video_metadata_db"
     },
     {
       "type": "async_produce",
       "base_latency": 5.0,
       "source": "validation_service",
-      "target": "validated_data_queue"
+      "target": "validation_queue"
     },
     {
       "type": "pod_pool",
@@ -599,154 +742,202 @@
       "target": "pod_validation_service_2"
     },
     {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "validation_service",
+      "target": "pod_validation_service_3"
+    },
+    {
       "type": "sync_db",
       "base_latency": 2.0,
-      "source": "enrichment_service",
-      "target": "device_registry_db"
+      "source": "transcoding_service",
+      "target": "video_metadata_db"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "transcoding_service",
+      "target": "transcoding_queue"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "transcoding_service",
+      "target": "pod_transcoding_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "transcoding_service",
+      "target": "pod_transcoding_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "transcoding_service",
+      "target": "pod_transcoding_service_2"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "transcoding_service",
+      "target": "pod_transcoding_service_3"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "transcoding_service",
+      "target": "pod_transcoding_service_4"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "transcoding_service",
+      "target": "pod_transcoding_service_5"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "quality_check_service",
+      "target": "video_metadata_db"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "quality_check_service",
+      "target": "quality_queue"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "quality_check_service",
+      "target": "pod_quality_check_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "quality_check_service",
+      "target": "pod_quality_check_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "quality_check_service",
+      "target": "pod_quality_check_service_2"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "thumbnail_service",
+      "target": "video_metadata_db"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "thumbnail_service",
+      "target": "thumbnail_queue"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "thumbnail_service",
+      "target": "pod_thumbnail_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "thumbnail_service",
+      "target": "pod_thumbnail_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "thumbnail_service",
+      "target": "pod_thumbnail_service_2"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "thumbnail_service",
+      "target": "pod_thumbnail_service_3"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "metadata_service",
+      "target": "video_metadata_db"
     },
     {
       "type": "sync_cache",
       "base_latency": 5.0,
-      "source": "enrichment_service",
-      "target": "metadata_cache"
+      "source": "metadata_service",
+      "target": "redis_cache"
     },
     {
-      "type": "async_produce",
+      "type": "sync_cache",
       "base_latency": 5.0,
-      "source": "enrichment_service",
-      "target": "enriched_data_queue"
+      "source": "metadata_service",
+      "target": "session_cache"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "enrichment_service",
-      "target": "pod_enrichment_service_0"
+      "source": "metadata_service",
+      "target": "pod_metadata_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "enrichment_service",
-      "target": "pod_enrichment_service_1"
+      "source": "metadata_service",
+      "target": "pod_metadata_service_1"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "enrichment_service",
-      "target": "pod_enrichment_service_2"
-    },
-    {
-      "type": "async_produce",
-      "base_latency": 5.0,
-      "source": "anomaly_detection_service",
-      "target": "processed_data_queue"
-    },
-    {
-      "type": "async_produce",
-      "base_latency": 5.0,
-      "source": "anomaly_detection_service",
-      "target": "alerts_queue"
-    },
-    {
-      "type": "async_produce",
-      "base_latency": 5.0,
-      "source": "anomaly_detection_service",
-      "target": "analytics_queue"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "anomaly_detection_service",
-      "target": "pod_anomaly_detection_service_0"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "anomaly_detection_service",
-      "target": "pod_anomaly_detection_service_1"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "anomaly_detection_service",
-      "target": "pod_anomaly_detection_service_2"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "anomaly_detection_service",
-      "target": "pod_anomaly_detection_service_3"
+      "source": "metadata_service",
+      "target": "pod_metadata_service_2"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
-      "source": "storage_service",
-      "target": "timeseries_db"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "storage_service",
-      "target": "pod_storage_service_0"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "storage_service",
-      "target": "pod_storage_service_1"
+      "source": "publishing_service",
+      "target": "video_metadata_db"
     },
     {
       "type": "sync_external",
       "base_latency": 50.0,
-      "source": "notification_service",
-      "target": "notification_service_ext"
+      "source": "publishing_service",
+      "target": "cdn_service"
     },
     {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "notification_service",
-      "target": "pod_notification_service_0"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "notification_service",
-      "target": "pod_notification_service_1"
-    },
-    {
-      "type": "sync_db",
-      "base_latency": 2.0,
-      "source": "query_service",
-      "target": "timeseries_db"
-    },
-    {
-      "type": "sync_cache",
+      "type": "async_produce",
       "base_latency": 5.0,
-      "source": "query_service",
-      "target": "query_cache"
+      "source": "publishing_service",
+      "target": "publishing_queue"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "query_service",
-      "target": "pod_query_service_0"
+      "source": "publishing_service",
+      "target": "pod_publishing_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "query_service",
-      "target": "pod_query_service_1"
+      "source": "publishing_service",
+      "target": "pod_publishing_service_1"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "query_service",
-      "target": "pod_query_service_2"
+      "source": "publishing_service",
+      "target": "pod_publishing_service_2"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
       "source": "analytics_service",
-      "target": "timeseries_db"
+      "target": "analytics_db"
     },
     {
       "type": "pod_pool",
@@ -761,190 +952,250 @@
       "target": "pod_analytics_service_1"
     },
     {
+      "type": "sync_external",
+      "base_latency": 50.0,
+      "source": "notification_service",
+      "target": "notification_provider"
+    },
+    {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "analytics_service",
-      "target": "pod_analytics_service_2"
+      "source": "notification_service",
+      "target": "pod_notification_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "notification_service",
+      "target": "pod_notification_service_1"
     },
     {
       "type": "async_consume",
       "base_latency": 5.0,
-      "source": "raw_data_queue",
+      "source": "upload_queue",
       "target": "validation_service"
     },
     {
       "type": "async_consume",
       "base_latency": 5.0,
-      "source": "validated_data_queue",
-      "target": "enrichment_service"
+      "source": "validation_queue",
+      "target": "transcoding_service"
     },
     {
       "type": "async_consume",
       "base_latency": 5.0,
-      "source": "enriched_data_queue",
-      "target": "anomaly_detection_service"
+      "source": "transcoding_queue",
+      "target": "quality_check_service"
     },
     {
       "type": "async_consume",
       "base_latency": 5.0,
-      "source": "processed_data_queue",
-      "target": "storage_service"
+      "source": "quality_queue",
+      "target": "thumbnail_service"
     },
     {
       "type": "async_consume",
       "base_latency": 5.0,
-      "source": "alerts_queue",
-      "target": "notification_service"
+      "source": "thumbnail_queue",
+      "target": "publishing_service"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "publishing_queue",
+      "target": "events_queue"
     },
     {
       "type": "async_consume",
       "base_latency": 5.0,
-      "source": "analytics_queue",
+      "source": "events_queue",
       "target": "analytics_service"
+    },
+    {
+      "type": "async_consume",
+      "base_latency": 5.0,
+      "source": "events_queue",
+      "target": "notification_service"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_ingestion_service_0",
+      "source": "pod_upload_service_0",
       "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_ingestion_service_1",
+      "source": "pod_upload_service_1",
       "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_ingestion_service_2",
+      "source": "pod_upload_service_2",
       "target": "node_2"
-    },
-    {
-      "type": "pod_placement",
-      "base_latency": 0.0,
-      "source": "pod_ingestion_service_3",
-      "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
       "source": "pod_validation_service_0",
-      "target": "node_4"
+      "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
       "source": "pod_validation_service_1",
-      "target": "node_0"
+      "target": "node_4"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
       "source": "pod_validation_service_2",
-      "target": "node_1"
+      "target": "node_5"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_enrichment_service_0",
-      "target": "node_2"
-    },
-    {
-      "type": "pod_placement",
-      "base_latency": 0.0,
-      "source": "pod_enrichment_service_1",
-      "target": "node_3"
-    },
-    {
-      "type": "pod_placement",
-      "base_latency": 0.0,
-      "source": "pod_enrichment_service_2",
-      "target": "node_4"
-    },
-    {
-      "type": "pod_placement",
-      "base_latency": 0.0,
-      "source": "pod_anomaly_detection_service_0",
+      "source": "pod_validation_service_3",
       "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_anomaly_detection_service_1",
+      "source": "pod_transcoding_service_0",
       "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_anomaly_detection_service_2",
+      "source": "pod_transcoding_service_1",
       "target": "node_2"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_anomaly_detection_service_3",
+      "source": "pod_transcoding_service_2",
       "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_storage_service_0",
+      "source": "pod_transcoding_service_3",
       "target": "node_4"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_storage_service_1",
+      "source": "pod_transcoding_service_4",
+      "target": "node_5"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_transcoding_service_5",
       "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_notification_service_0",
+      "source": "pod_quality_check_service_0",
       "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_notification_service_1",
+      "source": "pod_quality_check_service_1",
       "target": "node_2"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_query_service_0",
+      "source": "pod_quality_check_service_2",
       "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_query_service_1",
+      "source": "pod_thumbnail_service_0",
       "target": "node_4"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_query_service_2",
+      "source": "pod_thumbnail_service_1",
+      "target": "node_5"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_thumbnail_service_2",
       "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_thumbnail_service_3",
+      "target": "node_1"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_metadata_service_0",
+      "target": "node_2"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_metadata_service_1",
+      "target": "node_3"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_metadata_service_2",
+      "target": "node_4"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_publishing_service_0",
+      "target": "node_5"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_publishing_service_1",
+      "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_publishing_service_2",
+      "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
       "source": "pod_analytics_service_0",
-      "target": "node_1"
-    },
-    {
-      "type": "pod_placement",
-      "base_latency": 0.0,
-      "source": "pod_analytics_service_1",
       "target": "node_2"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_analytics_service_2",
+      "source": "pod_analytics_service_1",
       "target": "node_3"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_notification_service_0",
+      "target": "node_4"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_notification_service_1",
+      "target": "node_5"
     }
   ]
 }

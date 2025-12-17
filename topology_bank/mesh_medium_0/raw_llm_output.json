@@ -2,19 +2,19 @@
   "meta": {
     "architecture_name": "Real-time Gaming Platform",
     "archetype": "mesh",
-    "domain": "Gaming Platform",
-    "description": "A real-time multiplayer gaming platform with high service interconnectivity for player management, matchmaking, game state synchronization, and analytics. Services communicate heavily with each other while maintaining layered architecture to prevent cycles.",
+    "domain": "gaming",
+    "description": "Multiplayer gaming platform with real-time match-making, player statistics, social features, and cross-service communication for game state management",
     "pros": [
-      "High service interconnectivity enables rich feature interactions",
-      "Shared infrastructure reduces data duplication",
-      "Multiple communication paths improve resilience",
-      "Real-time capabilities for gaming workloads"
+      "High service intercommunication enables rich gaming features",
+      "Services can directly coordinate for real-time gameplay",
+      "Flexible data sharing between game systems",
+      "Peer-to-peer service communication reduces latency"
     ],
     "cons": [
-      "Complex service dependencies increase operational overhead",
-      "Harder to isolate failures due to interconnected nature",
-      "Network latency can accumulate across service hops",
-      "Requires careful orchestration of deployments"
+      "Complex service interdependencies increase debugging difficulty",
+      "Higher network overhead from mesh communication",
+      "Potential cascading failures across connected services",
+      "More difficult to scale individual components independently"
     ]
   },
   "nodes": [
@@ -26,25 +26,13 @@
       "id": "player_service",
       "type": "Service",
       "profile": "standard",
-      "replicas": 3
-    },
-    {
-      "id": "matchmaking_service",
-      "type": "Service",
-      "profile": "latency_sensitive",
       "replicas": 4
     },
     {
-      "id": "game_session_service",
+      "id": "match_service",
       "type": "Service",
       "profile": "latency_sensitive",
-      "replicas": 4
-    },
-    {
-      "id": "leaderboard_service",
-      "type": "Service",
-      "profile": "standard",
-      "replicas": 3
+      "replicas": 5
     },
     {
       "id": "social_service",
@@ -53,10 +41,16 @@
       "replicas": 3
     },
     {
-      "id": "inventory_service",
+      "id": "leaderboard_service",
       "type": "Service",
       "profile": "io_intensive",
       "replicas": 3
+    },
+    {
+      "id": "game_engine_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 6
     },
     {
       "id": "analytics_service",
@@ -69,8 +63,14 @@
       "id": "notification_service",
       "type": "Service",
       "profile": "standard",
-      "replicas": 2,
-      "async_consumer_capacity": 160
+      "replicas": 3,
+      "async_consumer_capacity": 200
+    },
+    {
+      "id": "inventory_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
     },
     {
       "id": "player_db",
@@ -83,12 +83,12 @@
       "replicas": 3
     },
     {
-      "id": "player_cache",
+      "id": "session_cache",
       "type": "ExternalCache",
       "replicas": 3
     },
     {
-      "id": "session_cache",
+      "id": "leaderboard_cache",
       "type": "ExternalCache",
       "replicas": 3
     },
@@ -103,7 +103,7 @@
       "replicas": 3
     },
     {
-      "id": "payment_gateway",
+      "id": "push_notification_service",
       "type": "ExternalService"
     }
   ],
@@ -115,12 +115,12 @@
     },
     {
       "source": "gateway",
-      "target": "matchmaking_service",
+      "target": "match_service",
       "type": "sync_http"
     },
     {
       "source": "gateway",
-      "target": "game_session_service",
+      "target": "social_service",
       "type": "sync_http"
     },
     {
@@ -139,23 +139,13 @@
       "type": "sync_http"
     },
     {
-      "source": "matchmaking_service",
+      "source": "match_service",
       "target": "player_service",
       "type": "sync_http"
     },
     {
-      "source": "matchmaking_service",
-      "target": "game_session_service",
-      "type": "sync_http"
-    },
-    {
-      "source": "game_session_service",
-      "target": "leaderboard_service",
-      "type": "sync_http"
-    },
-    {
-      "source": "game_session_service",
-      "target": "social_service",
+      "source": "match_service",
+      "target": "game_engine_service",
       "type": "sync_http"
     },
     {
@@ -164,8 +154,13 @@
       "type": "sync_http"
     },
     {
-      "source": "inventory_service",
-      "target": "social_service",
+      "source": "social_service",
+      "target": "inventory_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "leaderboard_service",
+      "target": "inventory_service",
       "type": "sync_http"
     },
     {
@@ -175,21 +170,26 @@
     },
     {
       "source": "player_service",
-      "target": "player_cache",
+      "target": "session_cache",
       "type": "sync_cache"
     },
     {
-      "source": "matchmaking_service",
-      "target": "player_cache",
-      "type": "sync_cache"
-    },
-    {
-      "source": "game_session_service",
+      "source": "match_service",
       "target": "game_state_db",
       "type": "sync_db"
     },
     {
-      "source": "game_session_service",
+      "source": "match_service",
+      "target": "session_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "social_service",
+      "target": "player_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "social_service",
       "target": "session_cache",
       "type": "sync_cache"
     },
@@ -200,17 +200,17 @@
     },
     {
       "source": "leaderboard_service",
-      "target": "player_cache",
+      "target": "leaderboard_cache",
       "type": "sync_cache"
     },
     {
-      "source": "social_service",
-      "target": "player_db",
+      "source": "game_engine_service",
+      "target": "game_state_db",
       "type": "sync_db"
     },
     {
-      "source": "social_service",
-      "target": "player_cache",
+      "source": "game_engine_service",
+      "target": "session_cache",
       "type": "sync_cache"
     },
     {
@@ -220,31 +220,26 @@
     },
     {
       "source": "inventory_service",
-      "target": "payment_gateway",
-      "type": "sync_external"
+      "target": "session_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "match_service",
+      "target": "game_events_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "game_engine_service",
+      "target": "game_events_queue",
+      "type": "async_produce"
     },
     {
       "source": "player_service",
-      "target": "game_events_queue",
-      "type": "async_produce"
-    },
-    {
-      "source": "game_session_service",
-      "target": "game_events_queue",
-      "type": "async_produce"
-    },
-    {
-      "source": "leaderboard_service",
-      "target": "game_events_queue",
-      "type": "async_produce"
-    },
-    {
-      "source": "social_service",
       "target": "notification_queue",
       "type": "async_produce"
     },
     {
-      "source": "inventory_service",
+      "source": "social_service",
       "target": "notification_queue",
       "type": "async_produce"
     },
@@ -257,116 +252,401 @@
       "source": "notification_queue",
       "target": "notification_service",
       "type": "async_consume"
+    },
+    {
+      "source": "notification_service",
+      "target": "push_notification_service",
+      "type": "sync_external"
     }
   ],
   "flows": {
     "GET": {
+      "use_case": "Player views profile, friends list, and current leaderboard standings",
       "gateway": [
         "player_service",
-        "matchmaking_service",
-        "game_session_service"
+        "social_service"
       ],
       "player_service": [
-        "social_service",
-        "inventory_service",
-        "leaderboard_service",
-        "player_cache",
-        "player_db"
-      ],
-      "matchmaking_service": [
-        "player_service",
-        "player_cache"
-      ],
-      "game_session_service": [
+        "player_db",
         "session_cache",
-        "game_state_db"
+        "inventory_service",
+        "leaderboard_service"
       ],
       "social_service": [
-        "leaderboard_service",
-        "player_cache",
-        "player_db"
+        "player_db",
+        "session_cache",
+        "leaderboard_service"
       ],
-      "inventory_service": [
-        "player_db"
+      "match_service": [
+        "game_state_db",
+        "session_cache"
       ],
       "leaderboard_service": [
-        "player_cache",
-        "player_db"
-      ]
-    },
-    "POST": {
-      "gateway": [
-        "player_service",
-        "game_session_service"
-      ],
-      "player_service": [
-        "social_service",
-        "inventory_service",
         "player_db",
-        "game_events_queue"
+        "leaderboard_cache",
+        "inventory_service"
       ],
-      "game_session_service": [
-        "leaderboard_service",
-        "social_service",
+      "game_engine_service": [
         "game_state_db",
-        "session_cache",
+        "session_cache"
+      ],
+      "analytics_service": [
         "game_events_queue"
       ],
-      "social_service": [
-        "notification_queue",
-        "player_db"
-      ],
-      "inventory_service": [
-        "payment_gateway",
-        "notification_queue",
-        "player_db"
-      ],
-      "leaderboard_service": [
-        "game_events_queue",
-        "player_db"
-      ]
-    },
-    "PUT": {
-      "gateway": [
-        "player_service",
-        "game_session_service"
-      ],
-      "player_service": [
-        "social_service",
-        "inventory_service",
-        "player_db",
-        "player_cache"
-      ],
-      "game_session_service": [
-        "game_state_db",
-        "session_cache",
-        "game_events_queue"
-      ],
-      "social_service": [
-        "player_db",
+      "notification_service": [
         "notification_queue"
       ],
       "inventory_service": [
         "player_db",
-        "payment_gateway"
+        "session_cache"
       ]
     },
-    "DELETE": {
+    "POST": {
+      "use_case": "Player joins matchmaking queue and starts new game session",
+      "gateway": [
+        "match_service"
+      ],
+      "player_service": [
+        "player_db",
+        "session_cache",
+        "notification_queue"
+      ],
+      "match_service": [
+        "game_state_db",
+        "session_cache",
+        "player_service",
+        "game_engine_service",
+        "game_events_queue"
+      ],
+      "social_service": [
+        "player_db",
+        "session_cache",
+        "notification_queue"
+      ],
+      "leaderboard_service": [
+        "player_db",
+        "leaderboard_cache"
+      ],
+      "game_engine_service": [
+        "game_state_db",
+        "session_cache",
+        "game_events_queue"
+      ],
+      "analytics_service": [
+        "game_events_queue"
+      ],
+      "notification_service": [
+        "notification_queue",
+        "push_notification_service"
+      ],
+      "inventory_service": [
+        "player_db",
+        "session_cache"
+      ]
+    },
+    "PUT": {
+      "use_case": "Player updates profile settings and game preferences",
       "gateway": [
         "player_service"
       ],
       "player_service": [
+        "player_db",
+        "session_cache",
         "social_service",
-        "inventory_service",
-        "player_db"
+        "inventory_service"
+      ],
+      "match_service": [
+        "game_state_db",
+        "session_cache"
       ],
       "social_service": [
         "player_db",
+        "session_cache",
+        "leaderboard_service"
+      ],
+      "leaderboard_service": [
+        "player_db",
+        "leaderboard_cache"
+      ],
+      "game_engine_service": [
+        "game_state_db",
+        "session_cache"
+      ],
+      "analytics_service": [
+        "game_events_queue"
+      ],
+      "notification_service": [
         "notification_queue"
       ],
       "inventory_service": [
-        "player_db"
+        "player_db",
+        "session_cache"
+      ]
+    },
+    "DELETE": {
+      "use_case": "Player deletes account and removes all associated data",
+      "gateway": [
+        "player_service"
+      ],
+      "player_service": [
+        "player_db",
+        "session_cache",
+        "social_service",
+        "inventory_service"
+      ],
+      "match_service": [
+        "game_state_db",
+        "session_cache"
+      ],
+      "social_service": [
+        "player_db",
+        "session_cache"
+      ],
+      "leaderboard_service": [
+        "player_db",
+        "leaderboard_cache"
+      ],
+      "game_engine_service": [
+        "game_state_db",
+        "session_cache"
+      ],
+      "analytics_service": [],
+      "notification_service": [],
+      "inventory_service": [
+        "player_db",
+        "session_cache"
       ]
     }
+  },
+  "topology_analysis": {
+    "critical_paths": [
+      {
+        "path": [
+          "gateway",
+          "match_service",
+          "game_engine_service",
+          "game_state_db"
+        ],
+        "latency_ms": 85,
+        "criticality": "high",
+        "reason": "Core matchmaking and game state management - affects real-time gameplay experience"
+      },
+      {
+        "path": [
+          "gateway",
+          "player_service",
+          "player_db"
+        ],
+        "latency_ms": 120,
+        "criticality": "high",
+        "reason": "Player authentication and profile access - required for 90% of requests"
+      },
+      {
+        "path": [
+          "gateway",
+          "social_service",
+          "leaderboard_service",
+          "leaderboard_cache"
+        ],
+        "latency_ms": 95,
+        "criticality": "medium",
+        "reason": "Social features and rankings - impacts user engagement but not core gameplay"
+      },
+      {
+        "path": [
+          "match_service",
+          "game_events_queue",
+          "analytics_service"
+        ],
+        "latency_ms": 200,
+        "criticality": "low",
+        "reason": "Analytics processing - important for business metrics but not user-facing"
+      }
+    ],
+    "bottlenecks": [
+      {
+        "node_id": "player_db",
+        "type": "resource_contention",
+        "severity": "high",
+        "reason": "Central database handles all player data, profile updates, and social connections - connection pool saturation likely under high load",
+        "symptoms": [
+          "high_latency",
+          "connection_pool_exhaustion",
+          "deadlock_detection"
+        ]
+      },
+      {
+        "node_id": "match_service",
+        "type": "cpu_contention",
+        "severity": "high",
+        "reason": "Complex matchmaking algorithms and real-time coordination with multiple services creates CPU bottleneck",
+        "symptoms": [
+          "high_cpu_usage",
+          "matchmaking_timeout",
+          "queue_buildup"
+        ]
+      },
+      {
+        "node_id": "session_cache",
+        "type": "memory_pressure",
+        "severity": "medium",
+        "reason": "Shared cache for multiple services storing active game sessions and temporary data",
+        "symptoms": [
+          "cache_eviction_rate_spike",
+          "memory_pressure",
+          "increased_db_load"
+        ]
+      },
+      {
+        "node_id": "game_engine_service",
+        "type": "resource_contention",
+        "severity": "medium",
+        "reason": "CPU-intensive game logic processing with high replica count but limited per-instance capacity",
+        "symptoms": [
+          "processing_delays",
+          "high_cpu_usage",
+          "request_timeouts"
+        ]
+      }
+    ],
+    "failure_modes": [
+      {
+        "fault_type": "database_failure",
+        "target": "player_db",
+        "likelihood": "medium",
+        "impact": "high",
+        "propagation": [
+          "All player-related services fail",
+          "Authentication becomes impossible",
+          "Social features unavailable",
+          "Inventory management fails"
+        ],
+        "detection_signals": [
+          "connection_failures",
+          "query_timeout_spikes",
+          "error_rate_increase"
+        ]
+      },
+      {
+        "fault_type": "service_crash",
+        "target": "match_service",
+        "likelihood": "high",
+        "impact": "high",
+        "propagation": [
+          "New game matching stops",
+          "Real-time game coordination fails",
+          "Player queue buildup",
+          "Game engine becomes unreachable"
+        ],
+        "detection_signals": [
+          "pod_restarts",
+          "matchmaking_timeout",
+          "queue_depth_increase",
+          "5xx_error_rate"
+        ]
+      },
+      {
+        "fault_type": "cache_failure",
+        "target": "session_cache",
+        "likelihood": "medium",
+        "impact": "medium",
+        "propagation": [
+          "Database load increases significantly",
+          "Response times degrade across all services",
+          "Session validation becomes slower"
+        ],
+        "detection_signals": [
+          "cache_miss_rate_spike",
+          "database_connection_increase",
+          "latency_increase"
+        ]
+      },
+      {
+        "fault_type": "network_partition",
+        "target": "game_engine_service",
+        "likelihood": "low",
+        "impact": "high",
+        "propagation": [
+          "Active games become unresponsive",
+          "Match service cannot coordinate game state",
+          "Players experience disconnections"
+        ],
+        "detection_signals": [
+          "connection_timeout",
+          "network_error_increase",
+          "game_state_sync_failures"
+        ]
+      },
+      {
+        "fault_type": "high_latency",
+        "target": "leaderboard_service",
+        "likelihood": "medium",
+        "impact": "low",
+        "propagation": [
+          "Social features slow down",
+          "Player rankings become stale",
+          "Inventory lookups affected via service mesh calls"
+        ],
+        "detection_signals": [
+          "p99_latency_spike",
+          "slow_query_detection",
+          "cache_performance_degradation"
+        ]
+      },
+      {
+        "fault_type": "queue_overflow",
+        "target": "game_events_queue",
+        "likelihood": "medium",
+        "impact": "low",
+        "propagation": [
+          "Analytics processing falls behind",
+          "Game event data loss",
+          "Business metrics delayed"
+        ],
+        "detection_signals": [
+          "queue_depth_alarm",
+          "consumer_lag_increase",
+          "message_loss_detection"
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "service": "match_service",
+        "depends_on": [
+          "player_service",
+          "game_engine_service",
+          "game_state_db"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "match_service fails immediately if game_state_db is down, degrades without player_service connectivity"
+      },
+      {
+        "service": "player_service",
+        "depends_on": [
+          "player_db",
+          "session_cache"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "player_service fails completely if player_db is unavailable, performance degrades without session_cache"
+      },
+      {
+        "service": "social_service",
+        "depends_on": [
+          "player_db",
+          "leaderboard_service"
+        ],
+        "dependency_strength": "soft",
+        "failure_behavior": "social_service continues with limited functionality if leaderboard_service is down"
+      },
+      {
+        "service": "analytics_service",
+        "depends_on": [
+          "game_events_queue"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "analytics_service cannot process events without queue connectivity but system continues"
+      }
+    ]
   }
 }

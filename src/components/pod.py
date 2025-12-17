@@ -915,6 +915,21 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                         self._emit_log("DEBUG", "Skipping DB query due to cache hit")
                         continue
 
+                    # Skip DB query if semantic flows already handle databases for this request type
+                    # This prevents duplicate database calls
+                    semantic_config = getattr(self.parent_service, 'semantic_config', {})
+                    request_flows = semantic_config.get('request_flows', {})
+                    if request_type and request_flows and request_type in request_flows:
+                        flow_map = request_flows[request_type]
+                        required_calls = flow_map.get(self.parent_service.id, [])
+                        # Check if any database is in the semantic flow
+                        db_in_flow = any(conn_target.id in required_calls
+                                       for conn_name, conn_target in self.parent_service.connections.items()
+                                       if conn_name.startswith('db_'))
+                        if db_in_flow:
+                            self._emit_log("DEBUG", "Skipping DB query - handled by semantic flow")
+                            continue
+
                     # Execute DB query
                     yield from self._execute_db_logic(step, span)
 
@@ -1369,7 +1384,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                             db_span_ctx = trace.set_span_in_context(span)
 
                         # Execute database query
-                        db_process = self.env.process(conn_target.query(should_trace=should_trace_db, parent_span_context=db_span_ctx))
+                        db_process = self.env.process(conn_target.handle_query(should_trace=should_trace_db, parent_span_context=db_span_ctx))
                         yield db_process
 
                         # Record database metrics

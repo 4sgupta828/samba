@@ -114,7 +114,7 @@ def main():
                 with open(f"{path}/graph.json", 'w') as f:
                     json.dump(graph_json, f, indent=2)
 
-                # Save the semantic map (flows + descriptions)
+                # Save the semantic map (flows + descriptions + topology analysis)
                 # We normalize this to the structure expected by CapacityPlanner
                 semantic_map = {
                     "domain": topo_data.get('meta', {}).get('domain', 'unknown'),
@@ -124,7 +124,8 @@ def main():
                     "pros": topo_data.get('meta', {}).get('pros', []),
                     "cons": topo_data.get('meta', {}).get('cons', []),
                     "request_flows": topo_data.get('flows', {}),
-                    "services": {n['id']: n for n in topo_data['nodes']} # Quick lookup
+                    "services": {n['id']: n for n in topo_data['nodes']}, # Quick lookup
+                    "topology_analysis": topo_data.get('topology_analysis', {}) # NEW: Pre-analysis for RCA
                 }
                 with open(f"{path}/semantic_map.json", 'w') as f:
                     json.dump(semantic_map, f, indent=2)

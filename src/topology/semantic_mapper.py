@@ -123,6 +123,9 @@ class SemanticMapper:
             t0 = time.time()
             self._validate_overlay(semantic_overlay, topology_graph)
 
+            # IMPORTANT: Ensure ALL services are covered in request flows
+            semantic_overlay = self._ensure_complete_flows(semantic_overlay, topology_graph)
+
             # Ensure description exists (add fallback if Claude didn't provide it)
             if 'description' not in semantic_overlay or not semantic_overlay['description']:
                 domain = semantic_overlay.get('domain', 'unknown')
@@ -222,8 +225,10 @@ If the topology could fit multiple domains, rotate through options to ensure div
 IMPORTANT CONSTRAINTS:
 - request_types MUST be HTTP methods: ["GET", "POST", "PUT", "DELETE"] - DO NOT use domain-specific names
 - request_flows MUST use these HTTP methods as keys
-- request_flows MUST be CONNECTED - every service must be reachable from a frontend/gateway
-- DO NOT include services in flows that have no path from the entry point
+- EVERY service with role="service" MUST appear in request_flows for EVERY request type
+- Each service in request_flows should list the downstream dependencies it calls (other services, databases, caches, queues, external services)
+- If a service has no downstream dependencies, it can be omitted OR have an empty list as value
+- Infrastructure nodes (databases, caches, queues) should ONLY appear as VALUES in flows, not as KEYS (only services call things, infrastructure doesn't call other things)
 
 Output ONLY valid JSON in this EXACT format:
 {
@@ -251,11 +256,14 @@ Output ONLY valid JSON in this EXACT format:
 
 Key rules:
 - EVERY node in the topology MUST appear in the "services" dict
-- Request flows MUST be deterministic (no randomness)
+- EVERY service (role="service") MUST appear as a KEY in request_flows for ALL request types
+- Request flows MUST be deterministic (no randomness) - same request type always follows same paths
 - request_types MUST be HTTP methods (GET, POST, PUT, DELETE) not domain-specific names
 - Frontend nodes (is_frontend=true) should be entry points in request_flows
-- Each request flow should form a valid path through the topology
+- Each service lists the dependencies it calls (can include: other services, databases, caches, queues, external services)
 - The "description" field should be 3-5 paragraphs covering architecture, flow, use cases, bottlenecks, and fault modes
+
+Example: If you have services [svc_a, svc_b, svc_c] and ALL request types ["GET", "POST"], then ALL services must appear in flows for BOTH GET and POST
 """
 
     def _generate_heuristic_overlay(self, graph: nx.DiGraph) -> Dict:
@@ -368,13 +376,46 @@ Key rules:
                         continue
                     visited.add(current)
 
-                    # Get downstream nodes
-                    successors = list(graph.successors(current))
-                    if successors:
+                    # Get downstream nodes - only follow sync edges (not pod_pool, pod_placement)
+                    successors = []
+                    for successor in graph.successors(current):
+                        edge_data = graph.get_edge_data(current, successor)
+                        edge_type = edge_data.get('type', '')
+                        # Skip infrastructure edges (pod_pool, pod_placement)
+                        # Only include actual service calls (sync_http, sync_db, sync_cache, etc.)
+                        if not edge_type.startswith('pod_'):
+                            successors.append(successor)
+
+                    # Only add to flow if it's a service or gateway (not infrastructure)
+                    current_role = graph.nodes[current].get('role', '')
+                    if current_role in ['service', 'gateway'] and successors:
                         flow[current] = successors
-                        queue.extend(successors)
+
+                    queue.extend(successors)
 
             request_flows[request_type] = flow
+
+        # IMPORTANT: Ensure ALL services are covered in flows
+        # Find all services reachable from gateway
+        all_services = set(n for n, d in graph.nodes(data=True) if d.get('role') == 'service')
+
+        # For each request type, ensure all services have flow definitions
+        for request_type in request_types:
+            flow = request_flows[request_type]
+            services_in_flow = set(flow.keys())
+            missing_services = all_services - services_in_flow
+
+            # For missing services, add their direct dependencies
+            for service in missing_services:
+                successors = []
+                for successor in graph.successors(service):
+                    edge_data = graph.get_edge_data(service, successor)
+                    edge_type = edge_data.get('type', '')
+                    if not edge_type.startswith('pod_'):
+                        successors.append(successor)
+
+                if successors:
+                    flow[service] = successors
 
         # Generate a basic description based on the domain
         descriptions = {
@@ -466,3 +507,47 @@ Key rules:
                 unreachable = flow_nodes - reachable
                 if unreachable:
                     print(f"Warning: Request flow '{request_type}' has unreachable nodes: {unreachable}")
+
+    def _ensure_complete_flows(self, overlay: Dict, graph: nx.DiGraph) -> Dict:
+        """
+        Ensure ALL services appear in request flows for ALL request types.
+
+        This fills in any missing services that the LLM might have omitted.
+        Each missing service is added with its direct downstream dependencies.
+
+        Args:
+            overlay: Semantic overlay from LLM
+            graph: Original topology graph
+
+        Returns:
+            Updated overlay with complete flow coverage
+        """
+        # Find all services in the topology
+        all_services = set(n for n, d in graph.nodes(data=True) if d.get('role') == 'service')
+
+        # Ensure all request types have all services
+        for request_type in overlay.get('request_types', []):
+            if request_type not in overlay['request_flows']:
+                overlay['request_flows'][request_type] = {}
+
+            flow = overlay['request_flows'][request_type]
+            services_in_flow = set(k for k in flow.keys() if k in all_services)
+            missing_services = all_services - services_in_flow
+
+            if missing_services:
+                print(f"  [Completion] Adding {len(missing_services)} missing services to {request_type} flow: {missing_services}")
+
+            # Add missing services with their direct dependencies
+            for service in missing_services:
+                successors = []
+                for successor in graph.successors(service):
+                    edge_data = graph.get_edge_data(service, successor)
+                    edge_type = edge_data.get('type', '')
+                    # Skip pod infrastructure edges
+                    if not edge_type.startswith('pod_'):
+                        successors.append(successor)
+
+                # Add to flow (even if empty list - means leaf service)
+                flow[service] = successors
+
+        return overlay

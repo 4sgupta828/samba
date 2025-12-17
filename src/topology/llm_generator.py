@@ -25,7 +25,7 @@ class LLMTopologyGenerator:
         """
         Orchestrates generation and validation. Retries if LLM generates invalid graph.
         """
-        max_retries = 3
+        max_retries = 5  # Increased for complex topology_analysis section
         for attempt in range(max_retries):
             try:
                 # 1. Generate JSON from LLM
@@ -42,6 +42,8 @@ class LLMTopologyGenerator:
                 self._validate_node_types(topology_data)
                 self._validate_async_edges(topology_data)
                 self._validate_minimum_requirements(topology_data, archetype, scale)
+                self._validate_complete_flows(topology_data)  # NEW: Ensure all services in all flows
+                self._validate_topology_analysis(topology_data)  # NEW: Ensure pre-analysis exists
 
                 print(f"  ✓ Generated valid {archetype} topology on attempt {attempt+1}")
                 return topology_data
@@ -338,22 +340,123 @@ Do NOT create toy examples with only 1-2 services.
   ],
   "flows": {{
     "GET": {{
+      "use_case": "Fetch user profile and preferences",
       "gateway": ["service_1", "service_2"],
-      "service_1": ["db_0"],
+      "service_1": ["db_0", "cache_0"],
       "service_2": ["cache_0"]
     }},
     "POST": {{
+      "use_case": "Create new order and trigger fulfillment",
       "gateway": ["service_3"],
       "service_3": ["db_0", "queue_0"]
+    }},
+    "PUT": {{
+      "use_case": "Update existing record",
+      "gateway": ["service_1"],
+      "service_1": ["db_0", "cache_0"]
+    }},
+    "DELETE": {{
+      "use_case": "Remove user data",
+      "gateway": ["service_1"],
+      "service_1": ["db_0"]
     }}
+  }},
+  "topology_analysis": {{
+    "critical_paths": [
+      {{
+        "path": ["gateway", "service_1", "db_0"],
+        "latency_ms": 150,
+        "criticality": "high",
+        "reason": "Core user data fetch - affects 80% of requests"
+      }}
+    ],
+    "bottlenecks": [
+      {{
+        "node_id": "db_0",
+        "type": "resource_contention",
+        "severity": "high",
+        "reason": "Single database handles all write traffic, connection pool can saturate",
+        "symptoms": ["high_latency", "connection_pool_exhaustion", "queue_buildup"]
+      }}
+    ],
+    "failure_modes": [
+      {{
+        "fault_type": "service_crash",
+        "target": "service_1",
+        "likelihood": "medium",
+        "impact": "high",
+        "propagation": ["Causes 5xx errors at gateway", "Cache misses increase load on db_0"],
+        "detection_signals": ["error_rate_spike", "latency_increase", "pod_restarts"]
+      }}
+    ],
+    "dependencies": [
+      {{
+        "service": "service_1",
+        "depends_on": ["db_0", "cache_0"],
+        "dependency_strength": "hard",
+        "failure_behavior": "service_1 fails immediately if db_0 is down"
+      }}
+    ]
   }}
 }}
 ```
 
+**CRITICAL: Complete Deterministic Flows (MANDATORY):**
+1. **Every Service MUST appear in flows for ALL request types (GET, POST, PUT, DELETE)**
+   - If a service doesn't naturally handle a request type, include it with an empty dependency list
+   - Example: analytics_service might only process async jobs, but still include it:
+     - GET: "analytics_service": ["game_events_queue"]
+     - POST: "analytics_service": ["game_events_queue"]
+     - PUT: "analytics_service": []
+     - DELETE: "analytics_service": []
+
+2. **Use Case Driven Flows:**
+   - Each flow MUST have a "use_case" field describing what user action triggers it
+   - Example use cases:
+     - GET: "User views their order history"
+     - POST: "User places a new order"
+     - PUT: "User updates shipping address"
+     - DELETE: "User cancels subscription"
+
+3. **Trace Complete Call Chains:**
+   - Start from gateway → services → infrastructure (DB/cache/queue)
+   - Include ALL hops in the request path
+   - Don't skip intermediate services
+
+**CRITICAL: Topology Pre-Analysis (MANDATORY):**
+You MUST analyze the topology you designed and provide:
+
+1. **critical_paths**: Identify 3-5 most important request paths
+   - Include estimated latency
+   - Mark criticality (high/medium/low)
+   - Explain why this path matters
+
+2. **bottlenecks**: Identify potential bottlenecks (ranked by severity)
+   - Resource contention (DB connection pools, CPU, memory)
+   - Network bottlenecks (high fan-in services)
+   - Single points of failure
+   - Include expected symptoms when bottleneck occurs
+
+3. **failure_modes**: List 5-10 most likely failure scenarios (ranked by likelihood × impact)
+   - Fault types: service_crash, database_failure, network_partition, high_latency, etc.
+   - Target node(s) that could fail
+   - Propagation pattern (how failure spreads)
+   - Detection signals (metrics that spike/drop)
+
+4. **dependencies**: Map critical service dependencies
+   - Hard dependencies (service fails if dependency is down)
+   - Soft dependencies (service degrades but continues)
+   - Failure behavior for each dependency
+
+**Before returning JSON - FINAL VALIDATION CHECKLIST:**
+[ ] Every Service appears in flows for GET, POST, PUT, DELETE (even if empty list)
+[ ] Each flow has a realistic "use_case" description
+[ ] topology_analysis section is complete with critical_paths, bottlenecks, failure_modes, dependencies
+[ ] At least 5 failure_modes are listed (ranked by risk)
+[ ] Bottlenecks identify the most likely saturation points
+[ ] Critical paths cover the main user journeys
+
 **Important:**
-- Include flows for GET, POST, PUT, DELETE request types
-- Each flow maps a node to its downstream dependencies
-- Ensure all nodes are referenced in the edges
 - Use descriptive node IDs (not just "service_1", but "cart_service", "payment_service", etc.)
 - async_consumer_capacity is OPTIONAL but STRONGLY RECOMMENDED for services that consume from queues
   - Calculate: replicas × per-replica-capacity (e.g., 4 replicas × 30 RPS = 120)
@@ -514,6 +617,106 @@ Output ONLY JSON."""
                 f"Topology does not meet minimum requirements for {scale} {archetype}:\n  "
                 + "\n  ".join(errors)
             )
+
+    def _validate_complete_flows(self, data: Dict):
+        """
+        Validate that ALL services appear in flows for ALL request types.
+        This ensures deterministic request routing for all services.
+        """
+        # Get all services
+        services = [n['id'] for n in data['nodes'] if n['type'] == 'Service']
+
+        if not services:
+            return  # No services to validate
+
+        # Required request types
+        required_request_types = ['GET', 'POST', 'PUT', 'DELETE']
+
+        flows = data.get('flows', {})
+
+        # Check if flows exist
+        if not flows:
+            raise ValueError(
+                "Missing 'flows' section. Every service must have deterministic request flows defined."
+            )
+
+        errors = []
+
+        # Check each request type
+        for req_type in required_request_types:
+            if req_type not in flows:
+                errors.append(f"Missing flow for request type '{req_type}'")
+                continue
+
+            flow_map = flows[req_type]
+
+            # Remove metadata fields like "use_case" before checking services
+            service_flow_keys = [k for k in flow_map.keys() if k != 'use_case']
+
+            # Find services missing from this flow
+            missing = set(services) - set(service_flow_keys)
+
+            if missing:
+                missing_list = ", ".join(sorted(missing)[:5])
+                if len(missing) > 5:
+                    missing_list += f" (and {len(missing) - 5} more)"
+                errors.append(
+                    f"{req_type}: Missing {len(missing)}/{len(services)} services: {missing_list}"
+                )
+
+        if errors:
+            raise ValueError(
+                "INCOMPLETE FLOWS: Not all services appear in all request types.\n"
+                "EVERY service must be defined for GET, POST, PUT, DELETE (even if empty list).\n"
+                "Errors:\n  " + "\n  ".join(errors)
+            )
+
+    def _validate_topology_analysis(self, data: Dict):
+        """
+        Validate that topology_analysis section exists and is complete.
+        This pre-analysis is crucial for RCA and fault detection.
+        """
+        analysis = data.get('topology_analysis', {})
+
+        if not analysis:
+            raise ValueError(
+                "Missing 'topology_analysis' section. "
+                "You must pre-analyze the topology for RCA purposes."
+            )
+
+        required_sections = ['critical_paths', 'bottlenecks', 'failure_modes', 'dependencies']
+        missing_sections = [s for s in required_sections if s not in analysis or not analysis[s]]
+
+        if missing_sections:
+            raise ValueError(
+                f"Incomplete topology_analysis. Missing or empty sections: {', '.join(missing_sections)}\n"
+                f"Required: {', '.join(required_sections)}"
+            )
+
+        # Validate minimum entries for failure modes
+        failure_modes = analysis.get('failure_modes', [])
+        if len(failure_modes) < 5:
+            raise ValueError(
+                f"topology_analysis.failure_modes must contain at least 5 failure scenarios (got {len(failure_modes)})"
+            )
+
+        # Validate critical paths have required fields
+        critical_paths = analysis.get('critical_paths', [])
+        if len(critical_paths) < 3:
+            raise ValueError(
+                f"topology_analysis.critical_paths must contain at least 3 paths (got {len(critical_paths)})"
+            )
+
+        # Check structure of first failure mode
+        if failure_modes:
+            fm = failure_modes[0]
+            required_fm_keys = ['fault_type', 'target', 'likelihood', 'impact', 'propagation', 'detection_signals']
+            missing_fm_keys = [k for k in required_fm_keys if k not in fm]
+            if missing_fm_keys:
+                raise ValueError(
+                    f"failure_modes entries missing required fields: {', '.join(missing_fm_keys)}\n"
+                    f"Each failure mode must have: {', '.join(required_fm_keys)}"
+                )
 
     def convert_to_simulation_graph(self, data: Dict) -> nx.DiGraph:
         """Converts the JSON to the full NetworkX graph used by simulation."""

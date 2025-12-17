@@ -1,21 +1,19 @@
 {
   "meta": {
-    "architecture_name": "Smart Home Hub Platform",
+    "architecture_name": "Smart Home IoT Platform",
     "archetype": "hub_spoke",
-    "domain": "IoT Smart Home Management",
-    "description": "Centralized smart home platform that orchestrates device control, automation, and monitoring across multiple IoT device types and protocols",
+    "domain": "Smart Home Automation",
+    "description": "Central IoT hub manages devices, automation rules, and user interactions across multiple smart home systems",
     "pros": [
       "Centralized device orchestration",
-      "Protocol abstraction",
-      "Simplified automation rules",
-      "Unified device management",
-      "Easy integration of new device types"
+      "Simplified device management",
+      "Cross-device automation workflows",
+      "Single point of control"
     ],
     "cons": [
-      "Single point of failure at hub",
-      "Hub can become performance bottleneck",
-      "Complex hub logic",
-      "Limited direct device-to-device communication"
+      "Hub becomes single point of failure",
+      "All communication flows through central service",
+      "Scaling bottleneck at orchestrator"
     ]
   },
   "nodes": [
@@ -24,89 +22,90 @@
       "type": "RequestGateway"
     },
     {
-      "id": "hub_orchestrator",
+      "id": "home_hub_service",
       "type": "Service",
       "profile": "standard",
       "replicas": 4
     },
     {
-      "id": "lighting_service",
+      "id": "device_management_service",
       "type": "Service",
-      "profile": "latency_sensitive",
+      "profile": "io_intensive",
       "replicas": 3
     },
     {
-      "id": "climate_service",
-      "type": "Service",
-      "profile": "io_intensive",
-      "replicas": 2
-    },
-    {
-      "id": "security_service",
-      "type": "Service",
-      "profile": "latency_sensitive",
-      "replicas": 4
-    },
-    {
-      "id": "entertainment_service",
-      "type": "Service",
-      "profile": "cpu_intensive",
-      "replicas": 3
-    },
-    {
-      "id": "automation_engine",
-      "type": "Service",
-      "profile": "standard",
-      "replicas": 3,
-      "async_consumer_capacity": 240
-    },
-    {
-      "id": "device_state_service",
-      "type": "Service",
-      "profile": "io_intensive",
-      "replicas": 2
-    },
-    {
-      "id": "analytics_service",
+      "id": "automation_engine_service",
       "type": "Service",
       "profile": "cpu_intensive",
       "replicas": 4,
       "async_consumer_capacity": 160
     },
     {
+      "id": "security_monitoring_service",
+      "type": "Service",
+      "profile": "latency_sensitive",
+      "replicas": 3
+    },
+    {
+      "id": "energy_management_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 2
+    },
+    {
+      "id": "user_interface_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 3
+    },
+    {
+      "id": "telemetry_processor_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 4,
+      "async_consumer_capacity": 120
+    },
+    {
       "id": "notification_service",
       "type": "Service",
       "profile": "standard",
       "replicas": 2,
-      "async_consumer_capacity": 120
+      "async_consumer_capacity": 150
     },
     {
-      "id": "devices_db",
+      "id": "analytics_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 3,
+      "async_consumer_capacity": 90
+    },
+    {
+      "id": "device_registry_db",
       "type": "SqlDatabase",
       "replicas": 3
     },
     {
-      "id": "automation_db",
+      "id": "user_data_db",
       "type": "SqlDatabase",
       "replicas": 3
     },
     {
-      "id": "device_cache",
+      "id": "telemetry_cache",
       "type": "ExternalCache",
       "replicas": 3
     },
     {
-      "id": "session_cache",
+      "id": "device_state_cache",
       "type": "ExternalCache",
-      "replicas": 3
-    },
-    {
-      "id": "device_events_queue",
-      "type": "MessageQueue",
       "replicas": 3
     },
     {
       "id": "automation_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "telemetry_queue",
       "type": "MessageQueue",
       "replicas": 3
     },
@@ -116,145 +115,115 @@
       "replicas": 3
     },
     {
-      "id": "cloud_iot_platform",
+      "id": "cloud_storage_service",
       "type": "ExternalService"
     }
   ],
   "edges": [
     {
       "source": "gateway",
-      "target": "hub_orchestrator",
+      "target": "home_hub_service",
       "type": "sync_http"
     },
     {
-      "source": "hub_orchestrator",
-      "target": "lighting_service",
+      "source": "home_hub_service",
+      "target": "device_management_service",
       "type": "sync_http"
     },
     {
-      "source": "hub_orchestrator",
-      "target": "climate_service",
+      "source": "home_hub_service",
+      "target": "automation_engine_service",
       "type": "sync_http"
     },
     {
-      "source": "hub_orchestrator",
-      "target": "security_service",
+      "source": "home_hub_service",
+      "target": "security_monitoring_service",
       "type": "sync_http"
     },
     {
-      "source": "hub_orchestrator",
-      "target": "entertainment_service",
+      "source": "home_hub_service",
+      "target": "energy_management_service",
       "type": "sync_http"
     },
     {
-      "source": "hub_orchestrator",
-      "target": "device_state_service",
+      "source": "home_hub_service",
+      "target": "user_interface_service",
       "type": "sync_http"
     },
     {
-      "source": "hub_orchestrator",
-      "target": "session_cache",
+      "source": "device_management_service",
+      "target": "device_registry_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "device_management_service",
+      "target": "device_state_cache",
       "type": "sync_cache"
     },
     {
-      "source": "hub_orchestrator",
-      "target": "device_events_queue",
-      "type": "async_produce"
+      "source": "automation_engine_service",
+      "target": "user_data_db",
+      "type": "sync_db"
     },
     {
-      "source": "hub_orchestrator",
+      "source": "automation_engine_service",
       "target": "automation_queue",
       "type": "async_produce"
     },
     {
-      "source": "lighting_service",
-      "target": "devices_db",
+      "source": "automation_queue",
+      "target": "automation_engine_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "security_monitoring_service",
+      "target": "device_registry_db",
       "type": "sync_db"
     },
     {
-      "source": "lighting_service",
-      "target": "device_cache",
-      "type": "sync_cache"
-    },
-    {
-      "source": "lighting_service",
-      "target": "cloud_iot_platform",
-      "type": "sync_external"
-    },
-    {
-      "source": "climate_service",
-      "target": "devices_db",
-      "type": "sync_db"
-    },
-    {
-      "source": "climate_service",
-      "target": "device_cache",
-      "type": "sync_cache"
-    },
-    {
-      "source": "climate_service",
-      "target": "cloud_iot_platform",
-      "type": "sync_external"
-    },
-    {
-      "source": "security_service",
-      "target": "devices_db",
-      "type": "sync_db"
-    },
-    {
-      "source": "security_service",
-      "target": "device_cache",
-      "type": "sync_cache"
-    },
-    {
-      "source": "security_service",
+      "source": "security_monitoring_service",
       "target": "notification_queue",
       "type": "async_produce"
     },
     {
-      "source": "entertainment_service",
-      "target": "devices_db",
+      "source": "energy_management_service",
+      "target": "user_data_db",
       "type": "sync_db"
     },
     {
-      "source": "entertainment_service",
-      "target": "device_cache",
+      "source": "energy_management_service",
+      "target": "telemetry_cache",
       "type": "sync_cache"
     },
     {
-      "source": "device_state_service",
-      "target": "devices_db",
+      "source": "user_interface_service",
+      "target": "user_data_db",
       "type": "sync_db"
     },
     {
-      "source": "device_state_service",
-      "target": "device_cache",
+      "source": "user_interface_service",
+      "target": "device_state_cache",
       "type": "sync_cache"
     },
     {
-      "source": "automation_queue",
-      "target": "automation_engine",
+      "source": "home_hub_service",
+      "target": "telemetry_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "telemetry_queue",
+      "target": "telemetry_processor_service",
       "type": "async_consume"
     },
     {
-      "source": "automation_engine",
-      "target": "automation_db",
-      "type": "sync_db"
-    },
-    {
-      "source": "automation_engine",
-      "target": "device_cache",
+      "source": "telemetry_processor_service",
+      "target": "telemetry_cache",
       "type": "sync_cache"
     },
     {
-      "source": "device_events_queue",
-      "target": "analytics_service",
-      "type": "async_consume"
-    },
-    {
-      "source": "analytics_service",
-      "target": "automation_db",
-      "type": "sync_db"
+      "source": "telemetry_processor_service",
+      "target": "cloud_storage_service",
+      "type": "sync_external"
     },
     {
       "source": "notification_queue",
@@ -263,155 +232,392 @@
     },
     {
       "source": "notification_service",
-      "target": "devices_db",
+      "target": "user_data_db",
       "type": "sync_db"
+    },
+    {
+      "source": "telemetry_processor_service",
+      "target": "telemetry_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "telemetry_queue",
+      "target": "analytics_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "analytics_service",
+      "target": "telemetry_cache",
+      "type": "sync_cache"
     }
   ],
   "flows": {
     "GET": {
+      "use_case": "User views current device status and home dashboard",
       "gateway": [
-        "hub_orchestrator"
+        "home_hub_service"
       ],
-      "hub_orchestrator": [
-        "lighting_service",
-        "climate_service",
-        "security_service",
-        "entertainment_service",
-        "device_state_service",
-        "session_cache"
+      "home_hub_service": [
+        "device_management_service",
+        "user_interface_service"
       ],
-      "lighting_service": [
-        "device_cache",
-        "devices_db"
+      "device_management_service": [
+        "device_registry_db",
+        "device_state_cache"
       ],
-      "climate_service": [
-        "device_cache",
-        "devices_db"
+      "automation_engine_service": [
+        "user_data_db"
       ],
-      "security_service": [
-        "device_cache",
-        "devices_db"
+      "security_monitoring_service": [
+        "device_registry_db"
       ],
-      "entertainment_service": [
-        "device_cache",
-        "devices_db"
+      "energy_management_service": [
+        "user_data_db",
+        "telemetry_cache"
       ],
-      "device_state_service": [
-        "device_cache",
-        "devices_db"
+      "user_interface_service": [
+        "user_data_db",
+        "device_state_cache"
+      ],
+      "telemetry_processor_service": [
+        "telemetry_cache"
+      ],
+      "notification_service": [
+        "user_data_db"
+      ],
+      "analytics_service": [
+        "telemetry_cache"
       ]
     },
     "POST": {
+      "use_case": "User creates new automation rule or adds device",
       "gateway": [
-        "hub_orchestrator"
+        "home_hub_service"
       ],
-      "hub_orchestrator": [
-        "lighting_service",
-        "climate_service",
-        "security_service",
-        "entertainment_service",
-        "device_events_queue",
+      "home_hub_service": [
+        "automation_engine_service",
+        "device_management_service",
+        "telemetry_queue"
+      ],
+      "device_management_service": [
+        "device_registry_db",
+        "device_state_cache"
+      ],
+      "automation_engine_service": [
+        "user_data_db",
         "automation_queue"
       ],
-      "lighting_service": [
-        "devices_db",
-        "cloud_iot_platform"
-      ],
-      "climate_service": [
-        "devices_db",
-        "cloud_iot_platform"
-      ],
-      "security_service": [
-        "devices_db",
+      "security_monitoring_service": [
         "notification_queue"
       ],
-      "entertainment_service": [
-        "devices_db"
+      "energy_management_service": [
+        "user_data_db"
       ],
-      "device_events_queue": [
-        "analytics_service"
+      "user_interface_service": [
+        "user_data_db"
       ],
-      "automation_queue": [
-        "automation_engine"
-      ],
-      "automation_engine": [
-        "automation_db"
-      ],
-      "analytics_service": [
-        "automation_db"
-      ],
-      "notification_queue": [
-        "notification_service"
+      "telemetry_processor_service": [
+        "telemetry_cache",
+        "telemetry_queue"
       ],
       "notification_service": [
-        "devices_db"
+        "user_data_db"
+      ],
+      "analytics_service": [
+        "telemetry_cache"
       ]
     },
     "PUT": {
+      "use_case": "User updates device settings or automation rules",
       "gateway": [
-        "hub_orchestrator"
+        "home_hub_service"
       ],
-      "hub_orchestrator": [
-        "lighting_service",
-        "climate_service",
-        "security_service",
-        "entertainment_service",
-        "device_state_service"
+      "home_hub_service": [
+        "device_management_service",
+        "automation_engine_service"
       ],
-      "lighting_service": [
-        "devices_db",
-        "device_cache",
-        "cloud_iot_platform"
+      "device_management_service": [
+        "device_registry_db",
+        "device_state_cache"
       ],
-      "climate_service": [
-        "devices_db",
-        "device_cache",
-        "cloud_iot_platform"
+      "automation_engine_service": [
+        "user_data_db"
       ],
-      "security_service": [
-        "devices_db",
-        "device_cache"
+      "security_monitoring_service": [
+        "device_registry_db"
       ],
-      "entertainment_service": [
-        "devices_db",
-        "device_cache"
+      "energy_management_service": [
+        "user_data_db"
       ],
-      "device_state_service": [
-        "devices_db",
-        "device_cache"
-      ]
+      "user_interface_service": [
+        "user_data_db",
+        "device_state_cache"
+      ],
+      "telemetry_processor_service": [
+        "telemetry_cache"
+      ],
+      "notification_service": [
+        "user_data_db"
+      ],
+      "analytics_service": []
     },
     "DELETE": {
+      "use_case": "User removes device or deletes automation rule",
       "gateway": [
-        "hub_orchestrator"
+        "home_hub_service"
       ],
-      "hub_orchestrator": [
-        "lighting_service",
-        "climate_service",
-        "security_service",
-        "entertainment_service",
-        "device_state_service"
+      "home_hub_service": [
+        "device_management_service",
+        "automation_engine_service"
       ],
-      "lighting_service": [
-        "devices_db",
-        "device_cache"
+      "device_management_service": [
+        "device_registry_db",
+        "device_state_cache"
       ],
-      "climate_service": [
-        "devices_db",
-        "device_cache"
+      "automation_engine_service": [
+        "user_data_db"
       ],
-      "security_service": [
-        "devices_db",
-        "device_cache"
+      "security_monitoring_service": [
+        "device_registry_db"
       ],
-      "entertainment_service": [
-        "devices_db",
-        "device_cache"
+      "energy_management_service": [
+        "user_data_db"
       ],
-      "device_state_service": [
-        "devices_db",
-        "device_cache"
-      ]
+      "user_interface_service": [
+        "user_data_db"
+      ],
+      "telemetry_processor_service": [],
+      "notification_service": [],
+      "analytics_service": []
     }
+  },
+  "topology_analysis": {
+    "critical_paths": [
+      {
+        "path": [
+          "gateway",
+          "home_hub_service",
+          "device_management_service",
+          "device_state_cache"
+        ],
+        "latency_ms": 45,
+        "criticality": "high",
+        "reason": "Real-time device status updates - affects user interface responsiveness"
+      },
+      {
+        "path": [
+          "gateway",
+          "home_hub_service",
+          "security_monitoring_service",
+          "device_registry_db"
+        ],
+        "latency_ms": 80,
+        "criticality": "high",
+        "reason": "Security event processing - critical for home safety"
+      },
+      {
+        "path": [
+          "home_hub_service",
+          "telemetry_queue",
+          "telemetry_processor_service"
+        ],
+        "latency_ms": 120,
+        "criticality": "medium",
+        "reason": "Telemetry processing pipeline - affects energy analytics and trends"
+      },
+      {
+        "path": [
+          "automation_engine_service",
+          "automation_queue",
+          "automation_engine_service"
+        ],
+        "latency_ms": 200,
+        "criticality": "high",
+        "reason": "Automation rule execution - core functionality for smart home workflows"
+      }
+    ],
+    "bottlenecks": [
+      {
+        "node_id": "home_hub_service",
+        "type": "resource_contention",
+        "severity": "high",
+        "reason": "Central orchestrator handles all user requests and device coordination - single point of scaling limitation",
+        "symptoms": [
+          "high_cpu_usage",
+          "request_queue_buildup",
+          "increased_response_times"
+        ]
+      },
+      {
+        "node_id": "device_state_cache",
+        "type": "resource_contention",
+        "severity": "medium",
+        "reason": "Frequent device status updates and reads can saturate cache memory and connections",
+        "symptoms": [
+          "cache_evictions",
+          "memory_pressure",
+          "connection_pool_exhaustion"
+        ]
+      },
+      {
+        "node_id": "telemetry_queue",
+        "type": "throughput_limitation",
+        "severity": "medium",
+        "reason": "High-frequency sensor data can overwhelm queue capacity during peak usage",
+        "symptoms": [
+          "message_backlog",
+          "producer_throttling",
+          "consumer_lag"
+        ]
+      },
+      {
+        "node_id": "device_registry_db",
+        "type": "resource_contention",
+        "severity": "medium",
+        "reason": "Central device metadata storage with frequent reads/writes from multiple services",
+        "symptoms": [
+          "slow_queries",
+          "connection_timeouts",
+          "lock_contention"
+        ]
+      }
+    ],
+    "failure_modes": [
+      {
+        "fault_type": "service_crash",
+        "target": "home_hub_service",
+        "likelihood": "medium",
+        "impact": "critical",
+        "propagation": [
+          "Complete system unavailability",
+          "All device control stops",
+          "No user interface access"
+        ],
+        "detection_signals": [
+          "error_rate_spike",
+          "zero_successful_requests",
+          "pod_restart_loop"
+        ]
+      },
+      {
+        "fault_type": "database_failure",
+        "target": "device_registry_db",
+        "likelihood": "low",
+        "impact": "high",
+        "propagation": [
+          "Device management stops",
+          "Security monitoring degraded",
+          "Cannot add new devices"
+        ],
+        "detection_signals": [
+          "connection_refused",
+          "query_timeouts",
+          "replica_lag_spike"
+        ]
+      },
+      {
+        "fault_type": "cache_failure",
+        "target": "device_state_cache",
+        "likelihood": "medium",
+        "impact": "medium",
+        "propagation": [
+          "Slower device status updates",
+          "Increased database load",
+          "UI responsiveness degraded"
+        ],
+        "detection_signals": [
+          "cache_miss_ratio_spike",
+          "database_query_increase",
+          "latency_increase"
+        ]
+      },
+      {
+        "fault_type": "queue_saturation",
+        "target": "telemetry_queue",
+        "likelihood": "high",
+        "impact": "medium",
+        "propagation": [
+          "Telemetry data loss",
+          "Analytics delayed",
+          "Energy monitoring gaps"
+        ],
+        "detection_signals": [
+          "queue_depth_spike",
+          "message_drop_rate",
+          "consumer_lag_increase"
+        ]
+      },
+      {
+        "fault_type": "network_partition",
+        "target": "cloud_storage_service",
+        "likelihood": "medium",
+        "impact": "low",
+        "propagation": [
+          "Historical data archiving stops",
+          "Analytics data incomplete",
+          "No immediate user impact"
+        ],
+        "detection_signals": [
+          "external_api_errors",
+          "timeout_rate_spike",
+          "retry_exhaustion"
+        ]
+      },
+      {
+        "fault_type": "high_latency",
+        "target": "automation_engine_service",
+        "likelihood": "medium",
+        "impact": "high",
+        "propagation": [
+          "Delayed automation responses",
+          "Security alerts delayed",
+          "Poor user experience"
+        ],
+        "detection_signals": [
+          "p99_latency_spike",
+          "timeout_increase",
+          "user_complaints"
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "service": "home_hub_service",
+        "depends_on": [
+          "device_management_service",
+          "automation_engine_service",
+          "security_monitoring_service"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "Hub service fails immediately if any spoke service is unavailable"
+      },
+      {
+        "service": "device_management_service",
+        "depends_on": [
+          "device_registry_db",
+          "device_state_cache"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "Cannot read device state without cache, cannot persist without database"
+      },
+      {
+        "service": "automation_engine_service",
+        "depends_on": [
+          "user_data_db",
+          "automation_queue"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "Cannot execute rules without database access or queue for async processing"
+      },
+      {
+        "service": "telemetry_processor_service",
+        "depends_on": [
+          "telemetry_cache",
+          "cloud_storage_service"
+        ],
+        "dependency_strength": "soft",
+        "failure_behavior": "Can continue processing with degraded performance if cloud storage fails"
+      }
+    ]
   }
 }

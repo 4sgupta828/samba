@@ -1,21 +1,20 @@
 {
   "meta": {
-    "architecture_name": "Enterprise SaaS Platform",
+    "architecture_name": "Enterprise Healthcare Records Management System",
     "archetype": "hierarchical",
-    "domain": "SaaS Platform",
-    "description": "Multi-tenant SaaS platform with strict hierarchical layers for user management, subscription billing, analytics, and tenant isolation",
+    "domain": "Healthcare Records Management",
+    "description": "A HIPAA-compliant healthcare records management system with strict layered architecture for security and auditability. Handles patient records, clinical workflows, and analytics with clear separation of concerns.",
     "pros": [
-      "Clear separation of concerns with strict layering",
-      "Easy to understand and maintain hierarchical structure",
-      "Excellent scalability through layer-based load distribution",
-      "Strong security boundaries between layers",
-      "Simplified debugging and monitoring per layer"
+      "Clear security boundaries between layers for HIPAA compliance",
+      "Predictable request flow makes audit trails easy to follow",
+      "Separation of clinical data from analytics reduces compliance scope",
+      "Easy to implement role-based access control at layer boundaries"
     ],
     "cons": [
-      "Rigid structure limits cross-cutting functionality",
-      "Potential performance overhead from layer traversal",
-      "Difficult to implement features spanning multiple layers",
-      "May require more network hops for complex operations"
+      "Rigid layer structure can increase latency for simple operations",
+      "Cross-cutting concerns like notifications require complex routing",
+      "Database layer can become bottleneck without careful capacity planning",
+      "Limited flexibility for real-time clinical decision support features"
     ]
   },
   "nodes": [
@@ -24,34 +23,46 @@
       "type": "RequestGateway"
     },
     {
-      "id": "auth_service",
+      "id": "patient_portal_service",
+      "type": "Service",
+      "profile": "standard",
+      "replicas": 3
+    },
+    {
+      "id": "clinical_dashboard_service",
       "type": "Service",
       "profile": "latency_sensitive",
-      "replicas": 3
+      "replicas": 4
     },
     {
-      "id": "tenant_service",
+      "id": "mobile_api_service",
       "type": "Service",
       "profile": "standard",
       "replicas": 3
     },
     {
-      "id": "subscription_service",
+      "id": "patient_records_service",
+      "type": "Service",
+      "profile": "io_intensive",
+      "replicas": 3
+    },
+    {
+      "id": "clinical_workflow_service",
       "type": "Service",
       "profile": "standard",
+      "replicas": 3
+    },
+    {
+      "id": "imaging_service",
+      "type": "Service",
+      "profile": "cpu_intensive",
+      "replicas": 5
+    },
+    {
+      "id": "audit_service",
+      "type": "Service",
+      "profile": "io_intensive",
       "replicas": 2
-    },
-    {
-      "id": "user_management_service",
-      "type": "Service",
-      "profile": "io_intensive",
-      "replicas": 3
-    },
-    {
-      "id": "billing_service",
-      "type": "Service",
-      "profile": "io_intensive",
-      "replicas": 3
     },
     {
       "id": "analytics_service",
@@ -68,30 +79,13 @@
       "async_consumer_capacity": 200
     },
     {
-      "id": "reporting_service",
-      "type": "Service",
-      "profile": "cpu_intensive",
-      "replicas": 3,
-      "async_consumer_capacity": 90
-    },
-    {
-      "id": "user_db",
+      "id": "patient_db",
       "type": "SqlDatabase",
       "replicas": 3
     },
     {
-      "id": "tenant_db",
+      "id": "clinical_db",
       "type": "SqlDatabase",
-      "replicas": 3
-    },
-    {
-      "id": "analytics_db",
-      "type": "SqlDatabase",
-      "replicas": 3
-    },
-    {
-      "id": "auth_cache",
-      "type": "ExternalCache",
       "replicas": 3
     },
     {
@@ -100,219 +94,520 @@
       "replicas": 3
     },
     {
-      "id": "events_queue",
+      "id": "records_cache",
+      "type": "ExternalCache",
+      "replicas": 3
+    },
+    {
+      "id": "audit_queue",
       "type": "MessageQueue",
       "replicas": 3
     },
     {
-      "id": "billing_queue",
+      "id": "analytics_queue",
       "type": "MessageQueue",
       "replicas": 3
     },
     {
-      "id": "payment_gateway",
+      "id": "notification_queue",
+      "type": "MessageQueue",
+      "replicas": 3
+    },
+    {
+      "id": "insurance_api",
       "type": "ExternalService"
     },
     {
-      "id": "email_service",
+      "id": "lab_results_api",
       "type": "ExternalService"
     }
   ],
   "edges": [
     {
       "source": "gateway",
-      "target": "auth_service",
+      "target": "patient_portal_service",
       "type": "sync_http"
     },
     {
       "source": "gateway",
-      "target": "tenant_service",
+      "target": "clinical_dashboard_service",
       "type": "sync_http"
     },
     {
       "source": "gateway",
-      "target": "subscription_service",
+      "target": "mobile_api_service",
       "type": "sync_http"
     },
     {
-      "source": "auth_service",
-      "target": "user_management_service",
+      "source": "patient_portal_service",
+      "target": "patient_records_service",
       "type": "sync_http"
     },
     {
-      "source": "tenant_service",
-      "target": "user_management_service",
-      "type": "sync_http"
-    },
-    {
-      "source": "subscription_service",
-      "target": "billing_service",
-      "type": "sync_http"
-    },
-    {
-      "source": "user_management_service",
-      "target": "user_db",
-      "type": "sync_db"
-    },
-    {
-      "source": "user_management_service",
-      "target": "auth_cache",
-      "type": "sync_cache"
-    },
-    {
-      "source": "user_management_service",
-      "target": "events_queue",
-      "type": "async_produce"
-    },
-    {
-      "source": "billing_service",
-      "target": "tenant_db",
-      "type": "sync_db"
-    },
-    {
-      "source": "billing_service",
+      "source": "patient_portal_service",
       "target": "session_cache",
       "type": "sync_cache"
     },
     {
-      "source": "billing_service",
-      "target": "payment_gateway",
+      "source": "clinical_dashboard_service",
+      "target": "clinical_workflow_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "clinical_dashboard_service",
+      "target": "imaging_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "clinical_dashboard_service",
+      "target": "session_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "mobile_api_service",
+      "target": "patient_records_service",
+      "type": "sync_http"
+    },
+    {
+      "source": "mobile_api_service",
+      "target": "session_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "patient_records_service",
+      "target": "patient_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "patient_records_service",
+      "target": "records_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "patient_records_service",
+      "target": "audit_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "patient_records_service",
+      "target": "analytics_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "clinical_workflow_service",
+      "target": "clinical_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "clinical_workflow_service",
+      "target": "records_cache",
+      "type": "sync_cache"
+    },
+    {
+      "source": "clinical_workflow_service",
+      "target": "insurance_api",
       "type": "sync_external"
     },
     {
-      "source": "billing_service",
-      "target": "billing_queue",
+      "source": "clinical_workflow_service",
+      "target": "notification_queue",
       "type": "async_produce"
     },
     {
-      "source": "auth_service",
-      "target": "auth_cache",
-      "type": "sync_cache"
+      "source": "clinical_workflow_service",
+      "target": "audit_queue",
+      "type": "async_produce"
     },
     {
-      "source": "auth_service",
-      "target": "session_cache",
-      "type": "sync_cache"
-    },
-    {
-      "source": "tenant_service",
-      "target": "tenant_db",
+      "source": "imaging_service",
+      "target": "clinical_db",
       "type": "sync_db"
     },
     {
-      "source": "subscription_service",
-      "target": "tenant_db",
+      "source": "imaging_service",
+      "target": "lab_results_api",
+      "type": "sync_external"
+    },
+    {
+      "source": "imaging_service",
+      "target": "analytics_queue",
+      "type": "async_produce"
+    },
+    {
+      "source": "audit_queue",
+      "target": "audit_service",
+      "type": "async_consume"
+    },
+    {
+      "source": "audit_service",
+      "target": "clinical_db",
       "type": "sync_db"
     },
     {
-      "source": "events_queue",
+      "source": "analytics_queue",
       "target": "analytics_service",
       "type": "async_consume"
     },
     {
-      "source": "events_queue",
+      "source": "analytics_service",
+      "target": "clinical_db",
+      "type": "sync_db"
+    },
+    {
+      "source": "notification_queue",
       "target": "notification_service",
       "type": "async_consume"
     },
     {
-      "source": "billing_queue",
-      "target": "reporting_service",
-      "type": "async_consume"
-    },
-    {
-      "source": "analytics_service",
-      "target": "analytics_db",
-      "type": "sync_db"
-    },
-    {
       "source": "notification_service",
-      "target": "email_service",
-      "type": "sync_external"
-    },
-    {
-      "source": "reporting_service",
-      "target": "analytics_db",
+      "target": "patient_db",
       "type": "sync_db"
     }
   ],
   "flows": {
     "GET": {
+      "use_case": "Patient views their medical history and test results",
       "gateway": [
-        "auth_service",
-        "tenant_service"
+        "patient_portal_service",
+        "clinical_dashboard_service",
+        "mobile_api_service"
       ],
-      "auth_service": [
-        "auth_cache",
-        "session_cache",
-        "user_management_service"
+      "patient_portal_service": [
+        "patient_records_service",
+        "session_cache"
       ],
-      "tenant_service": [
-        "tenant_db",
-        "user_management_service"
+      "clinical_dashboard_service": [
+        "clinical_workflow_service",
+        "imaging_service",
+        "session_cache"
       ],
-      "user_management_service": [
-        "user_db",
-        "auth_cache"
+      "mobile_api_service": [
+        "patient_records_service",
+        "session_cache"
+      ],
+      "patient_records_service": [
+        "patient_db",
+        "records_cache"
+      ],
+      "clinical_workflow_service": [
+        "clinical_db",
+        "records_cache",
+        "insurance_api"
+      ],
+      "imaging_service": [
+        "clinical_db",
+        "lab_results_api"
+      ],
+      "audit_service": [
+        "clinical_db"
+      ],
+      "analytics_service": [
+        "clinical_db"
+      ],
+      "notification_service": [
+        "patient_db"
       ]
     },
     "POST": {
+      "use_case": "Clinician creates new patient record and orders tests",
       "gateway": [
-        "auth_service",
-        "subscription_service"
+        "clinical_dashboard_service"
       ],
-      "auth_service": [
-        "user_management_service"
+      "patient_portal_service": [],
+      "clinical_dashboard_service": [
+        "clinical_workflow_service",
+        "imaging_service",
+        "session_cache"
       ],
-      "subscription_service": [
-        "billing_service"
+      "mobile_api_service": [],
+      "patient_records_service": [
+        "patient_db",
+        "records_cache",
+        "audit_queue",
+        "analytics_queue"
       ],
-      "user_management_service": [
-        "user_db",
-        "events_queue"
+      "clinical_workflow_service": [
+        "clinical_db",
+        "records_cache",
+        "insurance_api",
+        "notification_queue",
+        "audit_queue"
       ],
-      "billing_service": [
-        "tenant_db",
-        "payment_gateway",
-        "billing_queue"
+      "imaging_service": [
+        "clinical_db",
+        "lab_results_api",
+        "analytics_queue"
+      ],
+      "audit_service": [
+        "clinical_db"
+      ],
+      "analytics_service": [
+        "clinical_db"
+      ],
+      "notification_service": [
+        "patient_db"
       ]
     },
     "PUT": {
+      "use_case": "Update patient information or clinical notes",
       "gateway": [
-        "tenant_service",
-        "subscription_service"
+        "patient_portal_service",
+        "clinical_dashboard_service"
       ],
-      "tenant_service": [
-        "user_management_service"
+      "patient_portal_service": [
+        "patient_records_service",
+        "session_cache"
       ],
-      "subscription_service": [
-        "billing_service"
+      "clinical_dashboard_service": [
+        "clinical_workflow_service",
+        "session_cache"
       ],
-      "user_management_service": [
-        "user_db",
-        "auth_cache",
-        "events_queue"
+      "mobile_api_service": [
+        "patient_records_service",
+        "session_cache"
       ],
-      "billing_service": [
-        "tenant_db",
-        "session_cache",
-        "billing_queue"
+      "patient_records_service": [
+        "patient_db",
+        "records_cache",
+        "audit_queue"
+      ],
+      "clinical_workflow_service": [
+        "clinical_db",
+        "records_cache",
+        "audit_queue"
+      ],
+      "imaging_service": [
+        "clinical_db"
+      ],
+      "audit_service": [
+        "clinical_db"
+      ],
+      "analytics_service": [
+        "clinical_db"
+      ],
+      "notification_service": [
+        "patient_db"
       ]
     },
     "DELETE": {
+      "use_case": "Remove patient data per HIPAA right to deletion",
       "gateway": [
-        "auth_service",
-        "tenant_service"
+        "clinical_dashboard_service"
       ],
-      "auth_service": [
-        "user_management_service"
+      "patient_portal_service": [],
+      "clinical_dashboard_service": [
+        "clinical_workflow_service",
+        "session_cache"
       ],
-      "tenant_service": [
-        "user_management_service"
+      "mobile_api_service": [],
+      "patient_records_service": [
+        "patient_db",
+        "audit_queue"
       ],
-      "user_management_service": [
-        "user_db",
-        "events_queue"
-      ]
+      "clinical_workflow_service": [
+        "clinical_db",
+        "audit_queue"
+      ],
+      "imaging_service": [],
+      "audit_service": [
+        "clinical_db"
+      ],
+      "analytics_service": [],
+      "notification_service": []
     }
+  },
+  "topology_analysis": {
+    "critical_paths": [
+      {
+        "path": [
+          "gateway",
+          "clinical_dashboard_service",
+          "clinical_workflow_service",
+          "clinical_db"
+        ],
+        "latency_ms": 120,
+        "criticality": "high",
+        "reason": "Primary clinical workflow path used during patient visits - affects 70% of clinician interactions"
+      },
+      {
+        "path": [
+          "gateway",
+          "patient_portal_service",
+          "patient_records_service",
+          "patient_db"
+        ],
+        "latency_ms": 100,
+        "criticality": "high",
+        "reason": "Patient self-service portal - affects patient satisfaction and reduces support calls"
+      },
+      {
+        "path": [
+          "gateway",
+          "clinical_dashboard_service",
+          "imaging_service",
+          "lab_results_api"
+        ],
+        "latency_ms": 300,
+        "criticality": "medium",
+        "reason": "Medical imaging and lab integration - critical for diagnosis but lower frequency"
+      }
+    ],
+    "bottlenecks": [
+      {
+        "node_id": "clinical_db",
+        "type": "resource_contention",
+        "severity": "high",
+        "reason": "Central database for all clinical data - handles complex medical record queries with ACID compliance requirements",
+        "symptoms": [
+          "high_latency",
+          "connection_pool_exhaustion",
+          "lock_contention",
+          "query_timeout"
+        ]
+      },
+      {
+        "node_id": "records_cache",
+        "type": "cache_saturation",
+        "severity": "medium",
+        "reason": "Frequently accessed patient records cache - eviction pressure during peak clinical hours",
+        "symptoms": [
+          "cache_miss_rate_increase",
+          "database_query_spike",
+          "response_time_degradation"
+        ]
+      },
+      {
+        "node_id": "imaging_service",
+        "type": "cpu_intensive_processing",
+        "severity": "medium",
+        "reason": "Medical image processing and DICOM format conversion requires significant CPU resources",
+        "symptoms": [
+          "high_cpu_utilization",
+          "processing_queue_buildup",
+          "memory_pressure"
+        ]
+      }
+    ],
+    "failure_modes": [
+      {
+        "fault_type": "database_failure",
+        "target": "clinical_db",
+        "likelihood": "low",
+        "impact": "critical",
+        "propagation": [
+          "All clinical workflows halt",
+          "Emergency read-only mode activated",
+          "Patient safety alerts triggered"
+        ],
+        "detection_signals": [
+          "connection_refused",
+          "query_timeout_spike",
+          "health_check_failures"
+        ]
+      },
+      {
+        "fault_type": "service_crash",
+        "target": "clinical_workflow_service",
+        "likelihood": "medium",
+        "impact": "high",
+        "propagation": [
+          "Clinician dashboard shows errors",
+          "Insurance verification fails",
+          "Appointment scheduling blocked"
+        ],
+        "detection_signals": [
+          "error_rate_spike",
+          "pod_restarts",
+          "upstream_5xx_errors"
+        ]
+      },
+      {
+        "fault_type": "external_api_timeout",
+        "target": "insurance_api",
+        "likelihood": "high",
+        "impact": "medium",
+        "propagation": [
+          "Insurance verification delays",
+          "Claims processing backlog",
+          "Manual verification required"
+        ],
+        "detection_signals": [
+          "external_api_latency_spike",
+          "timeout_rate_increase",
+          "fallback_activation"
+        ]
+      },
+      {
+        "fault_type": "cache_failure",
+        "target": "records_cache",
+        "likelihood": "medium",
+        "impact": "medium",
+        "propagation": [
+          "Database query load increases 5x",
+          "Response times degrade",
+          "Session management affected"
+        ],
+        "detection_signals": [
+          "cache_connection_errors",
+          "database_cpu_spike",
+          "latency_p99_increase"
+        ]
+      },
+      {
+        "fault_type": "network_partition",
+        "target": "lab_results_api",
+        "likelihood": "medium",
+        "impact": "medium",
+        "propagation": [
+          "Lab results unavailable",
+          "Diagnostic delays",
+          "Manual result entry required"
+        ],
+        "detection_signals": [
+          "network_timeout",
+          "dns_resolution_failure",
+          "circuit_breaker_open"
+        ]
+      }
+    ],
+    "dependencies": [
+      {
+        "service": "clinical_workflow_service",
+        "depends_on": [
+          "clinical_db",
+          "records_cache",
+          "insurance_api"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "Service fails for new workflows if clinical_db is down, degrades gracefully if insurance_api is unavailable"
+      },
+      {
+        "service": "patient_records_service",
+        "depends_on": [
+          "patient_db",
+          "records_cache"
+        ],
+        "dependency_strength": "hard",
+        "failure_behavior": "Service becomes read-only if patient_db fails, continues with degraded performance if cache fails"
+      },
+      {
+        "service": "imaging_service",
+        "depends_on": [
+          "clinical_db",
+          "lab_results_api"
+        ],
+        "dependency_strength": "soft",
+        "failure_behavior": "Can process local images without lab_results_api, requires clinical_db for metadata storage"
+      },
+      {
+        "service": "analytics_service",
+        "depends_on": [
+          "clinical_db",
+          "analytics_queue"
+        ],
+        "dependency_strength": "soft",
+        "failure_behavior": "Queue provides buffering during database outages, can resume processing when db recovers"
+      }
+    ]
   }
 }

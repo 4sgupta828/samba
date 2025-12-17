@@ -3,169 +3,160 @@
   "multigraph": false,
   "graph": {
     "meta": {
-      "architecture_name": "Smart Home Hub Platform",
+      "architecture_name": "Smart Home IoT Platform",
       "archetype": "hub_spoke",
-      "domain": "IoT Smart Home Management",
-      "description": "Centralized smart home platform that orchestrates device control, automation, and monitoring across multiple IoT device types and protocols",
+      "domain": "Smart Home Automation",
+      "description": "Central IoT hub manages devices, automation rules, and user interactions across multiple smart home systems",
       "pros": [
         "Centralized device orchestration",
-        "Protocol abstraction",
-        "Simplified automation rules",
-        "Unified device management",
-        "Easy integration of new device types"
+        "Simplified device management",
+        "Cross-device automation workflows",
+        "Single point of control"
       ],
       "cons": [
-        "Single point of failure at hub",
-        "Hub can become performance bottleneck",
-        "Complex hub logic",
-        "Limited direct device-to-device communication"
+        "Hub becomes single point of failure",
+        "All communication flows through central service",
+        "Scaling bottleneck at orchestrator"
       ]
     },
     "request_flows": {
       "GET": {
+        "use_case": "User views current device status and home dashboard",
         "gateway": [
-          "hub_orchestrator"
+          "home_hub_service"
         ],
-        "hub_orchestrator": [
-          "lighting_service",
-          "climate_service",
-          "security_service",
-          "entertainment_service",
-          "device_state_service",
-          "session_cache"
+        "home_hub_service": [
+          "device_management_service",
+          "user_interface_service"
         ],
-        "lighting_service": [
-          "device_cache",
-          "devices_db"
+        "device_management_service": [
+          "device_registry_db",
+          "device_state_cache"
         ],
-        "climate_service": [
-          "device_cache",
-          "devices_db"
+        "automation_engine_service": [
+          "user_data_db"
         ],
-        "security_service": [
-          "device_cache",
-          "devices_db"
+        "security_monitoring_service": [
+          "device_registry_db"
         ],
-        "entertainment_service": [
-          "device_cache",
-          "devices_db"
+        "energy_management_service": [
+          "user_data_db",
+          "telemetry_cache"
         ],
-        "device_state_service": [
-          "device_cache",
-          "devices_db"
+        "user_interface_service": [
+          "user_data_db",
+          "device_state_cache"
+        ],
+        "telemetry_processor_service": [
+          "telemetry_cache"
+        ],
+        "notification_service": [
+          "user_data_db"
+        ],
+        "analytics_service": [
+          "telemetry_cache"
         ]
       },
       "POST": {
+        "use_case": "User creates new automation rule or adds device",
         "gateway": [
-          "hub_orchestrator"
+          "home_hub_service"
         ],
-        "hub_orchestrator": [
-          "lighting_service",
-          "climate_service",
-          "security_service",
-          "entertainment_service",
-          "device_events_queue",
+        "home_hub_service": [
+          "automation_engine_service",
+          "device_management_service",
+          "telemetry_queue"
+        ],
+        "device_management_service": [
+          "device_registry_db",
+          "device_state_cache"
+        ],
+        "automation_engine_service": [
+          "user_data_db",
           "automation_queue"
         ],
-        "lighting_service": [
-          "devices_db",
-          "cloud_iot_platform"
-        ],
-        "climate_service": [
-          "devices_db",
-          "cloud_iot_platform"
-        ],
-        "security_service": [
-          "devices_db",
+        "security_monitoring_service": [
           "notification_queue"
         ],
-        "entertainment_service": [
-          "devices_db"
+        "energy_management_service": [
+          "user_data_db"
         ],
-        "device_events_queue": [
-          "analytics_service"
+        "user_interface_service": [
+          "user_data_db"
         ],
-        "automation_queue": [
-          "automation_engine"
-        ],
-        "automation_engine": [
-          "automation_db"
-        ],
-        "analytics_service": [
-          "automation_db"
-        ],
-        "notification_queue": [
-          "notification_service"
+        "telemetry_processor_service": [
+          "telemetry_cache",
+          "telemetry_queue"
         ],
         "notification_service": [
-          "devices_db"
+          "user_data_db"
+        ],
+        "analytics_service": [
+          "telemetry_cache"
         ]
       },
       "PUT": {
+        "use_case": "User updates device settings or automation rules",
         "gateway": [
-          "hub_orchestrator"
+          "home_hub_service"
         ],
-        "hub_orchestrator": [
-          "lighting_service",
-          "climate_service",
-          "security_service",
-          "entertainment_service",
-          "device_state_service"
+        "home_hub_service": [
+          "device_management_service",
+          "automation_engine_service"
         ],
-        "lighting_service": [
-          "devices_db",
-          "device_cache",
-          "cloud_iot_platform"
+        "device_management_service": [
+          "device_registry_db",
+          "device_state_cache"
         ],
-        "climate_service": [
-          "devices_db",
-          "device_cache",
-          "cloud_iot_platform"
+        "automation_engine_service": [
+          "user_data_db"
         ],
-        "security_service": [
-          "devices_db",
-          "device_cache"
+        "security_monitoring_service": [
+          "device_registry_db"
         ],
-        "entertainment_service": [
-          "devices_db",
-          "device_cache"
+        "energy_management_service": [
+          "user_data_db"
         ],
-        "device_state_service": [
-          "devices_db",
-          "device_cache"
-        ]
+        "user_interface_service": [
+          "user_data_db",
+          "device_state_cache"
+        ],
+        "telemetry_processor_service": [
+          "telemetry_cache"
+        ],
+        "notification_service": [
+          "user_data_db"
+        ],
+        "analytics_service": []
       },
       "DELETE": {
+        "use_case": "User removes device or deletes automation rule",
         "gateway": [
-          "hub_orchestrator"
+          "home_hub_service"
         ],
-        "hub_orchestrator": [
-          "lighting_service",
-          "climate_service",
-          "security_service",
-          "entertainment_service",
-          "device_state_service"
+        "home_hub_service": [
+          "device_management_service",
+          "automation_engine_service"
         ],
-        "lighting_service": [
-          "devices_db",
-          "device_cache"
+        "device_management_service": [
+          "device_registry_db",
+          "device_state_cache"
         ],
-        "climate_service": [
-          "devices_db",
-          "device_cache"
+        "automation_engine_service": [
+          "user_data_db"
         ],
-        "security_service": [
-          "devices_db",
-          "device_cache"
+        "security_monitoring_service": [
+          "device_registry_db"
         ],
-        "entertainment_service": [
-          "devices_db",
-          "device_cache"
+        "energy_management_service": [
+          "user_data_db"
         ],
-        "device_state_service": [
-          "devices_db",
-          "device_cache"
-        ]
+        "user_interface_service": [
+          "user_data_db"
+        ],
+        "telemetry_processor_service": [],
+        "notification_service": [],
+        "analytics_service": []
       }
     }
   },
@@ -183,8 +174,8 @@
     {
       "type": "Service",
       "role": "service",
-      "service_name": "hub_orchestrator",
-      "semantic_name": "hub_orchestrator",
+      "service_name": "home_hub_service",
+      "semantic_name": "home_hub_service",
       "resource_profile": "standard",
       "desired_replicas": 4,
       "supported_request_types": [
@@ -194,14 +185,14 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "hub_orchestrator"
+      "id": "home_hub_service"
     },
     {
       "type": "Service",
       "role": "service",
-      "service_name": "lighting_service",
-      "semantic_name": "lighting_service",
-      "resource_profile": "latency_sensitive",
+      "service_name": "device_management_service",
+      "semantic_name": "device_management_service",
+      "resource_profile": "io_intensive",
       "desired_replicas": 3,
       "supported_request_types": [
         "GET",
@@ -210,30 +201,14 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "lighting_service"
+      "id": "device_management_service"
     },
     {
       "type": "Service",
       "role": "service",
-      "service_name": "climate_service",
-      "semantic_name": "climate_service",
-      "resource_profile": "io_intensive",
-      "desired_replicas": 2,
-      "supported_request_types": [
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE"
-      ],
-      "processing_pipeline": null,
-      "id": "climate_service"
-    },
-    {
-      "type": "Service",
-      "role": "service",
-      "service_name": "security_service",
-      "semantic_name": "security_service",
-      "resource_profile": "latency_sensitive",
+      "service_name": "automation_engine_service",
+      "semantic_name": "automation_engine_service",
+      "resource_profile": "cpu_intensive",
       "desired_replicas": 4,
       "supported_request_types": [
         "GET",
@@ -242,14 +217,14 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "security_service"
+      "id": "automation_engine_service"
     },
     {
       "type": "Service",
       "role": "service",
-      "service_name": "entertainment_service",
-      "semantic_name": "entertainment_service",
-      "resource_profile": "cpu_intensive",
+      "service_name": "security_monitoring_service",
+      "semantic_name": "security_monitoring_service",
+      "resource_profile": "latency_sensitive",
       "desired_replicas": 3,
       "supported_request_types": [
         "GET",
@@ -258,13 +233,29 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "entertainment_service"
+      "id": "security_monitoring_service"
     },
     {
       "type": "Service",
       "role": "service",
-      "service_name": "automation_engine",
-      "semantic_name": "automation_engine",
+      "service_name": "energy_management_service",
+      "semantic_name": "energy_management_service",
+      "resource_profile": "standard",
+      "desired_replicas": 2,
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "energy_management_service"
+    },
+    {
+      "type": "Service",
+      "role": "service",
+      "service_name": "user_interface_service",
+      "semantic_name": "user_interface_service",
       "resource_profile": "standard",
       "desired_replicas": 3,
       "supported_request_types": [
@@ -274,29 +265,13 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "automation_engine"
+      "id": "user_interface_service"
     },
     {
       "type": "Service",
       "role": "service",
-      "service_name": "device_state_service",
-      "semantic_name": "device_state_service",
-      "resource_profile": "io_intensive",
-      "desired_replicas": 2,
-      "supported_request_types": [
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE"
-      ],
-      "processing_pipeline": null,
-      "id": "device_state_service"
-    },
-    {
-      "type": "Service",
-      "role": "service",
-      "service_name": "analytics_service",
-      "semantic_name": "analytics_service",
+      "service_name": "telemetry_processor_service",
+      "semantic_name": "telemetry_processor_service",
       "resource_profile": "cpu_intensive",
       "desired_replicas": 4,
       "supported_request_types": [
@@ -306,7 +281,7 @@
         "DELETE"
       ],
       "processing_pipeline": null,
-      "id": "analytics_service"
+      "id": "telemetry_processor_service"
     },
     {
       "type": "Service",
@@ -325,49 +300,56 @@
       "id": "notification_service"
     },
     {
-      "type": "SqlDatabase",
-      "role": "database",
-      "service_name": "devices_db",
-      "semantic_name": "devices_db",
-      "resource_profile": "standard",
+      "type": "Service",
+      "role": "service",
+      "service_name": "analytics_service",
+      "semantic_name": "analytics_service",
+      "resource_profile": "cpu_intensive",
       "desired_replicas": 3,
-      "id": "devices_db"
+      "supported_request_types": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ],
+      "processing_pipeline": null,
+      "id": "analytics_service"
     },
     {
       "type": "SqlDatabase",
       "role": "database",
-      "service_name": "automation_db",
-      "semantic_name": "automation_db",
+      "service_name": "device_registry_db",
+      "semantic_name": "device_registry_db",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "automation_db"
+      "id": "device_registry_db"
+    },
+    {
+      "type": "SqlDatabase",
+      "role": "database",
+      "service_name": "user_data_db",
+      "semantic_name": "user_data_db",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "user_data_db"
     },
     {
       "type": "ExternalCache",
       "role": "cache",
-      "service_name": "device_cache",
-      "semantic_name": "device_cache",
+      "service_name": "telemetry_cache",
+      "semantic_name": "telemetry_cache",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "device_cache"
+      "id": "telemetry_cache"
     },
     {
       "type": "ExternalCache",
       "role": "cache",
-      "service_name": "session_cache",
-      "semantic_name": "session_cache",
+      "service_name": "device_state_cache",
+      "semantic_name": "device_state_cache",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "session_cache"
-    },
-    {
-      "type": "MessageQueue",
-      "role": "queue",
-      "service_name": "device_events_queue",
-      "semantic_name": "device_events_queue",
-      "resource_profile": "standard",
-      "desired_replicas": 3,
-      "id": "device_events_queue"
+      "id": "device_state_cache"
     },
     {
       "type": "MessageQueue",
@@ -381,6 +363,15 @@
     {
       "type": "MessageQueue",
       "role": "queue",
+      "service_name": "telemetry_queue",
+      "semantic_name": "telemetry_queue",
+      "resource_profile": "standard",
+      "desired_replicas": 3,
+      "id": "telemetry_queue"
+    },
+    {
+      "type": "MessageQueue",
+      "role": "queue",
       "service_name": "notification_queue",
       "semantic_name": "notification_queue",
       "resource_profile": "standard",
@@ -390,11 +381,11 @@
     {
       "type": "ExternalService",
       "role": "external",
-      "service_name": "cloud_iot_platform",
-      "semantic_name": "cloud_iot_platform",
+      "service_name": "cloud_storage_service",
+      "semantic_name": "cloud_storage_service",
       "resource_profile": "standard",
       "desired_replicas": 3,
-      "id": "cloud_iot_platform"
+      "id": "cloud_storage_service"
     },
     {
       "type": "ComputeNode",
@@ -447,191 +438,198 @@
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "hub_orchestrator",
+      "parent_service": "home_hub_service",
       "compute_node": "node_0",
-      "id": "pod_hub_orchestrator_0"
+      "id": "pod_home_hub_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "hub_orchestrator",
+      "parent_service": "home_hub_service",
       "compute_node": "node_1",
-      "id": "pod_hub_orchestrator_1"
+      "id": "pod_home_hub_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "hub_orchestrator",
+      "parent_service": "home_hub_service",
       "compute_node": "node_2",
-      "id": "pod_hub_orchestrator_2"
+      "id": "pod_home_hub_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "hub_orchestrator",
+      "parent_service": "home_hub_service",
       "compute_node": "node_3",
-      "id": "pod_hub_orchestrator_3"
+      "id": "pod_home_hub_service_3"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "lighting_service",
+      "parent_service": "device_management_service",
       "compute_node": "node_4",
-      "id": "pod_lighting_service_0"
+      "id": "pod_device_management_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "lighting_service",
+      "parent_service": "device_management_service",
       "compute_node": "node_5",
-      "id": "pod_lighting_service_1"
+      "id": "pod_device_management_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "lighting_service",
+      "parent_service": "device_management_service",
       "compute_node": "node_0",
-      "id": "pod_lighting_service_2"
+      "id": "pod_device_management_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "climate_service",
+      "parent_service": "automation_engine_service",
       "compute_node": "node_1",
-      "id": "pod_climate_service_0"
+      "id": "pod_automation_engine_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "climate_service",
+      "parent_service": "automation_engine_service",
       "compute_node": "node_2",
-      "id": "pod_climate_service_1"
+      "id": "pod_automation_engine_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "security_service",
+      "parent_service": "automation_engine_service",
       "compute_node": "node_3",
-      "id": "pod_security_service_0"
+      "id": "pod_automation_engine_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "security_service",
+      "parent_service": "automation_engine_service",
       "compute_node": "node_4",
-      "id": "pod_security_service_1"
+      "id": "pod_automation_engine_service_3"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "security_service",
+      "parent_service": "security_monitoring_service",
       "compute_node": "node_5",
-      "id": "pod_security_service_2"
+      "id": "pod_security_monitoring_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "security_service",
+      "parent_service": "security_monitoring_service",
       "compute_node": "node_0",
-      "id": "pod_security_service_3"
+      "id": "pod_security_monitoring_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "entertainment_service",
+      "parent_service": "security_monitoring_service",
       "compute_node": "node_1",
-      "id": "pod_entertainment_service_0"
+      "id": "pod_security_monitoring_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "entertainment_service",
+      "parent_service": "energy_management_service",
       "compute_node": "node_2",
-      "id": "pod_entertainment_service_1"
+      "id": "pod_energy_management_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "entertainment_service",
+      "parent_service": "energy_management_service",
       "compute_node": "node_3",
-      "id": "pod_entertainment_service_2"
+      "id": "pod_energy_management_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "automation_engine",
+      "parent_service": "user_interface_service",
       "compute_node": "node_4",
-      "id": "pod_automation_engine_0"
+      "id": "pod_user_interface_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "automation_engine",
+      "parent_service": "user_interface_service",
       "compute_node": "node_5",
-      "id": "pod_automation_engine_1"
+      "id": "pod_user_interface_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "automation_engine",
+      "parent_service": "user_interface_service",
       "compute_node": "node_0",
-      "id": "pod_automation_engine_2"
+      "id": "pod_user_interface_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "device_state_service",
+      "parent_service": "telemetry_processor_service",
       "compute_node": "node_1",
-      "id": "pod_device_state_service_0"
+      "id": "pod_telemetry_processor_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "device_state_service",
+      "parent_service": "telemetry_processor_service",
       "compute_node": "node_2",
-      "id": "pod_device_state_service_1"
+      "id": "pod_telemetry_processor_service_1"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "analytics_service",
+      "parent_service": "telemetry_processor_service",
       "compute_node": "node_3",
-      "id": "pod_analytics_service_0"
+      "id": "pod_telemetry_processor_service_2"
     },
     {
       "type": "Pod",
       "role": "pod",
-      "parent_service": "analytics_service",
+      "parent_service": "telemetry_processor_service",
       "compute_node": "node_4",
-      "id": "pod_analytics_service_1"
-    },
-    {
-      "type": "Pod",
-      "role": "pod",
-      "parent_service": "analytics_service",
-      "compute_node": "node_5",
-      "id": "pod_analytics_service_2"
-    },
-    {
-      "type": "Pod",
-      "role": "pod",
-      "parent_service": "analytics_service",
-      "compute_node": "node_0",
-      "id": "pod_analytics_service_3"
+      "id": "pod_telemetry_processor_service_3"
     },
     {
       "type": "Pod",
       "role": "pod",
       "parent_service": "notification_service",
-      "compute_node": "node_1",
+      "compute_node": "node_5",
       "id": "pod_notification_service_0"
     },
     {
       "type": "Pod",
       "role": "pod",
       "parent_service": "notification_service",
-      "compute_node": "node_2",
+      "compute_node": "node_0",
       "id": "pod_notification_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "analytics_service",
+      "compute_node": "node_1",
+      "id": "pod_analytics_service_0"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "analytics_service",
+      "compute_node": "node_2",
+      "id": "pod_analytics_service_1"
+    },
+    {
+      "type": "Pod",
+      "role": "pod",
+      "parent_service": "analytics_service",
+      "compute_node": "node_3",
+      "id": "pod_analytics_service_2"
     },
     {
       "type": "DeploymentController",
@@ -644,277 +642,283 @@
       "type": "sync_http",
       "base_latency": 5.0,
       "source": "gateway",
-      "target": "hub_orchestrator"
+      "target": "home_hub_service"
     },
     {
       "type": "sync_http",
       "base_latency": 5.0,
-      "source": "hub_orchestrator",
-      "target": "lighting_service"
+      "source": "home_hub_service",
+      "target": "device_management_service"
     },
     {
       "type": "sync_http",
       "base_latency": 5.0,
-      "source": "hub_orchestrator",
-      "target": "climate_service"
+      "source": "home_hub_service",
+      "target": "automation_engine_service"
     },
     {
       "type": "sync_http",
       "base_latency": 5.0,
-      "source": "hub_orchestrator",
-      "target": "security_service"
+      "source": "home_hub_service",
+      "target": "security_monitoring_service"
     },
     {
       "type": "sync_http",
       "base_latency": 5.0,
-      "source": "hub_orchestrator",
-      "target": "entertainment_service"
+      "source": "home_hub_service",
+      "target": "energy_management_service"
     },
     {
       "type": "sync_http",
       "base_latency": 5.0,
-      "source": "hub_orchestrator",
-      "target": "device_state_service"
+      "source": "home_hub_service",
+      "target": "user_interface_service"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "home_hub_service",
+      "target": "telemetry_queue"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "home_hub_service",
+      "target": "pod_home_hub_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "home_hub_service",
+      "target": "pod_home_hub_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "home_hub_service",
+      "target": "pod_home_hub_service_2"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "home_hub_service",
+      "target": "pod_home_hub_service_3"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "device_management_service",
+      "target": "device_registry_db"
     },
     {
       "type": "sync_cache",
       "base_latency": 5.0,
-      "source": "hub_orchestrator",
-      "target": "session_cache"
+      "source": "device_management_service",
+      "target": "device_state_cache"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "device_management_service",
+      "target": "pod_device_management_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "device_management_service",
+      "target": "pod_device_management_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "device_management_service",
+      "target": "pod_device_management_service_2"
+    },
+    {
+      "type": "sync_db",
+      "base_latency": 2.0,
+      "source": "automation_engine_service",
+      "target": "user_data_db"
     },
     {
       "type": "async_produce",
       "base_latency": 5.0,
-      "source": "hub_orchestrator",
-      "target": "device_events_queue"
-    },
-    {
-      "type": "async_produce",
-      "base_latency": 5.0,
-      "source": "hub_orchestrator",
+      "source": "automation_engine_service",
       "target": "automation_queue"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "hub_orchestrator",
-      "target": "pod_hub_orchestrator_0"
+      "source": "automation_engine_service",
+      "target": "pod_automation_engine_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "hub_orchestrator",
-      "target": "pod_hub_orchestrator_1"
+      "source": "automation_engine_service",
+      "target": "pod_automation_engine_service_1"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "hub_orchestrator",
-      "target": "pod_hub_orchestrator_2"
+      "source": "automation_engine_service",
+      "target": "pod_automation_engine_service_2"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "hub_orchestrator",
-      "target": "pod_hub_orchestrator_3"
+      "source": "automation_engine_service",
+      "target": "pod_automation_engine_service_3"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
-      "source": "lighting_service",
-      "target": "devices_db"
-    },
-    {
-      "type": "sync_cache",
-      "base_latency": 5.0,
-      "source": "lighting_service",
-      "target": "device_cache"
-    },
-    {
-      "type": "sync_external",
-      "base_latency": 50.0,
-      "source": "lighting_service",
-      "target": "cloud_iot_platform"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "lighting_service",
-      "target": "pod_lighting_service_0"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "lighting_service",
-      "target": "pod_lighting_service_1"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "lighting_service",
-      "target": "pod_lighting_service_2"
-    },
-    {
-      "type": "sync_db",
-      "base_latency": 2.0,
-      "source": "climate_service",
-      "target": "devices_db"
-    },
-    {
-      "type": "sync_cache",
-      "base_latency": 5.0,
-      "source": "climate_service",
-      "target": "device_cache"
-    },
-    {
-      "type": "sync_external",
-      "base_latency": 50.0,
-      "source": "climate_service",
-      "target": "cloud_iot_platform"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "climate_service",
-      "target": "pod_climate_service_0"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "climate_service",
-      "target": "pod_climate_service_1"
-    },
-    {
-      "type": "sync_db",
-      "base_latency": 2.0,
-      "source": "security_service",
-      "target": "devices_db"
-    },
-    {
-      "type": "sync_cache",
-      "base_latency": 5.0,
-      "source": "security_service",
-      "target": "device_cache"
+      "source": "security_monitoring_service",
+      "target": "device_registry_db"
     },
     {
       "type": "async_produce",
       "base_latency": 5.0,
-      "source": "security_service",
+      "source": "security_monitoring_service",
       "target": "notification_queue"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "security_service",
-      "target": "pod_security_service_0"
+      "source": "security_monitoring_service",
+      "target": "pod_security_monitoring_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "security_service",
-      "target": "pod_security_service_1"
+      "source": "security_monitoring_service",
+      "target": "pod_security_monitoring_service_1"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "security_service",
-      "target": "pod_security_service_2"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "security_service",
-      "target": "pod_security_service_3"
+      "source": "security_monitoring_service",
+      "target": "pod_security_monitoring_service_2"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
-      "source": "entertainment_service",
-      "target": "devices_db"
+      "source": "energy_management_service",
+      "target": "user_data_db"
     },
     {
       "type": "sync_cache",
       "base_latency": 5.0,
-      "source": "entertainment_service",
-      "target": "device_cache"
+      "source": "energy_management_service",
+      "target": "telemetry_cache"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "entertainment_service",
-      "target": "pod_entertainment_service_0"
+      "source": "energy_management_service",
+      "target": "pod_energy_management_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "entertainment_service",
-      "target": "pod_entertainment_service_1"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "entertainment_service",
-      "target": "pod_entertainment_service_2"
+      "source": "energy_management_service",
+      "target": "pod_energy_management_service_1"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
-      "source": "automation_engine",
-      "target": "automation_db"
+      "source": "user_interface_service",
+      "target": "user_data_db"
     },
     {
       "type": "sync_cache",
       "base_latency": 5.0,
-      "source": "automation_engine",
-      "target": "device_cache"
+      "source": "user_interface_service",
+      "target": "device_state_cache"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "automation_engine",
-      "target": "pod_automation_engine_0"
+      "source": "user_interface_service",
+      "target": "pod_user_interface_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "automation_engine",
-      "target": "pod_automation_engine_1"
+      "source": "user_interface_service",
+      "target": "pod_user_interface_service_1"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "automation_engine",
-      "target": "pod_automation_engine_2"
-    },
-    {
-      "type": "sync_db",
-      "base_latency": 2.0,
-      "source": "device_state_service",
-      "target": "devices_db"
+      "source": "user_interface_service",
+      "target": "pod_user_interface_service_2"
     },
     {
       "type": "sync_cache",
       "base_latency": 5.0,
-      "source": "device_state_service",
-      "target": "device_cache"
+      "source": "telemetry_processor_service",
+      "target": "telemetry_cache"
+    },
+    {
+      "type": "sync_external",
+      "base_latency": 50.0,
+      "source": "telemetry_processor_service",
+      "target": "cloud_storage_service"
+    },
+    {
+      "type": "async_produce",
+      "base_latency": 5.0,
+      "source": "telemetry_processor_service",
+      "target": "telemetry_queue"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "device_state_service",
-      "target": "pod_device_state_service_0"
+      "source": "telemetry_processor_service",
+      "target": "pod_telemetry_processor_service_0"
     },
     {
       "type": "pod_pool",
       "base_latency": 0.0,
-      "source": "device_state_service",
-      "target": "pod_device_state_service_1"
+      "source": "telemetry_processor_service",
+      "target": "pod_telemetry_processor_service_1"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "telemetry_processor_service",
+      "target": "pod_telemetry_processor_service_2"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "telemetry_processor_service",
+      "target": "pod_telemetry_processor_service_3"
     },
     {
       "type": "sync_db",
       "base_latency": 2.0,
+      "source": "notification_service",
+      "target": "user_data_db"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "notification_service",
+      "target": "pod_notification_service_0"
+    },
+    {
+      "type": "pod_pool",
+      "base_latency": 0.0,
+      "source": "notification_service",
+      "target": "pod_notification_service_1"
+    },
+    {
+      "type": "sync_cache",
+      "base_latency": 5.0,
       "source": "analytics_service",
-      "target": "automation_db"
+      "target": "telemetry_cache"
     },
     {
       "type": "pod_pool",
@@ -935,40 +939,22 @@
       "target": "pod_analytics_service_2"
     },
     {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "analytics_service",
-      "target": "pod_analytics_service_3"
-    },
-    {
-      "type": "sync_db",
-      "base_latency": 2.0,
-      "source": "notification_service",
-      "target": "devices_db"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "notification_service",
-      "target": "pod_notification_service_0"
-    },
-    {
-      "type": "pod_pool",
-      "base_latency": 0.0,
-      "source": "notification_service",
-      "target": "pod_notification_service_1"
-    },
-    {
-      "type": "async_consume",
-      "base_latency": 5.0,
-      "source": "device_events_queue",
-      "target": "analytics_service"
-    },
-    {
       "type": "async_consume",
       "base_latency": 5.0,
       "source": "automation_queue",
-      "target": "automation_engine"
+      "target": "automation_engine_service"
+    },
+    {
+      "type": "async_consume",
+      "base_latency": 5.0,
+      "source": "telemetry_queue",
+      "target": "telemetry_processor_service"
+    },
+    {
+      "type": "async_consume",
+      "base_latency": 5.0,
+      "source": "telemetry_queue",
+      "target": "analytics_service"
     },
     {
       "type": "async_consume",
@@ -979,164 +965,170 @@
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_hub_orchestrator_0",
+      "source": "pod_home_hub_service_0",
       "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_hub_orchestrator_1",
+      "source": "pod_home_hub_service_1",
       "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_hub_orchestrator_2",
+      "source": "pod_home_hub_service_2",
       "target": "node_2"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_hub_orchestrator_3",
+      "source": "pod_home_hub_service_3",
       "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_lighting_service_0",
+      "source": "pod_device_management_service_0",
       "target": "node_4"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_lighting_service_1",
+      "source": "pod_device_management_service_1",
       "target": "node_5"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_lighting_service_2",
+      "source": "pod_device_management_service_2",
       "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_climate_service_0",
+      "source": "pod_automation_engine_service_0",
       "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_climate_service_1",
+      "source": "pod_automation_engine_service_1",
       "target": "node_2"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_security_service_0",
+      "source": "pod_automation_engine_service_2",
       "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_security_service_1",
+      "source": "pod_automation_engine_service_3",
       "target": "node_4"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_security_service_2",
+      "source": "pod_security_monitoring_service_0",
       "target": "node_5"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_security_service_3",
+      "source": "pod_security_monitoring_service_1",
       "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_entertainment_service_0",
+      "source": "pod_security_monitoring_service_2",
       "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_entertainment_service_1",
+      "source": "pod_energy_management_service_0",
       "target": "node_2"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_entertainment_service_2",
+      "source": "pod_energy_management_service_1",
       "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_automation_engine_0",
+      "source": "pod_user_interface_service_0",
       "target": "node_4"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_automation_engine_1",
+      "source": "pod_user_interface_service_1",
       "target": "node_5"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_automation_engine_2",
+      "source": "pod_user_interface_service_2",
       "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_device_state_service_0",
+      "source": "pod_telemetry_processor_service_0",
       "target": "node_1"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_device_state_service_1",
+      "source": "pod_telemetry_processor_service_1",
       "target": "node_2"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_analytics_service_0",
+      "source": "pod_telemetry_processor_service_2",
       "target": "node_3"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
-      "source": "pod_analytics_service_1",
+      "source": "pod_telemetry_processor_service_3",
       "target": "node_4"
-    },
-    {
-      "type": "pod_placement",
-      "base_latency": 0.0,
-      "source": "pod_analytics_service_2",
-      "target": "node_5"
-    },
-    {
-      "type": "pod_placement",
-      "base_latency": 0.0,
-      "source": "pod_analytics_service_3",
-      "target": "node_0"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
       "source": "pod_notification_service_0",
-      "target": "node_1"
+      "target": "node_5"
     },
     {
       "type": "pod_placement",
       "base_latency": 0.0,
       "source": "pod_notification_service_1",
+      "target": "node_0"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_analytics_service_0",
+      "target": "node_1"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_analytics_service_1",
       "target": "node_2"
+    },
+    {
+      "type": "pod_placement",
+      "base_latency": 0.0,
+      "source": "pod_analytics_service_2",
+      "target": "node_3"
     }
   ]
 }
