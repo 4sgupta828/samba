@@ -1564,10 +1564,186 @@ def create_cache_drilldown(metrics_df: pd.DataFrame, component_id: str,
     return charts
 
 
+def _create_queue_charts_for_producer_consumer(
+    dependency_metrics: pd.DataFrame,
+    component_id: str,
+    service_filter: str = None,
+    all_services: List[str] = None,
+    mode: str = "producer"
+) -> List:
+    """Helper function to create charts for queue producers or consumers.
+
+    Args:
+        dependency_metrics: Pre-filtered metrics for this queue
+        component_id: Queue ID
+        service_filter: If provided, only show metrics from this service
+        all_services: List of all services (used for "All" tab header)
+        mode: Either "producer" (for publish operations) or "consumer" (for processing operations)
+    """
+    charts = []
+
+    # Customize terminology based on mode
+    if mode == "producer":
+        operation_verb = "publishing to"
+        operation_noun = "Publish"
+        rate_label = "Messages Published"
+        direction = "to"
+    else:  # consumer
+        operation_verb = "consuming from"
+        operation_noun = "Processing"
+        rate_label = "Messages Processed"
+        direction = "from"
+
+    # Add header if showing all services
+    if service_filter is None and all_services:
+        charts.append(html.Div([
+            html.P([
+                html.Strong("Showing: "),
+                html.Span(f"Aggregated metrics from {len(all_services)} service(s) {operation_verb} this queue: {', '.join(all_services)}",
+                         style={'color': '#10b981'})
+            ], style={'marginBottom': '15px', 'fontSize': '0.9em', 'padding': '10px',
+                     'backgroundColor': '#1f2937', 'borderRadius': '5px'})
+        ]))
+    elif service_filter:
+        charts.append(html.Div([
+            html.P([
+                html.Strong("Showing: "),
+                html.Span(f"Metrics from {service_filter} only", style={'color': '#10b981'})
+            ], style={'marginBottom': '15px', 'fontSize': '0.9em', 'padding': '10px',
+                     'backgroundColor': '#1f2937', 'borderRadius': '5px'})
+        ]))
+
+    # Request rate chart (aggregate by status)
+    request_metrics = dependency_metrics[
+        dependency_metrics['metric_name'].str.contains('dependency.requests', na=False)
+    ].copy()
+
+    title_suffix = f" ({service_filter})" if service_filter else " (all services)"
+
+    if not request_metrics.empty:
+        fig = go.Figure()
+
+        # Group by sim_time and status to show success vs error rates
+        if 'status' in request_metrics.columns:
+            for status in ['success', 'error']:
+                status_data = request_metrics[request_metrics['status'] == status]
+                if not status_data.empty:
+                    aggregated = status_data.groupby('sim_time')['value'].sum().reset_index()
+                    fig.add_trace(go.Scatter(
+                        x=aggregated['sim_time'],
+                        y=aggregated['value'],
+                        mode='lines+markers',
+                        name=f'{status.capitalize()}',
+                        line=dict(width=2),
+                        marker=dict(size=4)
+                    ))
+        else:
+            # No status breakdown, just show total
+            aggregated = request_metrics.groupby('sim_time')['value'].sum().reset_index()
+            fig.add_trace(go.Scatter(
+                x=aggregated['sim_time'],
+                y=aggregated['value'],
+                mode='lines+markers',
+                name='Total',
+                line=dict(width=2),
+                marker=dict(size=4)
+            ))
+
+        fig.update_layout(
+            title=f'{rate_label} {direction} {component_id}{title_suffix}',
+            xaxis_title="Time (s)",
+            yaxis_title="Messages/sec",
+            height=250,
+            margin=dict(l=50, r=20, t=40, b=30),
+            showlegend=True,
+            plot_bgcolor='#374151',
+            paper_bgcolor='#374151',
+            font=dict(color='#f9fafb')
+        )
+
+        charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    # Latency chart
+    latency_metrics = dependency_metrics[
+        dependency_metrics['metric_name'].str.contains('dependency.duration', na=False)
+    ].copy()
+
+    if not latency_metrics.empty and 'p50' in latency_metrics.columns:
+        fig = go.Figure()
+
+        # Show P50, P90, P99
+        for percentile in ['p50', 'p90', 'p99']:
+            if percentile in latency_metrics.columns:
+                aggregated = latency_metrics.groupby('sim_time')[percentile].mean().reset_index()
+                fig.add_trace(go.Scatter(
+                    x=aggregated['sim_time'],
+                    y=aggregated[percentile],  # Already in ms
+                    mode='lines',
+                    name=f'P{percentile[1:]}',
+                    line=dict(width=2)
+                ))
+
+        fig.update_layout(
+            title=f'{operation_noun} Latency {direction} {component_id}{title_suffix}',
+            xaxis_title="Time (s)",
+            yaxis_title="Latency (ms)",
+            height=250,
+            margin=dict(l=50, r=20, t=40, b=30),
+            showlegend=True,
+            plot_bgcolor='#374151',
+            paper_bgcolor='#374151',
+            font=dict(color='#f9fafb')
+        )
+
+        charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    # Error rate chart (if we have error metrics or can derive from status)
+    if 'status' in request_metrics.columns:
+        # Calculate error rate over time
+        error_data = request_metrics[request_metrics['status'] == 'error'].groupby('sim_time')['value'].sum()
+        total_data = request_metrics.groupby('sim_time')['value'].sum()
+
+        if not error_data.empty and not total_data.empty:
+            error_rate = (error_data / total_data * 100).fillna(0)
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=error_rate.index,
+                y=error_rate.values,
+                mode='lines+markers',
+                name='Error Rate',
+                line=dict(color='#ef4444', width=2),
+                marker=dict(size=4),
+                fill='tozeroy',
+                fillcolor='rgba(239, 68, 68, 0.2)'
+            ))
+
+            fig.update_layout(
+                title=f'{operation_noun} Error Rate {direction} {component_id}{title_suffix}',
+                xaxis_title="Time (s)",
+                yaxis_title="Error Rate (%)",
+                height=250,
+                margin=dict(l=50, r=20, t=40, b=30),
+                showlegend=False,
+                plot_bgcolor='#374151',
+                paper_bgcolor='#374151',
+                font=dict(color='#f9fafb')
+            )
+
+            charts.append(dcc.Graph(figure=fig, config={'displayModeBar': False}))
+
+    return charts
+
+
 def create_queue_drilldown(metrics_df: pd.DataFrame, component_id: str,
-                          label_data: Dict) -> List[dcc.Graph]:
+                          label_data: Dict, graph: nx.DiGraph = None) -> List[dcc.Graph]:
     """Create drill-down charts for MessageQueue."""
     charts = []
+
+    # === SECTION 1: Internal Queue Metrics ===
+    charts.append(html.Div([
+        html.H5("Queue Internal Metrics", style={'marginTop': '10px', 'marginBottom': '15px', 'color': '#f9fafb'}),
+    ]))
 
     # Get all metrics for this component to check availability
     component_metrics = metrics_df[metrics_df['component_id'] == component_id]
@@ -1663,6 +1839,140 @@ def create_queue_drilldown(metrics_df: pd.DataFrame, component_id: str,
             figure=fig,
             config={'displayModeBar': False}
         ))
+
+    # === SECTION 2: Producer Breakdown ===
+    if graph is not None:
+        # Find all producers (services that produce to this queue)
+        producers = []
+        for source, target, edge_data in graph.in_edges(component_id, data=True):
+            if edge_data.get('type') == 'async_produce':
+                producers.append(source)
+
+        if producers:
+            # Get dependency metrics from producers to this queue
+            # Note: producers list contains service IDs, match against service.id column
+            # Filter by queue_operation='produce' to distinguish from consume operations
+            producer_metrics = metrics_df[
+                (metrics_df['dependency_id'] == component_id) &
+                (metrics_df['service.id'].isin(producers)) &
+                (metrics_df['queue_operation'] == 'produce')
+            ].copy()
+
+            if not producer_metrics.empty:
+                # Get unique service names for display (using service.name from metrics)
+                producer_names = sorted(producer_metrics['service.name'].dropna().unique())
+
+                charts.append(html.Hr(style={'marginTop': '25px', 'marginBottom': '15px', 'borderColor': '#4b5563'}))
+                charts.append(html.Div([
+                    html.H5("Producer Breakdown", style={'marginBottom': '10px', 'color': '#f9fafb'}),
+                    html.P([
+                        html.Strong("Producers: "),
+                        html.Span(f"{len(producer_names)} service(s)", style={'color': '#3b82f6'})
+                    ], style={'marginBottom': '10px', 'fontSize': '0.9em'}),
+                    html.P(
+                        "Metrics from services producing messages to this queue (message rate, latency).",
+                        style={'fontSize': '0.85em', 'color': '#9ca3af', 'marginBottom': '15px'}
+                    )
+                ]))
+
+                # Create tabs - one for all producers, and one for each individual producer
+                tabs = []
+
+                # Tab 1: All Producers (aggregated)
+                all_producers_charts = _create_queue_charts_for_producer_consumer(
+                    producer_metrics, component_id, None, producer_names, mode="producer"
+                )
+                tabs.append(dbc.Tab(
+                    label="All Producers",
+                    tab_id=f"queue-all-producers-{component_id}",
+                    children=all_producers_charts
+                ))
+
+                # Individual producer tabs
+                for producer_name in producer_names:
+                    producer_data = producer_metrics[producer_metrics['service.name'] == producer_name]
+                    producer_charts = _create_queue_charts_for_producer_consumer(
+                        producer_data, component_id, producer_name, None, mode="producer"
+                    )
+                    tabs.append(dbc.Tab(
+                        label=producer_name,
+                        tab_id=f"queue-producer-{component_id}-{producer_name}",
+                        children=producer_charts
+                    ))
+
+                charts.append(dbc.Tabs(
+                    tabs,
+                    id=f"queue-producer-tabs-{component_id}",
+                    active_tab=f"queue-all-producers-{component_id}",
+                    className="mb-3"
+                ))
+
+    # === SECTION 3: Consumer Breakdown ===
+    if graph is not None:
+        # Find all consumers (services that consume from this queue)
+        consumers = []
+        for source, target, edge_data in graph.out_edges(component_id, data=True):
+            if edge_data.get('type') == 'async_consume':
+                consumers.append(target)
+
+        if consumers:
+            # Get dependency metrics from consumers to this queue
+            # Note: consumers list contains service IDs, match against service.id column
+            # Filter by queue_operation='consume' to distinguish from produce operations
+            consumer_metrics = metrics_df[
+                (metrics_df['dependency_id'] == component_id) &
+                (metrics_df['service.id'].isin(consumers)) &
+                (metrics_df['queue_operation'] == 'consume')
+            ].copy()
+
+            if not consumer_metrics.empty:
+                # Get unique service names for display (using service.name from metrics)
+                consumer_names = sorted(consumer_metrics['service.name'].dropna().unique())
+
+                charts.append(html.Hr(style={'marginTop': '25px', 'marginBottom': '15px', 'borderColor': '#4b5563'}))
+                charts.append(html.Div([
+                    html.H5("Consumer Breakdown", style={'marginBottom': '10px', 'color': '#f9fafb'}),
+                    html.P([
+                        html.Strong("Consumers: "),
+                        html.Span(f"{len(consumer_names)} service(s)", style={'color': '#3b82f6'})
+                    ], style={'marginBottom': '10px', 'fontSize': '0.9em'}),
+                    html.P(
+                        "Metrics from services consuming messages from this queue (message rate, processing latency).",
+                        style={'fontSize': '0.85em', 'color': '#9ca3af', 'marginBottom': '15px'}
+                    )
+                ]))
+
+                # Create tabs - one for all consumers, and one for each individual consumer
+                tabs = []
+
+                # Tab 1: All Consumers (aggregated)
+                all_consumers_charts = _create_queue_charts_for_producer_consumer(
+                    consumer_metrics, component_id, None, consumer_names, mode="consumer"
+                )
+                tabs.append(dbc.Tab(
+                    label="All Consumers",
+                    tab_id=f"queue-all-consumers-{component_id}",
+                    children=all_consumers_charts
+                ))
+
+                # Individual consumer tabs
+                for consumer_name in consumer_names:
+                    consumer_data = consumer_metrics[consumer_metrics['service.name'] == consumer_name]
+                    consumer_charts = _create_queue_charts_for_producer_consumer(
+                        consumer_data, component_id, consumer_name, None, mode="consumer"
+                    )
+                    tabs.append(dbc.Tab(
+                        label=consumer_name,
+                        tab_id=f"queue-consumer-{component_id}-{consumer_name}",
+                        children=consumer_charts
+                    ))
+
+                charts.append(dbc.Tabs(
+                    tabs,
+                    id=f"queue-consumer-tabs-{component_id}",
+                    active_tab=f"queue-all-consumers-{component_id}",
+                    className="mb-3"
+                ))
 
     return charts
 
@@ -3000,7 +3310,7 @@ def create_component_drilldown(component_id: str, metrics_df: pd.DataFrame,
     elif component_type in ['InMemoryCache', 'ExternalCache']:
         charts = create_cache_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'MessageQueue':
-        charts = create_queue_drilldown(metrics_df, component_id, label_data)
+        charts = create_queue_drilldown(metrics_df, component_id, label_data, graph)
     elif component_type == 'ExternalService':
         charts = create_external_drilldown(metrics_df, component_id, label_data)
     elif component_type == 'WorkloadGenerator':

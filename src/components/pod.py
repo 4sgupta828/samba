@@ -532,6 +532,27 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "service.id": self.parent_service.id
                 })
 
+            # Record dependency metrics for queue consumption
+            if self.dependency_requests and self.dependency_duration and self.parent_service:
+                self.dependency_requests.add(1, {
+                    "dependency_id": queue.id,
+                    "dependency_name": "queue",
+                    "queue_operation": "consume",
+                    "status": "success",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+                self.dependency_duration.record(latency_ms, {
+                    "dependency_id": queue.id,
+                    "dependency_name": "queue",
+                    "queue_operation": "consume",
+                    "status": "success",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+
         except Exception as e:
             # Processing failed - message will become visible again after timeout
             self._emit_log("ERROR", f"Failed to process message {msg.id}: {e}")
@@ -554,6 +575,36 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     "service.id": self.parent_service.id
                 })
                 self.request_errors.add(1, {
+                    "error_type": str(type(e).__name__),
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+
+            # Record dependency error metrics for queue consumption
+            if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                self.dependency_requests.add(1, {
+                    "dependency_id": queue.id,
+                    "dependency_name": "queue",
+                    "queue_operation": "consume",
+                    "status": "error",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+                self.dependency_duration.record(latency_ms, {
+                    "dependency_id": queue.id,
+                    "dependency_name": "queue",
+                    "queue_operation": "consume",
+                    "status": "error",
+                    "component.id": self.id,
+                    "service.name": self.parent_service.service_name,
+                    "service.id": self.parent_service.id
+                })
+                self.dependency_errors.add(1, {
+                    "dependency_id": queue.id,
+                    "dependency_name": "queue",
+                    "queue_operation": "consume",
                     "error_type": str(type(e).__name__),
                     "component.id": self.id,
                     "service.name": self.parent_service.service_name,
@@ -1611,6 +1662,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
         # Publish to all connected queues
         for queue in queues:
+            publish_start = self.env.now
             try:
                 # Check for network partition BEFORE publishing to queue
                 self._check_network_partition(queue.id)
@@ -1618,9 +1670,62 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 message_data = f"message_from_{self.parent_service.service_name}_{self.env.now}"
                 yield queue.send_message(message_data)  # send_message returns an event, not a generator
 
+                # Record successful publish metrics
+                publish_latency_ms = (self.env.now - publish_start) * 1000
+                if self.dependency_requests and self.dependency_duration and self.parent_service:
+                    self.dependency_requests.add(1, {
+                        "dependency_id": queue.id,
+                        "dependency_name": "queue",
+                        "queue_operation": "produce",
+                        "status": "success",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
+                    })
+                    self.dependency_duration.record(publish_latency_ms, {
+                        "dependency_id": queue.id,
+                        "dependency_name": "queue",
+                        "queue_operation": "produce",
+                        "status": "success",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
+                    })
+
                 if span:
                     span.add_event("message_published", {"queue": queue.id})
             except Exception as e:
+                # Record failed publish metrics
+                publish_latency_ms = (self.env.now - publish_start) * 1000
+                if self.dependency_requests and self.dependency_duration and self.dependency_errors and self.parent_service:
+                    self.dependency_requests.add(1, {
+                        "dependency_id": queue.id,
+                        "dependency_name": "queue",
+                        "queue_operation": "produce",
+                        "status": "error",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
+                    })
+                    self.dependency_duration.record(publish_latency_ms, {
+                        "dependency_id": queue.id,
+                        "dependency_name": "queue",
+                        "queue_operation": "produce",
+                        "status": "error",
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
+                    })
+                    self.dependency_errors.add(1, {
+                        "dependency_id": queue.id,
+                        "dependency_name": "queue",
+                        "queue_operation": "produce",
+                        "error_type": str(type(e).__name__),
+                        "component.id": self.id,
+                        "service.name": self.parent_service.service_name,
+                        "service.id": self.parent_service.id
+                    })
+
                 self._emit_log("WARN", f"Queue publish failed to {queue.id}: {e}")
 
     def _execute_legacy_request_logic(self, request_type: str, span):
