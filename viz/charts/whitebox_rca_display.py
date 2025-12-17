@@ -248,10 +248,13 @@ def create_whitebox_rca_display(episode_dir):
                 victim_penalty_applied = score_breakdown.get('victim_penalty_applied', False)
                 healthy_penalty_applied = score_breakdown.get('healthy_penalty_applied', False)
                 base_after_penalties = score_breakdown.get('base_after_penalties', base_before_penalties)
+                physics_coverage_bonus = score_breakdown.get('physics_coverage', 0.0)
+                coverage_score_val = score_breakdown.get('coverage_score', 0.0)
                 guilt_component = score_breakdown.get('guilt_component', guilt_adjusted * 20.0)
                 temporal_component = score_breakdown.get('temporal_component', temporal_score * 2.0)
                 impact_bonus = score_breakdown.get('impact_bonus', 0.0)
                 capacity_bonus = score_breakdown.get('capacity_bonus', 0.0)
+                log_bonus = score_breakdown.get('log_bonus', 0.0)
                 confirmation_score_total = score_breakdown.get('confirmation_score', guilt_component + temporal_component + impact_bonus + capacity_bonus)
             else:
                 # Fallback for old format (backward compatibility)
@@ -263,10 +266,13 @@ def create_whitebox_rca_display(episode_dir):
                 victim_penalty_applied = False
                 healthy_penalty_applied = is_healthy and not is_trace_authoritative
                 base_after_penalties = base_health_score
+                physics_coverage_bonus = 0.0
+                coverage_score_val = 0.0
                 guilt_component = guilt_adjusted * 20.0
                 temporal_component = temporal_score * 2.0
                 impact_bonus = 0.0
                 capacity_bonus = 0.0
+                log_bonus = 0.0
                 confirmation_score_total = guilt_component + temporal_component
 
             # Calculate trace boost formula for display
@@ -303,14 +309,14 @@ def create_whitebox_rca_display(episode_dir):
             symptom_bonus_desc = f"{symptom_bonus:.1f} ({symptom_count} symptoms, no trace)" if symptom_bonus > 0 else "0 (has trace or insufficient symptoms)"
 
             # Calculated final score (should match actual score exactly!)
-            calculated_final = base_after_penalties + confirmation_score_total
+            calculated_final = base_after_penalties + physics_coverage_bonus + confirmation_score_total + log_bonus
 
             score_calc_section = html.Details([
                 html.Summary("📊 Score Calculation (How We Got This Score)", style={
                     'cursor': 'pointer',
                     'fontSize': '0.95em',
                     'fontWeight': '600',
-                    'color': '#212529',
+                    'color': '#003d82',  # Darker blue for better contrast
                     'padding': '10px 14px',
                     'backgroundColor': '#e7f3ff',
                     'borderRadius': '6px',
@@ -319,11 +325,13 @@ def create_whitebox_rca_display(episode_dir):
                 html.Div([
                     # Formula
                     html.Div([
-                        html.Strong("Formula (from whitebox_rca.py):", className="d-block mb-2", style={'color': '#0d6efd'}),
+                        html.Strong("🧪 Hybrid Physics + Voting Formula:", className="d-block mb-2", style={'color': '#0d6efd'}),
                         html.Pre(
-                            "Final Score = Base Score + Confirmation Score\n\n"
+                            "Final Score = Base Score + Physics Coverage + Confirmation Score + Log Bonus\n\n"
                             "Base Score = [(Health × 10) + Trace Boost + Symptom Boost] × Penalties\n"
-                            "Confirmation Score = (Guilt × 20) + (Temporal × 2) + Impact + Capacity",
+                            "Physics Coverage = Coverage Score × 40  (How much of blast radius explained)\n"
+                            "Confirmation Score = (Guilt × 20) + (Temporal × 2) + Impact + Capacity\n"
+                            "Log Bonus = Evidence from logs",
                             className="p-3 mb-3",
                             style={
                                 'backgroundColor': '#f8f9fa',
@@ -346,118 +354,184 @@ def create_whitebox_rca_display(episode_dir):
 
                             # Health component
                             html.Div([
-                                html.Strong("a) Health Score:", className="d-block mb-2"),
-                                html.Code(f"Integrated Health × 10 = {integrated_score:.2f} × 10 = {base_health_score:.1f}"),
+                                html.Strong("a) Health Score:", className="d-block mb-2", style={'color': '#212529'}),
+                                html.Code(f"Integrated Health × 10 = {integrated_score:.2f} × 10 = {base_health_score:.1f}", style={'color': '#212529'}),
                                 html.Ul([
-                                    html.Li(f"Service Self Score: {self_score:.2f}"),
-                                    html.Li(f"Pod Health Score: {pod_score:.2f} (coverage: {coverage:.0%})") if pod_score > 0 else None,
-                                ], className="small text-muted mt-2 mb-0")
+                                    html.Li(f"Service Self Score: {self_score:.2f}", style={'color': '#495057'}),
+                                    html.Li(f"Pod Health Score: {pod_score:.2f} (coverage: {coverage:.0%})", style={'color': '#495057'}) if pod_score > 0 else None,
+                                ], className="small mt-2 mb-0", style={'color': '#495057'})
                             ], className="mb-3 p-2 bg-light rounded"),
 
                             # Trace boost
                             html.Div([
-                                html.Strong("b) Trace Boost:", className="d-block mb-2"),
+                                html.Strong("b) Trace Boost:", className="d-block mb-2", style={'color': '#212529'}),
                                 html.Div([
-                                    html.Code(f"+ {trace_boost_formula}", className="d-block mb-2") if trace_boost > 0 else html.Code("+ 0 (no trace)", className="d-block mb-2"),
+                                    html.Code(f"+ {trace_boost_formula}", className="d-block mb-2", style={'color': '#212529'}) if trace_boost > 0 else html.Code("+ 0 (no trace)", className="d-block mb-2", style={'color': '#212529'}),
                                     html.Div([
-                                        html.Span("Reason: ", className="fw-bold small"),
-                                        html.Span(trace_boost_reason, className="small text-muted")
+                                        html.Span("Reason: ", className="fw-bold small", style={'color': '#212529'}),
+                                        html.Span(trace_boost_reason, className="small", style={'color': '#495057'})
                                     ], className="mb-2") if trace_boost_reason else None,
                                     html.Ul([
-                                        html.Li(f"Trace Score: {trace_score:.2f}"),
-                                        html.Li(f"Is Authoritative: {'Yes ★' if is_trace_authoritative else 'No'}"),
-                                        html.Li(f"Self-time degradation: {trace_info.get('self_time_degradation', 1.0):.2f}x" if trace_info and 'self_time_degradation' in trace_info else "No trace data"),
+                                        html.Li(f"Trace Score: {trace_score:.2f}", style={'color': '#495057'}),
+                                        html.Li(f"Is Authoritative: {'Yes ★' if is_trace_authoritative else 'No'}", style={'color': '#495057'}),
+                                        html.Li(f"Self-time degradation: {trace_info.get('self_time_degradation', 1.0):.2f}x" if trace_info and 'self_time_degradation' in trace_info else "No trace data", style={'color': '#495057'}),
                                         html.Li([
-                                            html.Span("Formula by severity:", className="fw-bold"),
+                                            html.Span("Formula by severity:", className="fw-bold", style={'color': '#212529'}),
                                             html.Ul([
-                                                html.Li("Critical (>3x): (trace × 6.0) + 80", className="small"),
-                                                html.Li("Severe (>2x): (trace × 5.0) + 60", className="small"),
-                                                html.Li("Moderate: (trace × 4.0) + 40", className="small"),
+                                                html.Li("Critical (>3x): (trace × 6.0) + 80", className="small", style={'color': '#495057'}),
+                                                html.Li("Severe (>2x): (trace × 5.0) + 60", className="small", style={'color': '#495057'}),
+                                                html.Li("Moderate: (trace × 4.0) + 40", className="small", style={'color': '#495057'}),
                                             ], className="mb-0")
-                                        ])
-                                    ], className="small text-muted mt-2 mb-0")
+                                        ], style={'color': '#495057'})
+                                    ], className="small mt-2 mb-0")
                                 ])
                             ], className="mb-3 p-2 bg-light rounded"),
 
                             # Symptom boost
                             html.Div([
-                                html.Strong("c) Symptom Strength Boost:", className="d-block mb-2"),
-                                html.Code(f"+ {symptom_bonus_desc}"),
+                                html.Strong("c) Symptom Strength Boost:", className="d-block mb-2", style={'color': '#212529'}),
+                                html.Code(f"+ {symptom_bonus_desc}", style={'color': '#212529'}),
                                 html.Ul([
-                                    html.Li(f"Applies when: no trace + ≥2 symptoms + self_score > 2"),
-                                ], className="small text-muted mt-2 mb-0")
+                                    html.Li(f"Applies when: no trace + ≥2 symptoms + self_score > 2", style={'color': '#495057'}),
+                                ], className="small mt-2 mb-0")
                             ], className="mb-3 p-2 bg-light rounded"),
 
                             # Subtotal before penalties
                             html.Div([
-                                html.Strong("Subtotal before penalties: ", className="me-2"),
-                                html.Code(f"{base_health_score:.1f} + {trace_boost:.1f} + {symptom_bonus:.1f} = {base_before_penalties:.1f}")
+                                html.Strong("Subtotal before penalties: ", className="me-2", style={'color': '#212529'}),
+                                html.Code(f"{base_health_score:.1f} + {trace_boost:.1f} + {symptom_bonus:.1f} = {base_before_penalties:.1f}", style={'color': '#212529'})
                             ], className="mb-3 p-2 border rounded bg-warning bg-opacity-10"),
 
                             # Penalties
                             html.Div([
-                                html.Strong("d) Penalties Applied:", className="d-block mb-2"),
+                                html.Strong("d) Penalties Applied:", className="d-block mb-2", style={'color': '#212529'}),
                                 html.Ul([
-                                    html.Li(f"Victim Penalty: {victim_penalty_desc}"),
-                                    html.Li(f"Healthy Node Penalty: {healthy_penalty_desc}"),
+                                    html.Li(f"Victim Penalty: {victim_penalty_desc}", style={'color': '#495057'}),
+                                    html.Li(f"Healthy Node Penalty: {healthy_penalty_desc}", style={'color': '#495057'}),
                                 ], className="mb-2"),
-                                html.Code(f"Base Score = {base_before_penalties:.1f} × {victim_penalty} × {healthy_penalty} = {base_after_penalties:.1f}")
+                                html.Code(f"Base Score = {base_before_penalties:.1f} × {victim_penalty} × {healthy_penalty} = {base_after_penalties:.1f}", style={'color': '#212529'})
                             ], className="mb-3 p-2 bg-light rounded"),
 
                         ], className="p-3 mb-3 border-start border-success border-4"),
 
+                        # Physics Coverage (NEW!)
+                        html.Div([
+                            html.Strong("2. Physics Coverage (Causal Blast Radius):", className="d-block mb-3 text-primary"),
+                            html.Div([
+                                html.Span("The Physics Engine calculates how much of the system's symptoms this node explains through causal propagation.", className="small d-block mb-3", style={'color': '#495057'}),
+                                html.Code(f"Coverage Score × 40 = {coverage_score_val:.3f} × 40 = {physics_coverage_bonus:.1f}", className="d-block mb-2", style={'color': '#212529'}),
+                                html.Ul([
+                                    html.Li(f"Coverage Score: {coverage_score_val:.1%} of symptomatic nodes explained", style={'color': '#495057'}),
+                                    html.Li([
+                                        html.Span("How it works: ", className="fw-bold", style={'color': '#212529'}),
+                                        html.Span("Traces failure propagation upstream through the dependency graph, validating each edge using relative metrics (latency growth, error bubbling, deadlock propagation)", className="small", style={'color': '#495057'})
+                                    ]),
+                                    html.Li([
+                                        html.Span("High coverage (>80%) = ", className="fw-bold", style={'color': '#212529'}),
+                                        html.Span("This node's failure explains most system symptoms → Strong root cause candidate", className="small", style={'color': '#0a5d00'})
+                                    ]) if coverage_score_val > 0.8 else html.Li([
+                                        html.Span("Low coverage (<50%) = ", className="fw-bold", style={'color': '#212529'}),
+                                        html.Span("Limited blast radius → May not be the primary root cause", className="small", style={'color': '#495057'})
+                                    ]) if coverage_score_val < 0.5 else None,
+                                ], className="mb-2 small"),
+                            ], className="p-2 bg-light rounded")
+                        ], className="p-3 mb-3 border-start border-primary border-4"),
+
                         # Confirmation Score
                         html.Div([
-                            html.Strong("2. Confirmation Score (External Evidence):", className="d-block mb-3 text-info"),
-                            html.Ul([
-                                html.Li([
-                                    html.Strong("Guilt: "),
-                                    html.Code(f"{guilt_adjusted:.2f} × 20 = {guilt_component:.1f}"),
-                                    html.Ul([
-                                        html.Li(f"Raw guilt from blame: {guilt_raw:.2f}"),
-                                        html.Li(f"Discount factor (proxy detection): {discount_factor:.2f}"),
-                                        html.Li(f"Blamed by: {', '.join(blamed_by) if blamed_by else 'none'}"),
-                                    ], className="small text-muted mt-1")
-                                ], className="mb-2"),
-                                html.Li([
-                                    html.Strong("Temporal: "),
-                                    html.Code(f"{temporal_score:.2f} × 2 = {temporal_component:.1f}"),
-                                ], className="mb-2"),
-                                html.Li([
-                                    html.Strong("Impact Bonus: "),
-                                    html.Code(f"{impact_bonus:.1f}"),
-                                    html.Div([
-                                        html.Span("Formula: log₁₀(max(1, traffic_volume))", className="small text-muted d-block"),
-                                    ], className="mt-1")
-                                ], className="mb-2"),
-                                html.Li([
-                                    html.Strong("Capacity: "),
-                                    html.Code(f"{capacity_bonus:.1f}"),
-                                    html.Span(f" ({zombie_count} zombie pods)" if zombie_count > 0 else " (no zombies)", className="small text-muted ms-2")
-                                ], className="mb-2"),
-                            ], className="mb-2"),
-                            html.Code(f"Confirmation Score = {guilt_component:.1f} + {temporal_component:.1f} + {impact_bonus:.1f} + {capacity_bonus:.1f} = {confirmation_score_total:.1f}")
+                            html.Strong("3. Confirmation Score (External Evidence):", className="d-block mb-3 text-info"),
+
+                            # Guilt component
+                            html.Div([
+                                html.Strong("a) Guilt:", className="d-block mb-2", style={'color': '#212529'}),
+                                html.Code(f"{guilt_adjusted:.2f} × 20 = {guilt_component:.1f}", style={'color': '#212529'}),
+                                html.Ul([
+                                    html.Li(f"Raw guilt from blame: {guilt_raw:.2f}", style={'color': '#495057'}),
+                                    html.Li(f"Discount factor (proxy detection): {discount_factor:.2f}", style={'color': '#495057'}),
+                                    html.Li(f"Blamed by: {', '.join(blamed_by) if blamed_by else 'none'}", style={'color': '#495057'}),
+                                ], className="small mt-2 mb-0")
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Temporal component
+                            html.Div([
+                                html.Strong("b) Temporal:", className="d-block mb-2", style={'color': '#212529'}),
+                                html.Code(f"{temporal_score:.2f} × 2 = {temporal_component:.1f}", style={'color': '#212529'}),
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Impact bonus
+                            html.Div([
+                                html.Strong("c) Impact Bonus:", className="d-block mb-2", style={'color': '#212529'}),
+                                html.Code(f"{impact_bonus:.1f}", style={'color': '#212529'}),
+                                html.Ul([
+                                    html.Li("Formula: log₁₀(max(1, traffic_volume))", style={'color': '#495057'}),
+                                ], className="small mt-2 mb-0")
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Capacity bonus
+                            html.Div([
+                                html.Strong("d) Capacity:", className="d-block mb-2", style={'color': '#212529'}),
+                                html.Code(f"{capacity_bonus:.1f}", style={'color': '#212529'}),
+                                html.Ul([
+                                    html.Li(f"{zombie_count} zombie pods" if zombie_count > 0 else "No zombies", style={'color': '#495057'}),
+                                ], className="small mt-2 mb-0")
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Subtotal
+                            html.Div([
+                                html.Strong("Confirmation Score: ", className="me-2", style={'color': '#212529'}),
+                                html.Code(f"{guilt_component:.1f} + {temporal_component:.1f} + {impact_bonus:.1f} + {capacity_bonus:.1f} = {confirmation_score_total:.1f}", style={'color': '#212529'})
+                            ], className="mb-3 p-2 border rounded bg-info bg-opacity-10"),
+
                         ], className="p-3 mb-3 border-start border-info border-4"),
+
+                        # Log Bonus
+                        html.Div([
+                            html.Strong("4. Log Analysis Bonus:", className="d-block mb-3 text-warning"),
+
+                            html.Div([
+                                html.Code(f"Log Bonus = {log_bonus:.1f}", style={'color': '#212529'}),
+                                html.Ul([
+                                    html.Li("Evidence from log analysis (error patterns, anomalies)", style={'color': '#495057'})
+                                ], className="small mt-2 mb-0")
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                        ], className="p-3 mb-3 border-start border-warning border-4"),
 
                         # Final Result
                         html.Div([
-                            html.Strong("Final Calculation:", className="d-block mb-3 fs-5"),
+                            html.Strong("Final Calculation:", className="d-block mb-3 fs-5", style={'color': '#212529'}),
+
+                            # Base Score line
                             html.Div([
-                                html.Div([
-                                    html.Span("Base Score: ", className="me-2"),
-                                    html.Code(f"{base_after_penalties:.1f}", className="fs-6 fw-bold")
-                                ], className="mb-2"),
-                                html.Div([
-                                    html.Span("+ Confirmation Score: ", className="me-2"),
-                                    html.Code(f"{confirmation_score_total:.1f}", className="fs-6 fw-bold")
-                                ], className="mb-3"),
-                                html.Hr(),
-                                html.Div([
-                                    html.Span("= Final Score: ", className="me-2"),
-                                    html.Strong(f"{calculated_final:.1f}", className="text-success fs-4"),
-                                    html.Span(f" (actual: {score:.1f})", className="small text-muted ms-2")
-                                ])
-                            ])
+                                html.Span("Base Score: ", className="me-2", style={'color': '#212529'}),
+                                html.Code(f"{base_after_penalties:.1f}", className="fs-6 fw-bold", style={'color': '#212529'})
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Physics Coverage line
+                            html.Div([
+                                html.Span("+ Physics Coverage: ", className="me-2", style={'color': '#212529'}),
+                                html.Code(f"{physics_coverage_bonus:.1f}", className="fs-6 fw-bold", style={'color': '#0d6efd'})
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Confirmation Score line
+                            html.Div([
+                                html.Span("+ Confirmation Score: ", className="me-2", style={'color': '#212529'}),
+                                html.Code(f"{confirmation_score_total:.1f}", className="fs-6 fw-bold", style={'color': '#212529'})
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Log Bonus line
+                            html.Div([
+                                html.Span("+ Log Bonus: ", className="me-2", style={'color': '#212529'}),
+                                html.Code(f"{log_bonus:.1f}", className="fs-6 fw-bold", style={'color': '#212529'})
+                            ], className="mb-3 p-2 bg-light rounded"),
+
+                            # Final result
+                            html.Div([
+                                html.Span("= Final Score: ", className="me-2", style={'color': '#212529', 'fontSize': '1.1em', 'fontWeight': 'bold'}),
+                                html.Strong(f"{calculated_final:.1f}", className="fs-4", style={'color': '#0a5d00'}),
+                                html.Span(f" (actual: {score:.1f})", className="small ms-2", style={'color': '#495057'})
+                            ], className="p-3 border rounded bg-success bg-opacity-10")
+
                         ], className="p-4 bg-success bg-opacity-10 border border-success rounded")
                     ])
                 ], className="p-3")
@@ -471,7 +545,7 @@ def create_whitebox_rca_display(episode_dir):
                         'cursor': 'pointer',
                         'fontSize': '0.95em',
                         'fontWeight': '600',
-                        'color': '#212529',
+                        'color': '#664d03',  # Darker brown for better contrast on yellow
                         'padding': '10px 14px',
                         'backgroundColor': '#fff3cd',
                         'borderRadius': '6px',
@@ -487,20 +561,33 @@ def create_whitebox_rca_display(episode_dir):
 
             # 3. Root Cause Story
             if story:
+                # Check if story contains physics narrative markers (ROOT:, Propagated to)
+                is_physics_narrative = any('ROOT:' in str(s) or 'Propagated to' in str(s) for s in story)
+
+                story_header = [
+                    "📖 Root Cause Story",
+                    html.Span(" 🧪 Physics-based", className="badge bg-primary ms-2",
+                             style={'fontSize': '0.7em', 'padding': '4px 8px'}) if is_physics_narrative else ""
+                ]
+
                 story_section = html.Details([
-                    html.Summary("📖 Root Cause Story", style={
+                    html.Summary(story_header, style={
                         'cursor': 'pointer',
                         'fontSize': '0.95em',
                         'fontWeight': '600',
-                        'color': '#212529',
+                        'color': '#055160' if not is_physics_narrative else '#003d82',  # Darker colors for better contrast
                         'padding': '10px 14px',
-                        'backgroundColor': '#d1ecf1',
+                        'backgroundColor': '#d1ecf1' if not is_physics_narrative else '#e7f3ff',
                         'borderRadius': '6px',
-                        'border': '1px solid #0dcaf0'
+                        'border': '1px solid ' + ('#0dcaf0' if not is_physics_narrative else '#0d6efd')
                     }),
                     html.Div([
+                        html.Div([
+                            html.Span("This narrative was generated by the Physics Engine, tracing validated causal propagation through the system.",
+                                     className="small text-muted d-block mb-3 p-2 bg-light rounded border border-primary")
+                        ]) if is_physics_narrative else None,
                         html.Ol([
-                            html.Li(step, className="mb-2", style={'fontSize': '0.9em'}) for step in story
+                            html.Li(step, className="mb-2", style={'fontSize': '0.9em', 'fontFamily': 'monospace' if is_physics_narrative else 'inherit'}) for step in story
                         ], className="mb-0 mt-2")
                     ], className="p-3")
                 ])
@@ -539,13 +626,13 @@ def create_whitebox_rca_display(episode_dir):
                 pod_forensics_section = html.Details([
                     html.Summary([
                         f"🔬 Pod Forensics: ",
-                        html.Span(f"{pf_degraded_count} degraded", style={'color': '#dc3545', 'fontWeight': 'bold', 'marginRight': '8px'}),
-                        html.Span(f"{pf_healthy_count} healthy", style={'color': '#198754', 'fontWeight': 'bold'})
+                        html.Span(f"{pf_degraded_count} degraded", style={'color': '#58151c', 'fontWeight': 'bold', 'marginRight': '8px'}),  # Darker red
+                        html.Span(f"{pf_healthy_count} healthy", style={'color': '#0a3622', 'fontWeight': 'bold'})  # Darker green
                     ], style={
                         'cursor': 'pointer',
                         'fontSize': '0.95em',
                         'fontWeight': '600',
-                        'color': '#212529',
+                        'color': '#58151c',  # Darker red for better contrast
                         'padding': '10px 14px',
                         'backgroundColor': '#f8d7da',
                         'borderRadius': '6px',
@@ -574,7 +661,7 @@ def create_whitebox_rca_display(episode_dir):
                     'cursor': 'pointer',
                     'fontSize': '0.95em',
                     'fontWeight': '600',
-                    'color': '#212529',
+                    'color': '#1c1f23',  # Much darker for better contrast on gray
                     'padding': '10px 14px',
                     'backgroundColor': '#e2e3e5',
                     'borderRadius': '6px',
@@ -641,16 +728,20 @@ def create_whitebox_rca_display(episode_dir):
                         # Quick summary line
                         html.Div([
                             html.Span(f"Health: {integrated_score:.1f}", className="me-3",
-                                     style={'fontSize': '0.9em', 'color': '#6c757d'}),
+                                     style={'fontSize': '0.9em', 'color': '#495057'}),  # Darker gray for better readability
+                            html.Span(f"Physics: {physics_coverage_bonus:.1f}", className="me-3",
+                                     style={'fontSize': '0.9em', 'color': '#0d6efd', 'fontWeight': '600'}) if physics_coverage_bonus > 0 else "",
+                            html.Span(f"({coverage_score_val:.0%} coverage)", className="me-3",
+                                     style={'fontSize': '0.8em', 'color': '#495057'}) if physics_coverage_bonus > 0 else "",  # Darker gray
                             html.Span(f"Guilt: {guilt_adjusted:.1f}", className="me-3",
-                                     style={'fontSize': '0.9em', 'color': '#6c757d'}),
+                                     style={'fontSize': '0.9em', 'color': '#495057'}),  # Darker gray
                             html.Span(f"Temporal: {temporal_score:.1f}", className="me-3",
-                                     style={'fontSize': '0.9em', 'color': '#6c757d'}),
+                                     style={'fontSize': '0.9em', 'color': '#495057'}),  # Darker gray
                             html.Span(f"Trace: {trace_score:.1f}", className="me-2",
-                                     style={'fontSize': '0.9em', 'color': '#6c757d'}),
-                            html.Span("★", style={'color': '#ffc107'}) if is_trace_authoritative else "",
+                                     style={'fontSize': '0.9em', 'color': '#495057'}),  # Darker gray
+                            html.Span("★", style={'color': '#ff9800'}) if is_trace_authoritative else "",  # Darker orange for star
                             html.Span(f" • {len(symptoms)} symptoms", className="ms-3",
-                                     style={'fontSize': '0.9em', 'color': '#6c757d'}) if symptoms else ""
+                                     style={'fontSize': '0.9em', 'color': '#495057'}) if symptoms else ""  # Darker gray
                         ], style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '1px solid #e9ecef'}),
 
                         # All details in expandable sections (no duplication!)

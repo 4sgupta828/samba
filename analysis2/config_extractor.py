@@ -7,6 +7,23 @@ Provides context to SelfHealthAnalyzer to define "Saturation".
 
 from typing import Dict, Any
 
+class CausalConstants:
+    """Tunable parameters for Causal Physics logic."""
+    # Latency: How much relative growth (Current/Base) counts as degradation?
+    # 1.2 = 20% slowdown
+    MIN_LATENCY_GROWTH = 1.2
+
+    # Propagation: How much of the Callee's pain must the Caller see?
+    # 0.2 = Caller must reflect at least 20% of the Callee's relative degradation
+    # (Accounts for dilution if Caller also calls healthy services)
+    LATENCY_DILUTION_FACTOR = 0.2
+
+    # Errors: What constitutes a "Spike"?
+    MIN_ERROR_DELTA = 0.01  # 1% absolute increase
+
+    # Deadlock: Massive latency spike required to suspect deadlock propagation
+    DEADLOCK_GROWTH_THRESHOLD = 3.0
+
 class ConfigExtractor:
     def __init__(self, config_data: Dict[str, Any] = None):
         self.config = config_data or {}

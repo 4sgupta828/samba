@@ -25,10 +25,12 @@ from self_health_analyzer import SelfHealthAnalyzer
 from disambiguator import CallerCalleeDisambiguator
 from config_extractor import ConfigExtractor
 from causal_chain_analyzer import CausalChainAnalyzer
+from causal_graph_reasoner import CausalGraphReasoner
 
 # NEW: Temporal and Trace Analysis
 from temporal_analyzer import TemporalAnalyzer
 from trace_analyzer import TraceAnalyzer
+from log_analyzer import LogAnalyzer
 
 class WhiteboxRCAEngine:
     def __init__(self, topology: nx.DiGraph, config: Dict = None, threshold_config: Dict = None):
@@ -41,12 +43,14 @@ class WhiteboxRCAEngine:
 
         # Pass threshold config to all analyzers
         self.self_analyzer = SelfHealthAnalyzer(self.config_extractor, threshold_config)
-        self.disambiguator = CallerCalleeDisambiguator()
+        self.reasoner = CausalGraphReasoner(topology)  # Physics Engine
+        self.disambiguator = CallerCalleeDisambiguator(self.reasoner)  # Hybrid Disambiguator
         self.storyteller = CausalChainAnalyzer(topology)
 
         # NEW: Advanced analyzers
         self.temporal_analyzer = TemporalAnalyzer(topology)
         self.trace_analyzer = TraceAnalyzer(topology)  # Pass topology for service-level aggregation
+        self.log_analyzer = LogAnalyzer()
 
     def validate_ground_truth(self, ground_truth_node: str, candidates: List[Dict]) -> Dict:
         """
@@ -266,11 +270,13 @@ class WhiteboxRCAEngine:
                          metrics_df: Optional[pd.DataFrame] = None,
                          fault_start_time: Optional[float] = None,
                          traces_file: Optional[Path] = None,
+                         logs_file: Optional[Path] = None,
                          baseline_pods: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
                          current_pods: Optional[Dict[str, Dict[str, np.ndarray]]] = None) -> List[Dict]:
 
         # --- PHASE 1: Self-Health (Internal Evidence) ---
         self_scores = {}
+        self_analyses = {}  # Store full analysis objects for physics engine
         symptoms_map = {}
 
         for node in self.topology.nodes:
@@ -292,6 +298,7 @@ class WhiteboxRCAEngine:
 
             analysis = self.self_analyzer.analyze(node, node_type, b_metrics, c_metrics)
             self_scores[node] = analysis.self_degradation_score
+            self_analyses[node] = analysis  # Store full analysis for physics
             symptoms_map[node] = analysis.symptoms
 
         # --- PHASE 1.5: Temporal Causality Analysis (NEW) ---
@@ -313,6 +320,14 @@ class WhiteboxRCAEngine:
                 )
             except Exception as e:
                 print(f"  [!] Warning: Trace analysis failed: {e}")
+
+        # --- PHASE 1.7: Log Analysis (NEW) ---
+        log_scores = {}
+        if logs_file and logs_file.exists():
+            try:
+                log_scores = self.log_analyzer.analyze(logs_file, fault_start_time)
+            except Exception as e:
+                print(f"  [!] Warning: Log analysis failed: {e}")
 
         # --- PHASE 2: Network Partition Detection (NEW) ---
         # Detect network partitions: completely blocked communication between nodes
@@ -428,6 +443,13 @@ class WhiteboxRCAEngine:
                 'network_partitions': network_partitions
             }]
 
+        # --- PHASE 2.3: Physics Coverage (The "Precision Scope") ---
+        candidates = [n for n, analysis in self_analyses.items() if analysis.is_root_cause_candidate]
+
+        physics_hypotheses = self.reasoner.calculate_global_coverage(
+            candidates, self_analyses, baseline_data, current_data
+        )
+
         # --- PHASE 2.5: Graph Propagation (External Evidence) ---
         # "Who blames who?" - Track both incoming votes and outgoing blame
         incoming_votes = defaultdict(list) # target -> [votes]
@@ -456,11 +478,16 @@ class WhiteboxRCAEngine:
 
             # For sync edges (HTTP, cache, DB, external service calls)
             # u calls v. Analyze the edge.
+            # Pass full context for physics validation
             verdict = self.disambiguator.analyze_edge(
+                u, v,
                 caller_metrics_base=baseline_data.get(u, {}),
                 caller_metrics_curr=current_data.get(u, {}),
                 callee_metrics_base=baseline_data.get(v, {}),
-                callee_metrics_curr=current_data.get(v, {})
+                callee_metrics_curr=current_data.get(v, {}),
+                baseline_data=baseline_data,
+                current_data=current_data,
+                health_scores=self_analyses
             )
 
             if verdict.blames_callee:
@@ -705,7 +732,15 @@ class WhiteboxRCAEngine:
                 base_score = base_score * 0.05  # 95% penalty (stronger than victim penalty)
                 healthy_penalty_applied = True
 
-            # Confirmation signals: External evidence is SECONDARY (0-40 points total)
+            # B. Physics Coverage Bonus
+            # If this node explains 80% of symptoms, it gets massive points.
+            coverage_val = physics_hypotheses.get(node).coverage_score if node in physics_hypotheses else 0.0
+
+            # C. Supplemental Evidence
+            # Log bonus
+            log_bonus = log_scores.get(node, {}).get('log_score', 0.0)
+
+            # Confirmation signals: External evidence is SECONDARY
             # Use ADJUSTED guilt (with probabilistic discounting) instead of raw guilt
             guilt_component = adjusted_guilt * 20.0
             temporal_component = temporal_score * 2.0
@@ -717,7 +752,11 @@ class WhiteboxRCAEngine:
                 capacity_degradation_bonus     # Capacity Loss: 0-20 (zombie pods)
             )
 
-            final_score = base_score + confirmation_score
+            # --- THE HYBRID FORMULA ---
+            # Self(base_score) + Coverage(40) + Confirmation
+            physics_coverage_bonus = coverage_val * 40.0
+
+            final_score = base_score + physics_coverage_bonus + confirmation_score + log_bonus
 
             # Store results with complete score breakdown for explainability
             rankings.append({
@@ -750,10 +789,13 @@ class WhiteboxRCAEngine:
                     'victim_penalty_applied': victim_penalty_applied,
                     'healthy_penalty_applied': healthy_penalty_applied,
                     'base_after_penalties': round(base_score, 2),
+                    'physics_coverage': round(physics_coverage_bonus, 2),
+                    'coverage_score': round(coverage_val, 3),
                     'guilt_component': round(guilt_component, 2),
                     'temporal_component': round(temporal_component, 2),
                     'impact_bonus': round(impact_bonus, 2),
                     'capacity_bonus': round(capacity_degradation_bonus, 2),
+                    'log_bonus': round(log_bonus, 2),
                     'confirmation_score': round(confirmation_score, 2),
                 }
             })
@@ -764,10 +806,21 @@ class WhiteboxRCAEngine:
         # --- PHASE 4: Story Generation ---
         if sorted_rankings:
             top_candidate = sorted_rankings[0]
-            top_candidate['story'] = self.storyteller.generate_story(
-                top_candidate['node'], 
-                top_candidate['symptoms'], 
-                incoming_votes
-            )
+            top_node = top_candidate['node']
+
+            # Get narrative from Physics engine if available, else standard
+            if top_node in physics_hypotheses:
+                story = physics_hypotheses[top_node].narrative
+            else:
+                story = []
+
+            if not story:
+                story = self.storyteller.generate_story(
+                    top_node,
+                    top_candidate['symptoms'],
+                    incoming_votes
+                )
+
+            top_candidate['story'] = story
 
         return sorted_rankings
