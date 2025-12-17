@@ -143,7 +143,7 @@ def create_whitebox_rca_display(episode_dir):
             ], width=3),
         ], className="mb-4")
 
-        # Create detailed ranking cards
+        # Create detailed ranking cards - streamlined version
         ranking_cards = []
         for i, result in enumerate(rankings[:10], 1):  # Top 10
             node = result['node']
@@ -167,148 +167,160 @@ def create_whitebox_rca_display(episode_dir):
             coverage = health_metadata.get('coverage', 0)
             pattern = health_metadata.get('pattern', 'N/A')
 
-            # Determine card color
+            # Determine styling
             is_ground_truth = (node == ground_truth)
             if is_ground_truth:
-                card_color = "success"
-                header_class = "bg-success text-white"
+                border_color = "#28a745"
+                header_bg = "#d4edda"
+                badge_color = "success"
             elif i == 1:
-                card_color = "primary"
-                header_class = "bg-primary text-white"
+                border_color = "#007bff"
+                header_bg = "#cfe2ff"
+                badge_color = "primary"
             else:
-                card_color = "light"
-                header_class = "bg-light"
+                border_color = "#dee2e6"
+                header_bg = "#f8f9fa"
+                badge_color = "secondary"
 
-            # Build score breakdown
-            score_breakdown = dbc.Table([
-                html.Tbody([
-                    html.Tr([
-                        html.Td("Final Score:", className="fw-bold"),
-                        html.Td(f"{score:.1f}", className="text-end fw-bold")
-                    ]),
-                    html.Tr([
-                        html.Td("├─ Integrated Health:", style={'paddingLeft': '20px'}),
-                        html.Td(f"{integrated_score:.1f}", className="text-end")
-                    ]),
-                    html.Tr([
-                        html.Td("│  ├─ Service Self:", style={'paddingLeft': '40px'}),
-                        html.Td(f"{self_score:.1f}", className="text-end small text-muted")
-                    ]),
-                    html.Tr([
-                        html.Td("│  └─ Pod Health:", style={'paddingLeft': '40px'}),
-                        html.Td(f"{pod_score:.1f} (cov: {coverage:.1%})", className="text-end small text-muted")
-                    ]) if pod_score > 0 else None,
-                    html.Tr([
-                        html.Td("├─ Guilt (External):", style={'paddingLeft': '20px'}),
-                        html.Td(f"{guilt_adjusted:.1f} (raw: {guilt_raw:.1f})", className="text-end")
-                    ]),
-                    html.Tr([
-                        html.Td("├─ Temporal:", style={'paddingLeft': '20px'}),
-                        html.Td(f"{temporal_score:.1f}", className="text-end")
-                    ]),
-                    html.Tr([
-                        html.Td("└─ Trace:", style={'paddingLeft': '20px'}),
-                        html.Td([
-                            f"{trace_score:.1f}",
-                            html.Span(" ★", className="text-warning ms-1") if is_trace_authoritative else ""
-                        ], className="text-end")
-                    ])
-                ])
-            ], bordered=False, size="sm", className="mb-0")
+            # Build compact score display with visual bars
+            def score_bar(value, max_val=100, color="#007bff"):
+                """Create a simple progress-style bar"""
+                pct = min(100, (value / max_val) * 100) if max_val > 0 else 0
+                return html.Div([
+                    html.Div(
+                        style={
+                            'width': f'{pct}%',
+                            'height': '6px',
+                            'backgroundColor': color,
+                            'borderRadius': '3px',
+                            'transition': 'width 0.3s ease'
+                        }
+                    )
+                ], style={
+                    'width': '100%',
+                    'height': '6px',
+                    'backgroundColor': '#e9ecef',
+                    'borderRadius': '3px',
+                    'overflow': 'hidden'
+                })
 
-            # Build symptoms list
-            symptoms_list = html.Ul([
-                html.Li(symptom, className="small") for symptom in symptoms
-            ], className="mb-2") if symptoms else html.P("No symptoms detected", className="text-muted small mb-2")
-
-            # Build blame list
-            blame_list = html.Div([
-                html.Strong("Blamed by: ", className="small"),
-                html.Span(", ".join(blamed_by) if blamed_by else "None", className="small text-muted")
-            ], className="mb-2") if blamed_by or guilt_adjusted > 0 else None
-
-            # Build story
-            story_display = html.Div([
-                html.Strong("Root Cause Story:", className="mb-2 d-block text-dark"),
-                html.Ul([
-                    html.Li(step, className="small text-dark") for step in story
+            # Compact score breakdown
+            score_items = [
+                html.Div([
+                    html.Span(f"Health: {integrated_score:.1f}", className="small fw-bold me-2", style={'minWidth': '90px', 'display': 'inline-block'}),
+                    html.Span(f"(Self: {self_score:.1f}", className="small text-muted"),
+                    html.Span(f" + Pod: {pod_score:.1f})", className="small text-muted") if pod_score > 0 else html.Span(")", className="small text-muted")
+                ], className="mb-1"),
+                html.Div([
+                    html.Span(f"Guilt: {guilt_adjusted:.1f}", className="small fw-bold me-2", style={'minWidth': '90px', 'display': 'inline-block'}),
+                    html.Span(f"Blamed by: {', '.join(blamed_by[:2]) if blamed_by else 'none'}", className="small text-muted") if blamed_by else html.Span("(not blamed)", className="small text-muted")
+                ], className="mb-1"),
+                html.Div([
+                    html.Span(f"Temporal: {temporal_score:.1f}", className="small fw-bold me-2", style={'minWidth': '90px', 'display': 'inline-block'}),
+                    html.Span(f"Trace: {trace_score:.1f}", className="small fw-bold me-2"),
+                    html.Span("★", className="text-warning") if is_trace_authoritative else ""
                 ], className="mb-0")
-            ], className="mt-2 p-2 bg-light rounded border") if story else None
+            ]
 
-            # Build pod forensics display (if available)
-            pod_forensics = result.get('pod_forensics', {})
-            pod_forensics_display = None
-            if pod_forensics and pod_forensics.get('pod_count', 0) > 0:
-                degraded_pods = pod_forensics.get('degraded_pods', [])
-                healthy_pods = pod_forensics.get('healthy_pods', [])
+            # Top 3 symptoms only
+            top_symptoms = symptoms[:3] if len(symptoms) > 0 else []
+            symptom_display = html.Div([
+                html.Div([
+                    html.Span("• ", className="me-1"),
+                    html.Span(symptom, className="small")
+                ], className="mb-1") for symptom in top_symptoms
+            ] + ([
+                html.Span(f"+ {len(symptoms) - 3} more", className="small text-muted fst-italic")
+            ] if len(symptoms) > 3 else []))
 
-                degraded_items = [
-                    html.Li([
-                        html.Strong(pod['pod_id'], className="text-danger"),
-                        html.Span(f" - Score: {pod.get('self_score', 0):.1f}", className="text-dark"),
+            if not symptoms:
+                symptom_display = html.Span("No symptoms detected", className="small text-muted fst-italic")
+
+            # Collapsible story and pod forensics
+            additional_details = []
+
+            # Story section (collapsible)
+            if story:
+                additional_details.append(
+                    html.Details([
+                        html.Summary("Root Cause Story", style={'cursor': 'pointer', 'fontSize': '0.9em', 'fontWeight': '500', 'color': '#495057', 'marginBottom': '8px'}),
                         html.Ul([
-                            html.Li(symptom, className="small text-dark")
-                            for symptom in pod.get('symptoms', [])
-                        ]) if pod.get('symptoms') else ""
+                            html.Li(step, className="small") for step in story
+                        ], className="mb-0 ms-3")
+                    ], className="mt-2")
+                )
+
+            # Pod forensics section (collapsible)
+            pod_forensics = result.get('pod_forensics', {})
+            if pod_forensics and pod_forensics.get('pod_count', 0) > 0:
+                degraded_count = pod_forensics.get('degraded_count', 0)
+                healthy_count = pod_forensics.get('healthy_count', 0)
+                degraded_pods = pod_forensics.get('degraded_pods', [])[:3]  # Top 3
+
+                pod_items = [
+                    html.Li([
+                        html.Strong(pod['pod_id'], className="text-danger", style={'fontSize': '0.85em'}),
+                        html.Span(f" ({pod.get('self_score', 0):.0f})", className="text-muted small ms-1")
                     ], className="small mb-1")
-                    for pod in degraded_pods[:3]  # Top 3
+                    for pod in degraded_pods
                 ]
 
-                pod_forensics_display = html.Div([
-                    html.Strong(f"Pod Forensics ({pod_forensics['pod_count']} pods):", className="mb-2 d-block small text-dark"),
-                    html.P([
-                        html.Span(f"Degraded: {pod_forensics.get('degraded_count', 0)}", className="text-danger me-2 fw-bold"),
-                        html.Span(f"Healthy: {pod_forensics.get('healthy_count', 0)}", className="text-success fw-bold")
-                    ], className="small mb-2"),
-                    html.P(pod_forensics.get('pattern', ''), className="small text-dark mb-2"),
-                    html.Div([
-                        html.Strong("Top degraded pods:", className="small d-block mb-1 text-dark"),
-                        html.Ul(degraded_items, className="mb-0")
-                    ]) if degraded_items else html.Div()
-                ], className="mt-2 p-2 bg-light rounded border")
+                additional_details.append(
+                    html.Details([
+                        html.Summary([
+                            f"Pod Forensics: ",
+                            html.Span(f"{degraded_count} degraded", className="text-danger fw-bold me-2"),
+                            html.Span(f"{healthy_count} healthy", className="text-success fw-bold")
+                        ], style={'cursor': 'pointer', 'fontSize': '0.9em', 'fontWeight': '500', 'color': '#495057', 'marginBottom': '8px'}),
+                        html.Div([
+                            html.Span(pod_forensics.get('pattern', ''), className="small text-muted d-block mb-2"),
+                            html.Ul(pod_items, className="mb-0 ms-3") if pod_items else html.Div()
+                        ])
+                    ], className="mt-2")
+                )
 
-            # Create card
+            # Create streamlined card
             ranking_cards.append(
                 dbc.Card([
-                    dbc.CardHeader([
-                        html.H6([
-                            f"#{i}: ",
-                            html.Strong(node),
-                            html.Span(" 🎯 GROUND TRUTH", className="badge bg-danger ms-2") if is_ground_truth else "",
-                            html.Span(f" Score: {score:.1f}", className="ms-2 text-muted")
-                        ], className="mb-0")
-                    ], className=header_class),
                     dbc.CardBody([
-                        dbc.Row([
-                            dbc.Col([
-                                html.H6("Score Breakdown", className="mb-2"),
-                                score_breakdown
-                            ], width=4),
-                            dbc.Col([
-                                html.H6("Symptoms", className="mb-2"),
-                                symptoms_list,
-                                blame_list if blame_list else html.Div()
-                            ], width=4),
-                            dbc.Col([
-                                html.H6("Analysis Details", className="mb-2"),
-                                html.P([
-                                    html.Strong("Pattern: "),
-                                    html.Span(pattern)
-                                ], className="small mb-1"),
-                                html.P([
-                                    html.Strong("Coverage: "),
-                                    html.Span(f"{coverage:.1%}")
-                                ], className="small mb-1") if pod_score > 0 else None,
-                                html.P([
-                                    html.Strong("Trace Auth: "),
-                                    html.Span("Yes" if is_trace_authoritative else "No")
-                                ], className="small mb-1"),
-                            ], width=4)
+                        # Header row with rank, name, score
+                        html.Div([
+                            html.Div([
+                                html.Span(f"#{i}", className="badge rounded-pill me-2",
+                                         style={'fontSize': '1em', 'backgroundColor': border_color, 'color': 'white', 'minWidth': '35px'}),
+                                html.Strong(node, style={'fontSize': '1.1em', 'color': '#212529'}),
+                                html.Span(" 🎯", className="ms-2") if is_ground_truth else "",
+                                html.Span(f"{score:.1f}", className="badge bg-dark ms-auto", style={'fontSize': '1em'})
+                            ], style={'display': 'flex', 'alignItems': 'center', 'marginBottom': '12px'})
                         ]),
-                        story_display if story_display else html.Div(),
-                        pod_forensics_display if pod_forensics_display else html.Div()
-                    ])
-                ], className="mb-3 shadow-sm", color=card_color, outline=True)
+
+                        # Main content in 2 columns
+                        dbc.Row([
+                            # Left column: Scores
+                            dbc.Col([
+                                html.Div([
+                                    html.Strong("Scores", className="text-muted small d-block mb-2", style={'textTransform': 'uppercase', 'fontSize': '0.75em', 'letterSpacing': '0.5px'}),
+                                    html.Div(score_items)
+                                ])
+                            ], width=5, className="border-end pe-3"),
+
+                            # Right column: Symptoms & metadata
+                            dbc.Col([
+                                html.Div([
+                                    html.Strong("Symptoms", className="text-muted small d-block mb-2", style={'textTransform': 'uppercase', 'fontSize': '0.75em', 'letterSpacing': '0.5px'}),
+                                    symptom_display,
+                                    html.Div([
+                                        html.Span(f"Pattern: {pattern}", className="badge bg-light text-dark me-1 mt-2", style={'fontSize': '0.75em'}),
+                                        html.Span(f"Cov: {coverage:.0%}", className="badge bg-light text-dark me-1", style={'fontSize': '0.75em'}) if pod_score > 0 else ""
+                                    ])
+                                ])
+                            ], width=7, className="ps-3")
+                        ], className="g-0"),
+
+                        # Additional details (collapsible sections)
+                        html.Div(additional_details, className="mt-2 pt-2 border-top") if additional_details else html.Div()
+                    ], style={'padding': '15px'})
+                ], className="mb-2 shadow-sm", style={'border': f'2px solid {border_color}', 'borderRadius': '8px'})
             )
 
         # Format the full JSON for display
