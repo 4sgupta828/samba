@@ -412,6 +412,12 @@ class TopologyAdapter:
         if 'memory_capacity_mb' in overrides and hasattr(component, 'memory_capacity_mb'):
             component.memory_capacity_mb = overrides['memory_capacity_mb']
 
+        # Apply message concurrency (for async queue consumers)
+        if 'message_concurrency' in overrides and hasattr(component, 'message_concurrency_semaphore'):
+            component.message_concurrency = overrides['message_concurrency']
+            component.message_concurrency_semaphore = simpy.Resource(
+                component.env, capacity=component.message_concurrency)
+
         # Apply Timeouts (update the component's config object)
         if 'timeouts' in overrides and hasattr(component, 'iac_config'):
             if not component.iac_config:
@@ -442,7 +448,7 @@ def print_topology_summary(G: nx.DiGraph):
 
     # Count by role
     role_counts = {}
-    for node_id, data in G.nodes(data=True):
+    for _, data in G.nodes(data=True):
         role = data.get('role', 'unknown')
         role_counts[role] = role_counts.get(role, 0) + 1
 
