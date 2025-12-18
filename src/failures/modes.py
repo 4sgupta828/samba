@@ -6,6 +6,7 @@ Note: For gradual failures, use the TrainingFailureInjector's apply_infrastructu
 mechanism. These functions are for instant state changes.
 """
 from typing import Dict, Any
+import simpy
 
 from src.components.base_component import SimulatedComponent
 from src.components.compute import ComputeAgent
@@ -455,23 +456,33 @@ def memory_thrashing(component: ComputeAgent, params: Dict[str, Any]):
     # Spawn background thrashing process
     def memory_thrashing_process():
         """Background process that periodically allocates/deallocates memory."""
-        while component._memory_thrashing_enabled:
-            # Allocation burst
-            old_base = component.dynamics.config.memory_base
-            component.dynamics.config.memory_base += burst_size_mb
-            component._emit_log("DEBUG",
-                f"Memory thrashing: BURST +{burst_size_mb:.0f}MB (total={component.dynamics.config.memory_base:.0f}MB)")
+        old_base = None
+        try:
+            while component._memory_thrashing_enabled:
+                # Allocation burst
+                old_base = component.dynamics.config.memory_base
+                component.dynamics.config.memory_base += burst_size_mb
+                component._emit_log("DEBUG",
+                    f"Memory thrashing: BURST +{burst_size_mb:.0f}MB (total={component.dynamics.config.memory_base:.0f}MB)")
 
-            # Hold for burst duration (causes latency spike during this window)
-            yield component.env.timeout(burst_duration_sec)
+                # Hold for burst duration (causes latency spike during this window)
+                yield component.env.timeout(burst_duration_sec)
 
-            # Deallocation (memory freed)
-            component.dynamics.config.memory_base = old_base
-            component._emit_log("DEBUG",
-                f"Memory thrashing: RELEASE -{burst_size_mb:.0f}MB (total={component.dynamics.config.memory_base:.0f}MB)")
+                # Deallocation (memory freed)
+                component.dynamics.config.memory_base = old_base
+                component._emit_log("DEBUG",
+                    f"Memory thrashing: RELEASE -{burst_size_mb:.0f}MB (total={component.dynamics.config.memory_base:.0f}MB)")
+                old_base = None  # Mark as released
 
-            # Wait until next burst
-            yield component.env.timeout(burst_period_sec - burst_duration_sec)
+                # Wait until next burst
+                yield component.env.timeout(burst_period_sec - burst_duration_sec)
+        except simpy.exceptions.Interrupt:
+            # Handle interrupt from revert - restore memory if currently in burst
+            if old_base is not None and component.dynamics.config.memory_base != old_base:
+                component.dynamics.config.memory_base = old_base
+                component._emit_log("DEBUG",
+                    f"Memory thrashing: INTERRUPTED during burst, restored memory to {old_base:.0f}MB")
+            component._emit_log("INFO", "Memory thrashing process stopped")
 
     component._memory_thrashing_process = component.env.process(memory_thrashing_process())
 
