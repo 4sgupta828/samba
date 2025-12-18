@@ -606,21 +606,33 @@ class WhiteboxRCAEngine:
                             'confidence': 0.90
                         })
 
-        # If network partitions detected, return early with global_network as root cause
+        # If network partitions detected, save for later inclusion in candidates
+        # DO NOT return early - we need to run normal service-level analysis too
+        # Connection timeouts can be caused by service failures, not just network partitions
+        network_partition_candidate = None
         if network_partitions:
             print(f"  [!] Network partition detected: {len(network_partitions)} blocked edge(s)")
             for partition in network_partitions:
                 print(f"      - {partition['reason']}")
 
-            # Return global_network as the root cause
-            # Score breakdown: 100 points from network partition detection (log + metric evidence)
-            # Calculate average confidence across all detected partitions
+            # Prepare global_network as a candidate (will be added to results later)
+            # Score: Only use this if double-confirmed (both logs + metrics)
+            # Otherwise, connection timeouts are likely symptoms of service failures
             avg_confidence = sum(p['confidence'] for p in network_partitions) / len(network_partitions)
             double_confirmed_count = sum(1 for p in network_partitions if p.get('double_confirmed', False))
 
-            return [{
+            # Only add as strong candidate if double-confirmed (logs + metrics)
+            # Otherwise, score lower to let service-level analysis take priority
+            if double_confirmed_count > 0:
+                network_score = 100.0  # Strong evidence
+                print(f"  [!] Double-confirmed partition (logs + metrics), treating as high-confidence root cause")
+            else:
+                network_score = 30.0  # Weak evidence, likely symptom of service failure
+                print(f"  [!] Single-confirmation partition (logs only), scoring lower - may be symptom not cause")
+
+            network_partition_candidate = {
                 'node': 'global_network',
-                'score': 100.0,
+                'score': network_score,
                 'integrated_score': 0.0,
                 'guilt_raw': 0.0,
                 'guilt_adjusted': 0.0,
@@ -629,7 +641,7 @@ class WhiteboxRCAEngine:
                 'self_score': 0.0,
                 'temporal_score': 0.0,
                 'trace_score': 0.0,
-                'log_score': 100.0,  # All 100 points from log-based network partition detection
+                'log_score': network_score,  # Score from network partition detection
                 'symptoms': ['Network partition detected between components'],
                 'blamed_by': [],
                 'temporal_info': {},
@@ -655,7 +667,7 @@ class WhiteboxRCAEngine:
                     'impact_bonus': 0.0,
                     'capacity_bonus': 0.0,
                     'confirmation_score': 0.0,
-                    'log_bonus': 100.0,  # All 100 points from network partition detection
+                    'log_bonus': network_score,  # Score from network partition detection
                     'victim_penalty_applied': False,
                     'healthy_penalty_applied': False
                 },
@@ -669,7 +681,7 @@ class WhiteboxRCAEngine:
                     f'   Double-confirmed edges: {double_confirmed_count}/{len(network_partitions)}'
                 ],
                 'network_partitions': network_partitions
-            }]
+            }
 
         # --- PHASE 2.3: Physics Coverage (The "Precision Scope") ---
         candidates = [n for n, analysis in self_analyses.items() if analysis.is_root_cause_candidate]
@@ -1011,6 +1023,7 @@ class WhiteboxRCAEngine:
                 'self_score': round(service_self_score, 2),
                 'temporal_score': round(temporal_score, 2),
                 'trace_score': round(trace_score, 2),
+                'log_score': round(log_bonus, 2),
                 'symptoms': symptoms_map.get(node, []),
                 'blamed_by': [v['source'] for v in votes],
                 'temporal_info': temporal_info,
@@ -1041,9 +1054,14 @@ class WhiteboxRCAEngine:
                 }
             })
 
+        # Add network partition candidate if detected
+        if network_partition_candidate is not None:
+            rankings.append(network_partition_candidate)
+            print(f"  [+] Added global_network candidate with score {network_partition_candidate['score']}")
+
         # Sort descending
         sorted_rankings = sorted(rankings, key=lambda x: x['score'], reverse=True)
-        
+
         # --- PHASE 4: Story Generation ---
         if sorted_rankings:
             top_candidate = sorted_rankings[0]
