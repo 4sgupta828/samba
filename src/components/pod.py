@@ -490,26 +490,28 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
 
                 # Wait for concurrency slot before pulling next message
                 # This implements prefetch/concurrency limit like real queue consumers
-                with self.message_concurrency_semaphore.request() as req:
-                    yield req  # Wait for a slot to become available
+                # Don't use 'with' context manager because we spawn a background process
+                # that needs to release the resource when processing completes
+                req = self.message_concurrency_semaphore.request()
+                yield req  # Wait for a slot to become available
 
-                    # Check for network partition BEFORE consuming from queue
-                    self._check_network_partition(queue.id)
+                # Check for network partition BEFORE consuming from queue
+                self._check_network_partition(queue.id)
 
-                    # Wait for a message from the queue
-                    msg = yield from queue.receive_message()
+                # Wait for a message from the queue
+                msg = yield from queue.receive_message()
 
-                    self._emit_log("DEBUG", f"Received message {msg.id} from queue (in-flight: {self.message_concurrency_semaphore.count})")
+                self._emit_log("DEBUG", f"Received message {msg.id} from queue (in-flight: {self.message_concurrency_semaphore.count})")
 
-                    # Spawn message processing in background WITHOUT waiting for completion
-                    # This allows multiple messages to be processed concurrently
-                    proc = self.env.process(self._process_queue_message_concurrent(msg, queue, req))
-                    self.active_message_processes.add(proc)
+                # Spawn message processing in background WITHOUT waiting for completion
+                # This allows multiple messages to be processed concurrently
+                proc = self.env.process(self._process_queue_message_concurrent(msg, queue, req))
+                self.active_message_processes.add(proc)
 
-                    # Reset circuit breaker on successful receive (not waiting for processing)
-                    if consecutive_failures > 0:
-                        consecutive_failures = 0
-                        backoff_delay = 1.0
+                # Reset circuit breaker on successful receive (not waiting for processing)
+                if consecutive_failures > 0:
+                    consecutive_failures = 0
+                    backoff_delay = 1.0
 
             except Exception as e:
                 # Queue receive failed - log and retry after delay
@@ -529,10 +531,14 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         try:
             # Process the message
             yield from self._process_queue_message(msg, queue)
+        except Exception as e:
+            # Exception already logged and metrics recorded in _process_queue_message
+            # Don't re-raise since we're in a background process - just log it here
+            self._emit_log("DEBUG", f"Message {msg.id} processing failed, will retry after visibility timeout: {e}")
         finally:
             # Always release the concurrency slot when done (success or failure)
             # This allows the next message to be pulled from the queue
-            concurrency_req.release()
+            self.message_concurrency_semaphore.release(concurrency_req)
 
             # Remove from active processes
             if self.env.active_process in self.active_message_processes:
@@ -1743,7 +1749,7 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 self._check_network_partition(queue.id)
 
                 message_data = f"message_from_{self.parent_service.service_name}_{self.env.now}"
-                yield queue.send_message(message_data)  # send_message returns an event, not a generator
+                yield from queue.send_message(message_data)  # send_message is a generator
 
                 # Record successful publish metrics
                 publish_latency_ms = (self.env.now - publish_start) * 1000
