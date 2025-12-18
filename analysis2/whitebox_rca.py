@@ -76,8 +76,12 @@ class WhiteboxRCAEngine:
                 'is_valid': False,
                 'confidence': 'unknown',
                 'evidence_score': 0,
+                'max_evidence_score': 12,
                 'reasons': [f"Ground truth node '{ground_truth_node}' not found in topology"],
-                'verdict': "❌ Ground truth node not found in analysis"
+                'verdict': "❌ Ground truth node not found in analysis",
+                'ground_truth_node': ground_truth_node,
+                'ground_truth_rank': None,
+                'ground_truth_score': 0,
             }
 
         # Score evidence using adaptive thresholds
