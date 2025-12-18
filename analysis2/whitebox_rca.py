@@ -628,12 +628,20 @@ class WhiteboxRCAEngine:
                         # Use RELATIVE thresholds based on distribution, not absolute values
 
                         # SAFEGUARD 1: Severe pod degradation (top 10% of all scores)
-                        # Compare against the distribution of all node scores
+                        # Use pure percentile-based comparison (no magic numbers)
+                        # If a node is in the top 10% of severity, it's significant regardless of absolute value
                         all_scores = [self_scores.get(n, 0.0) for n in self.topology.nodes]
-                        severity_threshold = np.percentile(all_scores, 90) if len(all_scores) > 5 else 20.0
 
-                        if max_severity >= severity_threshold and max_severity > 5.0:
-                            # Don't filter - severe pod is significant relative to others
+                        # For small samples, still use percentile but with more conservative threshold
+                        # Small N: use median (50th percentile) to be less aggressive
+                        # Large N: use 90th percentile for top 10% detection
+                        percentile = 50 if len(all_scores) <= 5 else 90
+                        severity_threshold = np.percentile(all_scores, percentile)
+
+                        if max_severity > severity_threshold:
+                            # Don't filter - in top 10% of severity distribution
+                            # This correctly handles cases where most nodes are healthy (threshold≈0)
+                            # and identifies the most degraded node as significant
                             pass
                         # SAFEGUARD 2: Temporal correlation (statistically significant)
                         # Use relative ranking: top 20% of temporal scores
@@ -656,9 +664,14 @@ class WhiteboxRCAEngine:
                             health_filter_reason = f"Outlier pod detection ({degraded_count} pod(s), {coverage*100:.0f}% coverage) with no service-level symptoms"
 
             # Check nodes with zero symptoms but appearing in rankings due to noise
+            # IMPORTANT: Don't filter nodes with pod-level symptoms (e.g., hot_shard)
+            # Pod-level symptoms ARE real symptoms, even if service-level is 0
+            has_pod_symptoms = health_metadata.get('source') == 'pod-level' and integrated_score > 0
+
             if service_self_score == 0.0 and integrated_score < 1.0:
                 # If no symptoms, no guilt, and no temporal signal, likely healthy
-                if guilt_ratio == 0.0 and temporal_score == 0.0:
+                # EXCEPTION: Don't filter if has pod-level symptoms
+                if guilt_ratio == 0.0 and temporal_score == 0.0 and not has_pod_symptoms:
                     is_healthy = True
                     health_filter_reason = "No symptoms detected"
 
