@@ -14,27 +14,17 @@ import dash
 from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 from data_loader import (list_data_runs, list_episodes, load_episode,
-                          is_rca_run, is_rca_failed, has_failure_analysis,
                           list_scope_directories)
 
 # Import chart modules (will be created)
 from charts.topology import create_topology_chart, extract_zoom_subgraph
 from charts.metrics_overview import create_golden_signals_dashboard
 from charts.component_drilldown import create_component_drilldown
-from charts.fault_propagation import create_fault_propagation_analysis
-from charts.forensic_analysis import create_forensic_analysis
-from charts.failure_analysis import (create_failure_analysis_view,
-                                      create_rca_not_run_message,
-                                      create_rca_success_message)
 from charts.batch_analysis import create_batch_analysis_view
 from charts.whitebox_rca_display import create_whitebox_rca_display
 
 # Add parent directory to path for analysis imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from analysis.propagation_analyzer import analyze_episode
-from analysis.forensic_analyzer import analyze_episode as forensic_analyze_episode
-from analysis.sotaanalyzer.sota_propagation_analyzer import discover_and_validate_rca
-from analyze_failures import FailureAnalyzer
 
 # Configuration
 # Default to ../data relative to this file's location
@@ -680,17 +670,17 @@ app.layout = dbc.Container([
                                     className="mt-4",
                                     style={'width': '100%'}
                                 ),
-                            ], width=2),
+                            ], width=3),
                             dbc.Col([
                                 dbc.Button(
-                                    "🔍 Run RCA Discovery",
-                                    id="batch-rca-discovery-button",
-                                    color="success",
+                                    "🔄 Reprocess RCA (White Box)",
+                                    id="batch-reprocess-rca-button",
+                                    color="warning",
                                     className="mt-4",
                                     style={'width': '100%'}
                                 ),
-                                html.Small("⚠️ May take a long time", className="text-muted d-block text-center")
-                            ], width=2),
+                                html.Small("⚠️ Clears existing results", className="text-muted d-block text-center")
+                            ], width=3),
                             dbc.Col([
                                 dbc.Button(
                                     "📊 Analyze Folder",
@@ -699,14 +689,14 @@ app.layout = dbc.Container([
                                     className="mt-4",
                                     style={'width': '100%'}
                                 ),
-                            ], width=2),
+                            ], width=3),
                         ]),
                         dbc.Row([
                             dbc.Col([
                                 dbc.Spinner(html.Div(id='batch-analysis-status'), size="sm", spinner_class_name="mt-2"),
                             ], width=6),
                             dbc.Col([
-                                dbc.Spinner(html.Div(id='batch-rca-discovery-status'), size="sm", spinner_class_name="mt-2"),
+                                dbc.Spinner(html.Div(id='batch-reprocess-rca-status'), size="sm", spinner_class_name="mt-2"),
                             ], width=6),
                         ], className="mb-2"),
                         dbc.Row([
@@ -723,28 +713,6 @@ app.layout = dbc.Container([
                             ], width=12)
                         ], className="mt-2"),
                         html.Hr(),
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Collapse([
-                                    dbc.Card([
-                                        dbc.CardHeader("🔍 RCA Discovery Output"),
-                                        dbc.CardBody([
-                                            html.Pre(
-                                                id='batch-rca-discovery-output',
-                                                style={
-                                                    'maxHeight': '400px',
-                                                    'overflowY': 'auto',
-                                                    'backgroundColor': '#f8f9fa',
-                                                    'padding': '10px',
-                                                    'fontSize': '12px',
-                                                    'fontFamily': 'monospace'
-                                                }
-                                            )
-                                        ])
-                                    ], className="mb-3")
-                                ], id="batch-rca-discovery-output-collapse", is_open=False)
-                            ])
-                        ]),
                         dbc.Row([
                             dbc.Col([
                                 html.Div(id='batch-analysis-results')
@@ -809,29 +777,18 @@ app.layout = dbc.Container([
         ], width=2),
         dbc.Col([
             dbc.Button(
-                "🔍 Analyze Fault",
-                id="analyze-fault-button",
+                "🔄 Reprocess RCA",
+                id="reprocess-episode-rca-button",
                 color="warning",
-                outline=True,
                 className="mt-4",
                 disabled=True,  # Enabled when episode loaded
                 style={'width': '100%'}
             ),
-        ], width=2),
-        dbc.Col([
-            dbc.Button(
-                "🚨 RCA Failure Analysis",
-                id="analyze-rca-failure-button",
-                color="danger",
-                outline=True,
-                className="mt-4",
-                disabled=True,  # Enabled when episode loaded
-                style={'width': '100%'}
-            ),
+            html.Small("⚠️ Clears existing RCA", className="text-muted d-block text-center", style={'fontSize': '0.7em'})
         ], width=2),
         dbc.Col([
             dbc.Spinner(html.Div(id="loading-status"), size="sm", spinner_class_name="mt-4"),
-        ], width=1),
+        ], width=2),
     ], className="mb-4"),
 
     # Metadata card (hidden until episode loaded)
@@ -976,20 +933,6 @@ app.layout = dbc.Container([
                 ], id="colocation-collapse", is_open=False)
             ], className="shadow-sm")
         ], width=12)
-    ], className="mb-3"),
-
-    # Fault Propagation Analysis Container
-    dbc.Row([
-        dbc.Col([
-            html.Div(id='fault-analysis-container', style={'display': 'none'})
-        ])
-    ], className="mb-3"),
-
-    # RCA Failure Analysis Container
-    dbc.Row([
-        dbc.Col([
-            html.Div(id='rca-failure-analysis-container', style={'display': 'none'})
-        ])
     ], className="mb-3"),
 
     # Whitebox RCA Analysis Container
@@ -1155,101 +1098,13 @@ def load_episode_data(n_clicks, data_run_path, episode_id):
 
 
 @app.callback(
-    Output('analyze-fault-button', 'disabled'),
+    Output('reprocess-episode-rca-button', 'disabled'),
     [Input('episode-data-store', 'data')]
 )
-def enable_analysis_buttons(episode_data):
-    """Enable analysis buttons when episode is loaded"""
+def enable_reprocess_button(episode_data):
+    """Enable reprocess button when episode is loaded"""
     disabled = episode_data is None or len(episode_data) == 0
     return disabled
-
-
-@app.callback(
-    [Output('fault-analysis-container', 'children'),
-     Output('fault-analysis-container', 'style')],
-    [Input('analyze-fault-button', 'n_clicks')],
-    [State('datarun-dropdown', 'value'),
-     State('episode-dropdown', 'value')],
-    prevent_initial_call=True
-)
-def run_fault_analysis(n_clicks, datarun, episode):
-    """Display fault propagation analysis (loads existing pre-computed analysis)"""
-    if not n_clicks or not datarun or not episode:
-        return [], {'display': 'none'}
-
-    try:
-        # Construct episode directory path
-        episode_dir = os.path.join(datarun, episode)
-        fault_analysis_path = os.path.join(episode_dir, 'fault_propagation.json')
-
-        # Check if pre-computed fault propagation analysis exists
-        if not os.path.exists(fault_analysis_path):
-            # No pre-computed analysis available
-            no_analysis_alert = dbc.Alert([
-                html.H5("⚠️ No Analysis Available", className="alert-heading"),
-                html.P("No pre-computed fault propagation analysis found for this episode."),
-                html.P("The analysis is generated during dataset creation. This episode may have been created without analysis enabled.", className="small")
-            ],
-                color="warning",
-                className="mt-3"
-            )
-            return no_analysis_alert, {'display': 'block'}
-
-        # Debug: Print path for troubleshooting
-        print(f"Loading fault propagation analysis from: {fault_analysis_path}")
-
-        # Load and display the existing analysis
-        analysis_view = create_fault_propagation_analysis(episode_dir)
-
-        return analysis_view, {'display': 'block'}
-
-    except Exception as e:
-        import traceback
-        print(f"Error loading fault analysis: {str(e)}")
-        traceback.print_exc()
-
-        error_alert = dbc.Alert([
-            html.H5("Error loading analysis", className="alert-heading"),
-            html.P(f"Error: {str(e)}"),
-            html.Hr(),
-            html.Pre(traceback.format_exc(), style={'fontSize': '0.8em'})
-        ],
-            color="danger",
-            className="mt-3"
-        )
-        return error_alert, {'display': 'block'}
-
-
-# Use clientside callback for tab switching in fault analysis
-app.clientside_callback(
-    """
-    function(active_tab) {
-        if (!active_tab) return [{'display': 'block'}, {'display': 'none'}];
-
-        if (active_tab === 'visual') {
-            return [{'display': 'block'}, {'display': 'none'}];
-        } else {
-            return [{'display': 'none'}, {'display': 'block'}];
-        }
-    }
-    """,
-    [Output('visual-tab', 'style'),
-     Output('raw-tab', 'style')],
-    [Input('analysis-tabs', 'active_tab')]
-)
-
-
-@app.callback(
-    [Output('fault-analysis-container', 'children', allow_duplicate=True),
-     Output('fault-analysis-container', 'style', allow_duplicate=True)],
-    [Input('episode-data-store', 'data')],
-    prevent_initial_call=True
-)
-def reset_fault_analysis_on_load(episode_id):
-    """Reset/hide fault analysis when a new episode is loaded."""
-    # Hide the analysis container when switching episodes
-    # User must click the button to show it
-    return [], {'display': 'none'}
 
 
 @app.callback(
@@ -1299,91 +1154,107 @@ def load_whitebox_rca_on_episode_load(episode_id, datarun):
         return error_alert, {'display': 'block'}
 
 
-# Forensic analysis callbacks removed - use RCA Failure Analysis instead
-
-# @app.callback(
-#     [Output('forensic-analysis-container', 'children'),
-#      Output('forensic-analysis-container', 'style')],
-#     [Input('analyze-forensic-button', 'n_clicks')],
-#     [State('datarun-dropdown', 'value'),
-#      State('episode-dropdown', 'value')],
-#     prevent_initial_call=True
-# )
-def _disabled_run_forensic_analysis(n_clicks, datarun, episode):
-    """Run forensic analysis and display results"""
+@app.callback(
+    [Output('whitebox-rca-container', 'children', allow_duplicate=True),
+     Output('whitebox-rca-container', 'style', allow_duplicate=True),
+     Output('loading-status', 'children', allow_duplicate=True)],
+    [Input('reprocess-episode-rca-button', 'n_clicks')],
+    [State('datarun-dropdown', 'value'),
+     State('episode-dropdown', 'value')],
+    prevent_initial_call=True
+)
+def reprocess_episode_rca(n_clicks, datarun, episode):
+    """Reprocess whitebox RCA for the currently loaded episode."""
     if not n_clicks or not datarun or not episode:
-        return [], {'display': 'none'}
+        raise dash.exceptions.PreventUpdate
+
+    import subprocess
+    import os
+    from pathlib import Path
 
     try:
-        # Construct episode directory path
+        # Get episode directory and convert to absolute path
         episode_dir = os.path.join(datarun, episode)
+        episode_dir_abs = os.path.abspath(episode_dir)
 
-        # Debug: Print path for troubleshooting
-        print(f"Running forensic analysis on: {episode_dir}")
+        if not os.path.exists(episode_dir_abs):
+            error_msg = dbc.Alert([
+                html.H5("❌ Episode Not Found", className="alert-heading"),
+                html.P(f"Episode directory not found: {episode_dir_abs}")
+            ], color="danger")
+            return error_msg, {'display': 'block'}, "❌ Episode not found"
 
-        # Run forensic analysis
-        print("  Running comprehensive forensic analysis...")
-        forensic_report = forensic_analyze_episode(episode_dir)
+        # Get the project root directory
+        viz_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(viz_dir)
 
-        # The analyze_episode function saves to forensic_analysis.json automatically
-        output_path = os.path.join(episode_dir, 'forensic_analysis.json')
-        print(f"  ✅ Forensic analysis saved to: {output_path}")
+        # Find run_rca_batch.py in analysis2 directory
+        script_path = os.path.join(project_root, 'analysis2', 'run_rca_batch.py')
 
-        # Create visualization
-        analysis_view = create_forensic_analysis(episode_dir)
+        # Verify script exists
+        if not os.path.exists(script_path):
+            error_msg = dbc.Alert([
+                html.H5("❌ Script Not Found", className="alert-heading"),
+                html.P(f"run_rca_batch.py not found at: {script_path}")
+            ], color="danger")
+            return error_msg, {'display': 'block'}, "❌ Script not found"
 
-        return analysis_view, {'display': 'block'}
+        # Build command with --reprocess flag
+        # Pass absolute path to avoid relative path issues
+        cmd = ['python3', script_path, episode_dir_abs, '5', '--reprocess']
 
+        # Execute command
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=project_root,
+            timeout=300  # 5 minute timeout for single episode
+        )
+
+        if result.returncode == 0:
+            # Success - reload the RCA analysis using absolute path
+            analysis_view = create_whitebox_rca_display(episode_dir_abs)
+            success_msg = dbc.Alert([
+                html.H5("✅ RCA Reprocessed Successfully", className="alert-heading"),
+                html.P(f"Whitebox RCA has been reprocessed for {episode}"),
+                html.Hr(),
+                html.P("The updated analysis is displayed below.", className="mb-0 small")
+            ], color="success", dismissable=True)
+
+            # Combine success message with the new RCA view
+            combined_view = html.Div([
+                success_msg,
+                analysis_view
+            ])
+
+            return combined_view, {'display': 'block'}, f"✅ RCA reprocessed for {episode}"
+        else:
+            # Error
+            error_msg = dbc.Alert([
+                html.H5("⚠️ RCA Reprocessing Failed", className="alert-heading"),
+                html.P(f"Return code: {result.returncode}"),
+                html.Hr(),
+                html.Pre(result.stdout + "\n" + result.stderr,
+                        style={'fontSize': '0.8em', 'maxHeight': '300px', 'overflow': 'auto'})
+            ], color="warning")
+            return error_msg, {'display': 'block'}, f"⚠️ RCA reprocessing failed"
+
+    except subprocess.TimeoutExpired:
+        error_msg = dbc.Alert([
+            html.H5("❌ Timeout", className="alert-heading"),
+            html.P("RCA reprocessing timed out after 5 minutes")
+        ], color="danger")
+        return error_msg, {'display': 'block'}, "❌ Timeout"
     except Exception as e:
         import traceback
-        print(f"Error in forensic analysis: {str(e)}")
-        traceback.print_exc()
-
-        error_alert = dbc.Alert([
-            html.H5("Error running forensic analysis", className="alert-heading"),
+        error_msg = dbc.Alert([
+            html.H5("❌ Error Reprocessing RCA", className="alert-heading"),
             html.P(f"Error: {str(e)}"),
             html.Hr(),
-            html.Pre(traceback.format_exc(), style={'fontSize': '0.8em'})
-        ],
-            color="danger",
-            className="mt-3"
-        )
-        return error_alert, {'display': 'block'}
-
-
-# @app.callback(
-#     [Output('forensic-analysis-container', 'children', allow_duplicate=True),
-#      Output('forensic-analysis-container', 'style', allow_duplicate=True)],
-#     [Input('episode-data-store', 'data')],
-#     [State('datarun-dropdown', 'value'),
-#      State('episode-dropdown', 'value')],
-#     prevent_initial_call=True
-# )
-def _disabled_auto_load_forensic_analysis(episode_id, datarun, episode):
-    """Automatically load existing forensic analysis when episode is loaded."""
-    if not episode_id or not datarun or not episode:
-        return [], {'display': 'none'}
-
-    try:
-        # Construct episode directory path
-        episode_dir = os.path.join(datarun, episode)
-        forensic_analysis_path = os.path.join(episode_dir, 'forensic_analysis.json')
-
-        # Check if pre-existing forensic analysis exists
-        if os.path.exists(forensic_analysis_path):
-            print(f"Loading existing forensic analysis from: {forensic_analysis_path}")
-
-            # Load and display the existing analysis
-            analysis_view = create_forensic_analysis(episode_dir)
-            return analysis_view, {'display': 'block'}
-        else:
-            # No existing analysis, hide container
-            return [], {'display': 'none'}
-
-    except Exception as e:
-        print(f"Error loading existing forensic analysis: {str(e)}")
-        # Don't show error, just hide container
-        return [], {'display': 'none'}
+            html.Pre(traceback.format_exc(), style={'fontSize': '0.8em', 'maxHeight': '300px', 'overflow': 'auto'})
+        ], color="danger")
+        return error_msg, {'display': 'block'}, f"❌ Error: {str(e)}"
 
 
 @app.callback(
@@ -3675,190 +3546,6 @@ def set_episode_from_url(options_trigger, url_store, options):
     return episode, 1, {}
 
 
-@app.callback(
-    Output('analyze-rca-failure-button', 'disabled'),
-    Input('episode-data-store', 'data')
-)
-def update_rca_failure_button_state(episode_data):
-    """Enable RCA failure analysis button when episode loaded."""
-    return episode_data is None
-
-
-@app.callback(
-    [Output('rca-failure-analysis-container', 'children'),
-     Output('rca-failure-analysis-container', 'style')],
-    [Input('analyze-rca-failure-button', 'n_clicks')],
-    [State('datarun-dropdown', 'value'),
-     State('episode-dropdown', 'value')],
-    prevent_initial_call=True
-)
-def run_rca_failure_analysis(n_clicks, datarun, episode):
-    """Run RCA failure analysis and display results."""
-    import json
-    import networkx as nx
-
-    if not n_clicks or not datarun or not episode:
-        return None, {'display': 'none'}
-
-    try:
-        episode_dir = os.path.join(datarun, episode)
-        print(f"Running RCA failure analysis on: {episode_dir}")
-
-        # Step 0: Validate topology integrity
-        try:
-            from data_loader import load_topology
-            topology_data = load_topology(episode_dir)
-
-            # Build graph to check for integrity issues
-            G = nx.DiGraph()
-            for node in topology_data.get('nodes', []):
-                G.add_node(node['id'])
-
-            # Check edges reference valid nodes
-            invalid_edges = []
-            for edge in topology_data.get('edges', []):
-                source = edge.get('source')
-                target = edge.get('target')
-                if source not in G.nodes:
-                    invalid_edges.append(f"source '{source}' not in nodes")
-                if target not in G.nodes:
-                    invalid_edges.append(f"target '{target}' not in nodes")
-
-            if invalid_edges:
-                error_msg = '; '.join(invalid_edges[:3])  # Show first 3
-                print(f"  ⚠️  Topology integrity issues: {error_msg}")
-
-                return dbc.Alert([
-                    html.H5("⚠️ Topology Data Quality Issue", className="alert-heading"),
-                    html.Hr(),
-                    html.P("This episode has a malformed topology. Some edges reference nodes that don't exist in the node list."),
-                    html.P(html.Strong("Issues detected:")),
-                    html.Ul([html.Li(issue) for issue in invalid_edges[:5]]),
-                    html.Hr(),
-                    html.P([
-                        "This usually happens when:",
-                        html.Br(),
-                        "• The topology was not generated correctly",
-                        html.Br(),
-                        "• Topology filtering removed nodes but not their edges",
-                        html.Br(),
-                        "• There's a bug in the topology generation code"
-                    ], className="small"),
-                    html.P(html.Strong("Recommendation: Skip this episode or regenerate the dataset.")),
-                ], color="warning"), {'display': 'block'}
-
-        except Exception as e:
-            print(f"  ⚠️  Error validating topology: {str(e)}")
-            # Continue anyway - let RCA handle it
-
-        # Step 1: Check if RCA has been run
-        if not is_rca_run(episode_dir):
-            print("  RCA not run yet - running discovery mode...")
-
-            # Run RCA discovery mode
-            try:
-                rca_result = discover_and_validate_rca(
-                    episode_dir=episode_dir,
-                    sample_interval=5,
-                    output_file=os.path.join(episode_dir, 'rca_analysis.json'),
-                    create_marker=True,
-                    top_k=5
-                )
-                print("  ✓ RCA discovery mode completed")
-
-                # Check if it succeeded
-                if rca_result['validation_result']['success']:
-                    # RCA succeeded - show success message
-                    ground_truth = rca_result['validation_result']['ground_truth']
-                    rank = rca_result['validation_result']['rank']
-
-                    return create_rca_success_message(ground_truth, rank), {'display': 'block'}
-
-            except nx.NodeNotFound as e:
-                print(f"  ERROR: Topology issue - {str(e)}")
-                return dbc.Alert([
-                    html.H5("⚠️ Topology Issue", className="alert-heading"),
-                    html.Hr(),
-                    html.P(f"Cannot run RCA due to topology data quality issue:"),
-                    html.P(html.Code(str(e))),
-                    html.Hr(),
-                    html.P("The topology has edges referencing nodes that don't exist. This episode should be skipped or regenerated."),
-                ], color="warning"), {'display': 'block'}
-
-            except Exception as e:
-                print(f"  ERROR running RCA: {str(e)}")
-                import traceback
-                traceback.print_exc()
-
-                return dbc.Alert([
-                    html.H5("Error running RCA", className="alert-heading"),
-                    html.Hr(),
-                    html.P(f"Failed to run RCA discovery mode: {str(e)}"),
-                    html.P(html.Small("Check console for full traceback"))
-                ], color="danger"), {'display': 'block'}
-
-        # Step 2: Check if it's a failure (RCA run but not successful)
-        if not is_rca_failed(episode_dir):
-            # RCA succeeded - show success message
-            marker_file = os.path.join(episode_dir, 'RCAInvestigated.marker')
-            with open(marker_file, 'r') as f:
-                marker_data = json.load(f)
-
-            ground_truth = marker_data.get('ground_truth')
-            rank = marker_data.get('rank', 1)
-
-            return create_rca_success_message(ground_truth, rank), {'display': 'block'}
-
-        # Step 3: RCA failed - run failure analysis
-        print("  RCA failed - running failure analysis...")
-
-        # Check if failure analysis already exists
-        failure_analysis_file = os.path.join(episode_dir, 'failure_analysis.json')
-
-        if has_failure_analysis(episode_dir):
-            print("  Loading existing failure analysis...")
-            with open(failure_analysis_file, 'r') as f:
-                failure_result = json.load(f)
-        else:
-            print("  Running new failure analysis...")
-            analyzer = FailureAnalyzer(episode_dir)
-            failure_result = analyzer.analyze()
-
-            # Save for future use
-            with open(failure_analysis_file, 'w') as f:
-                json.dump(failure_result, f, indent=2)
-
-            print(f"  ✓ Failure analysis saved to: {failure_analysis_file}")
-
-        # Step 4: Display failure analysis
-        analysis_view = create_failure_analysis_view(episode_dir, failure_result)
-
-        return analysis_view, {'display': 'block'}
-
-    except Exception as e:
-        print(f"Error in RCA failure analysis: {str(e)}")
-        import traceback
-        traceback.print_exc()
-
-        return dbc.Alert([
-            html.H5("Error running RCA failure analysis", className="alert-heading"),
-            html.Hr(),
-            html.P(f"An error occurred: {str(e)}"),
-            html.P("Check console for details.")
-        ], color="danger"), {'display': 'block'}
-
-
-@app.callback(
-    [Output('rca-failure-analysis-container', 'children', allow_duplicate=True),
-     Output('rca-failure-analysis-container', 'style', allow_duplicate=True)],
-    [Input('episode-dropdown', 'value')],
-    prevent_initial_call=True
-)
-def reset_rca_failure_analysis(_):
-    """Hide RCA failure analysis when episode changes."""
-    return None, {'display': 'none'}
-
-
 # ============================================================================
 # BATCH ANALYSIS CALLBACKS
 # ============================================================================
@@ -3890,17 +3577,21 @@ def toggle_successful_cases_collapse(n_clicks, is_open):
 
 
 @app.callback(
-    Output('batch-quick-select', 'options'),
+    [Output('batch-quick-select', 'options'),
+     Output('batch-quick-select', 'value'),
+     Output('batch-folder-input', 'value', allow_duplicate=True)],
     [Input('batch-refresh-button', 'n_clicks'),
      Input('batch-analysis-collapse', 'is_open')],
-    prevent_initial_call=False
+    prevent_initial_call='initial_duplicate'
 )
 def update_batch_folder_options(n_clicks, is_open):
-    """Discover folders in data directory that contain episodes or datasets."""
+    """Discover folders in data directory that contain episodes or datasets.
+    Auto-selects the latest batch_run_xxx folder."""
     import os
     from pathlib import Path
 
     folders = []
+    latest_batch_run = None
 
     # Add batch_run if it exists
     batch_run_path = os.path.join(BASE_DATA_DIR, 'batch_run')
@@ -3912,16 +3603,28 @@ def update_batch_folder_options(n_clicks, is_open):
             'value': 'data/batch_run'
         })
 
-        # Add individual batch datasets
-        for item in sorted(os.listdir(batch_run_path), reverse=True):
+        # Add individual batch datasets and find the latest one
+        batch_datasets = []
+        for item in os.listdir(batch_run_path):
             item_path = os.path.join(batch_run_path, item)
             if os.path.isdir(item_path):
                 ep_dirs = [d for d in os.listdir(item_path) if d.startswith('ep_') and os.path.isdir(os.path.join(item_path, d))]
                 if ep_dirs:
-                    folders.append({
-                        'label': f'  └─ {item} ({len(ep_dirs)} episodes)',
-                        'value': f'data/batch_run/{item}'
-                    })
+                    batch_datasets.append((item, len(ep_dirs)))
+
+        # Sort datasets by name (which includes timestamp) in reverse order (latest first)
+        batch_datasets.sort(reverse=True)
+
+        # Set the latest batch_run_xxx as the default
+        if batch_datasets:
+            latest_batch_run = f'data/batch_run/{batch_datasets[0][0]}'
+
+        # Add all batch datasets to the dropdown
+        for item, ep_count in batch_datasets:
+            folders.append({
+                'label': f'  └─ {item} ({ep_count} episodes)',
+                'value': f'data/batch_run/{item}'
+            })
 
     # Add test_batch if it exists
     test_batch_path = os.path.join(BASE_DATA_DIR, 'test_batch')
@@ -3948,7 +3651,8 @@ def update_batch_folder_options(n_clicks, is_open):
                         'value': f'data/{item}'
                     })
 
-    return folders
+    # Return options and auto-select the latest batch_run folder
+    return folders, latest_batch_run, latest_batch_run
 
 
 @app.callback(
@@ -4137,17 +3841,16 @@ def analyze_batch_folder(n_clicks, folder_path):
 
 
 @app.callback(
-    [Output('batch-rca-discovery-output', 'children'),
-     Output('batch-rca-discovery-status', 'children'),
-     Output('batch-rca-discovery-output-collapse', 'is_open')],
-    [Input('batch-rca-discovery-button', 'n_clicks')],
+    [Output('batch-reprocess-rca-status', 'children'),
+     Output('batch-analysis-results', 'children', allow_duplicate=True)],
+    [Input('batch-reprocess-rca-button', 'n_clicks')],
     [State('batch-folder-input', 'value')],
     prevent_initial_call=True
 )
-def run_batch_rca_discovery(n_clicks, folder_path):
-    """Run batch_rca_discovery.py on specified folder and capture output."""
+def reprocess_batch_rca(n_clicks, folder_path):
+    """Run run_rca_batch.py with --reprocess flag to clear and rerun whitebox RCA."""
     if not n_clicks:
-        return "", "", False
+        return "", html.Div()
 
     import os
     import subprocess
@@ -4155,7 +3858,7 @@ def run_batch_rca_discovery(n_clicks, folder_path):
     from pathlib import Path
 
     if not folder_path:
-        return "Error: Please specify a folder path", html.Span("❌ No folder specified", className="text-danger"), True
+        return html.Span("❌ Please specify a folder path", className="text-danger"), html.Div()
 
     # Resolve path - handle both absolute and relative paths
     if os.path.isabs(folder_path):
@@ -4169,86 +3872,91 @@ def run_batch_rca_discovery(n_clicks, folder_path):
         analysis_path = os.path.join(BASE_DATA_DIR, relative_path)
         folder_display = folder_path.replace('data/', '').replace('\\', '/')
 
-    # Ensure we have an absolute path
-    analysis_path = os.path.abspath(analysis_path)
+    # Convert to absolute path to avoid relative path issues
+    analysis_path_abs = os.path.abspath(analysis_path)
 
-    if not os.path.exists(analysis_path):
-        return (
-            f"Error: Folder not found: {analysis_path}\nBASE_DATA_DIR: {BASE_DATA_DIR}\nfolder_path: {folder_path}",
-            html.Span("❌ Folder not found", className="text-danger"),
-            True
-        )
+    if not os.path.exists(analysis_path_abs):
+        return html.Span(f"❌ Folder not found: {analysis_path_abs}", className="text-danger"), html.Div()
 
     try:
-        # Prepare log file path
-        log_filename = f"rca_discovery_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-        log_path = os.path.join(analysis_path, log_filename)
-
-        # Run batch_rca_discovery.py
-        # Get the project root directory (parent of viz/)
+        # Get the project root directory
         viz_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(viz_dir)
-        script_path = os.path.join(project_root, 'batch_rca_discovery.py')
+
+        # Find run_rca_batch.py in analysis2 directory
+        script_path = os.path.join(project_root, 'analysis2', 'run_rca_batch.py')
 
         # Verify script exists
         if not os.path.exists(script_path):
-            return (
-                f"Error: Script not found at {script_path}\nviz_dir: {viz_dir}\nproject_root: {project_root}",
-                html.Span("❌ Script not found", className="text-danger"),
-                True
-            )
+            return html.Span(f"❌ Script not found: {script_path}", className="text-danger"), html.Div()
 
-        cmd = ['python3', script_path, analysis_path]
+        # Build command with --reprocess flag using absolute path
+        cmd = ['python3', script_path, analysis_path_abs, '5', '--reprocess']
+
+        # Create progress message
+        progress_msg = html.Div([
+            dbc.Spinner(size="sm"),
+            html.Span(f" Reprocessing RCA for {folder_display}... This may take several minutes.", className="text-info ms-2")
+        ])
 
         # Execute command and capture output
-        # Note: This will block until completion, which may take a long time
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            cwd=project_root,  # Run from project root
+            cwd=project_root,
             timeout=3600  # 1 hour timeout
         )
 
         # Combine stdout and stderr
-        output = result.stdout if result.stdout else "No output generated"
+        output = result.stdout if result.stdout else ""
         if result.stderr:
             output += "\n\n=== STDERR ===\n" + result.stderr
 
-        # Ensure we have some output to display
-        if not output.strip():
-            output = f"RCA Discovery process completed but produced no output.\nReturn code: {result.returncode}\nCommand: {' '.join(cmd)}"
-
-        # Save output to log file
-        with open(log_path, 'w') as f:
-            f.write(f"RCA Discovery Log - {datetime.datetime.now()}\n")
-            f.write(f"Folder: {analysis_path}\n")
-            f.write(f"Command: {' '.join(cmd)}\n")
-            f.write(f"Return Code: {result.returncode}\n")
-            f.write("=" * 80 + "\n\n")
-            f.write(output)
-
         # Prepare status message
         if result.returncode == 0:
+            # Count the results using absolute path
+            rca_files = list(Path(analysis_path_abs).rglob('rca_analysis.json'))
             status_msg = html.Span(
-                f"✅ RCA Discovery completed for {folder_display} (log: {log_filename})",
+                f"✅ Reprocessed {len(rca_files)} episodes for {folder_display}",
                 className="text-success"
             )
+
+            # Show summary output in a collapsible section
+            result_display = html.Div([
+                dbc.Alert([
+                    html.H5("✅ Reprocess Completed", className="alert-heading"),
+                    html.P(f"Successfully reprocessed RCA for {folder_display}"),
+                    html.P(f"Total episodes processed: {len(rca_files)}", className="mb-0"),
+                    html.Hr(),
+                    html.Small("Click 'Analyze Folder' to view updated results.", className="text-muted")
+                ], color="success")
+            ])
         else:
             status_msg = html.Span(
-                f"⚠️ RCA Discovery completed with return code {result.returncode} for {folder_display} (log: {log_filename})",
+                f"⚠️ Reprocess completed with errors (return code {result.returncode})",
                 className="text-warning"
             )
+            result_display = html.Div([
+                dbc.Alert([
+                    html.H5("⚠️ Reprocess Completed with Errors", className="alert-heading"),
+                    html.Pre(output[:2000], style={'fontSize': '0.8em', 'maxHeight': '300px', 'overflow': 'auto'})
+                ], color="warning")
+            ])
 
-        return output, status_msg, True
+        return status_msg, result_display
 
     except subprocess.TimeoutExpired:
-        error_msg = "Error: RCA Discovery timed out after 1 hour"
-        return error_msg, html.Span("❌ Timeout", className="text-danger"), True
+        return html.Span("❌ Reprocess timed out after 1 hour", className="text-danger"), html.Div()
     except Exception as e:
         import traceback
-        error_msg = f"Error running RCA Discovery: {str(e)}\n\n{traceback.format_exc()}"
-        return error_msg, html.Span("❌ Error", className="text-danger"), True
+        error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+        return html.Span(f"❌ Error: {str(e)}", className="text-danger"), html.Div([
+            dbc.Alert([
+                html.H5("❌ Reprocess Error", className="alert-heading"),
+                html.Pre(error_msg, style={'fontSize': '0.8em', 'maxHeight': '300px', 'overflow': 'auto'})
+            ], color="danger")
+        ])
 
 
 if __name__ == '__main__':
