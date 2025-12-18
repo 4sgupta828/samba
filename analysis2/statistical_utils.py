@@ -99,7 +99,7 @@ def detect_changepoint(data: np.ndarray) -> bool:
     if std_b == 0: return abs(mean_a - mean_b) > 0
     return abs(mean_a - mean_b) > 3 * std_b
 
-def compare_distributions(baseline: np.ndarray, current: np.ndarray, alpha=0.05) -> StatResult:
+def compare_distributions(baseline: np.ndarray, current: np.ndarray, alpha=0.05, cv_threshold=0.5) -> StatResult:
     """
     SOTA Comparison with STRICT statistical rigor to prevent false positives.
 
@@ -112,8 +112,14 @@ def compare_distributions(baseline: np.ndarray, current: np.ndarray, alpha=0.05)
 
     STRICT criteria:
     - Requires BOTH statistical significance (p < alpha) AND meaningful effect size (d > 0.5)
-    - Validates baseline is stable before comparison
+    - Validates baseline is stable before comparison (CV < cv_threshold)
     - Higher minimum effect size than standard (0.5 instead of 0.2)
+
+    Args:
+        baseline: Baseline period samples
+        current: Current period samples
+        alpha: Significance level (default 0.05)
+        cv_threshold: Maximum CV for baseline stability (default 0.5, use higher for naturally variable metrics like queues)
     """
     # Clean NaNs
     baseline = baseline[~np.isnan(baseline)]
@@ -125,13 +131,14 @@ def compare_distributions(baseline: np.ndarray, current: np.ndarray, alpha=0.05)
 
     # 1. Baseline Stability Check (CRITICAL for avoiding false positives)
     # If baseline is too noisy, we can't reliably detect real changes
-    # A high CV (>0.5) means baseline is unstable - reject comparison
+    # NOTE: Queue metrics naturally have higher variance (messages fluctuate)
+    # Use cv_threshold=1.0 or higher for queue metrics
     baseline_mean = np.mean(baseline)
     baseline_std = np.std(baseline)
 
     if baseline_mean != 0:
         baseline_cv = baseline_std / abs(baseline_mean)
-        if baseline_cv > 0.5:
+        if baseline_cv > cv_threshold:
             # Baseline too unstable - any "change" is likely just noise
             return StatResult(False, 1.0, 0.0, 'unstable_baseline', confidence='very_low')
 

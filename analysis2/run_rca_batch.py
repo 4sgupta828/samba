@@ -61,12 +61,16 @@ METRIC_MAP = {
     'dependency.request_rate': 'outbound_rps',
     '.dependency.requests': 'outbound_rps',  # Matches service.X.dependency.requests
 
-    # Queue Signals
+    # Queue Signals - KEEP ORTHOGONAL METRICS SEPARATE!
+    # visible = messages waiting in queue (backlog)
+    # in_flight = messages being processed (processing delay)
     'queue.depth': 'queue_depth',
     'queue_depth': 'queue_depth',
     'queue.size': 'queue_depth',
-    'mq.messages.visible': 'queue_depth',  # RabbitMQ-style queue depth
-    'mq.messages.in_flight': 'queue_depth',
+    'mq.messages.visible': 'queue_depth',  # Backlog waiting in queue
+    'mq.messages.in_flight': 'queue_in_flight',  # Messages being processed (SEPARATE!)
+    'mq.messages.age_seconds': 'queue_age',  # Staleness indicator
+    'mq.queue.utilization': 'queue_utilization',  # Capacity pressure
     'queue.lag': 'queue_lag',
     'queue_lag': 'queue_lag',
     'consumer.lag': 'queue_lag'

@@ -37,7 +37,12 @@ class SelfHealthAnalyzer:
 
         # Performance degradation metrics (latency, errors, queue)
         self.performance_metrics = [
-            'avg_latency', 'internal_error_rate', 'queue_depth', 'queue_lag'
+            'avg_latency', 'internal_error_rate',
+            'queue_depth',       # Backlog waiting in queue
+            'queue_in_flight',   # Messages being processed
+            'queue_age',         # Staleness indicator
+            'queue_utilization', # Capacity pressure
+            'queue_lag'
         ]
 
     def analyze(self, node_id: str, node_type: str, 
@@ -109,20 +114,37 @@ class SelfHealthAnalyzer:
                 else:
                     performance_score = max(performance_score, 6.0)
 
-        # Check Queue Depth/Lag Increase (with rate imbalance analysis)
-        for queue_metric in ['queue_depth', 'queue_lag']:
+        # Check Queue Metrics (depth, in_flight, age, utilization, lag)
+        # These are orthogonal metrics that indicate different problems
+        # NOTE: Queue metrics naturally have higher variance (messages fluctuate)
+        # Use relaxed CV threshold (1.0) to avoid rejecting legitimate signals
+        for queue_metric in ['queue_depth', 'queue_in_flight', 'queue_age', 'queue_utilization', 'queue_lag']:
             if queue_metric in current and queue_metric in baseline:
-                q_stat = compare_distributions(baseline[queue_metric], current[queue_metric])
-                if q_stat.significant and q_stat.effect_size > 1.5:
-                    # Queues are passive buffers - check if this is a real queue problem
+                q_stat = compare_distributions(baseline[queue_metric], current[queue_metric], cv_threshold=1.0)
+                # Note: effect_size is Cohen's d (standardized), not ratio
+                # Cohen's d: 0.2=small, 0.5=medium, 0.8=large
+                # Use threshold of 0.5 (medium effect) for queue metrics
+                if q_stat.significant and abs(q_stat.effect_size) >= 0.5:
+                    # Different queue metrics indicate different problems:
+                    # - queue_depth: backlog building (slow consumer OR fast producer)
+                    # - queue_in_flight: processing delay (slow consumer processing)
+                    # - queue_age: messages not consumed fast enough
+                    # - queue_utilization: capacity pressure (undersized queue)
+
+                    # For queue_depth and queue_lag, check if this is a real queue problem
                     # or just normal buffering due to producer/consumer rate imbalance
-                    is_queue_fault = self._analyze_queue_rate_imbalance(
-                        node_id, node_type, baseline, current, q_stat.effect_size
-                    )
+                    if queue_metric in ['queue_depth', 'queue_lag']:
+                        is_queue_fault = self._analyze_queue_rate_imbalance(
+                            node_id, node_type, baseline, current, q_stat.effect_size
+                        )
+                    else:
+                        # For in_flight, age, utilization: always treat as queue symptoms
+                        # These directly indicate queue/consumer issues
+                        is_queue_fault = (node_type in ['queue', 'MessageQueue'])
 
                     if is_queue_fault:
-                        # True queue problem: capacity limits, failures, queue-level latency
-                        symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f}) - QUEUE FAULT")
+                        # True queue problem: capacity limits, failures, queue-level latency, processing delay
+                        symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f})")
                         max_effect_size = max(max_effect_size, q_stat.effect_size)
 
                         # Queue fault is strong evidence
@@ -136,8 +158,6 @@ class SelfHealthAnalyzer:
                         symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f}) - buffering (producer/consumer imbalance)")
                         # Don't score this as queue's problem - just context info
                         performance_score = max(performance_score, min(2.0, q_stat.effect_size * 0.3))
-
-                    break  # Only report once for queue metrics
 
         # 3. Check for "Limp Mode" / Deadlock Patterns
         lat_stat = self._check_metric('avg_latency', baseline, current)
