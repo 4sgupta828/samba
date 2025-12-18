@@ -32,6 +32,63 @@ class CausalGraphReasoner:
     def __init__(self, topology: nx.DiGraph):
         self.topology = topology
 
+    def _is_queue_node(self, node_id: str) -> bool:
+        """Check if a node is a queue/message broker."""
+        if node_id not in self.topology.nodes:
+            return False
+
+        node_data = self.topology.nodes[node_id]
+        node_type = node_data.get('type', '')
+        node_role = node_data.get('role', '')
+
+        # Check if this is a queue node
+        return node_type == 'MessageQueue' or node_role == 'queue' or 'queue' in node_id.lower()
+
+    def _has_queue_fault(self, queue_id: str, health_scores: Dict) -> bool:
+        """
+        Check if a queue has a real fault (not just normal buffering).
+
+        A queue has a real fault if:
+        1. Capacity limits hit (near max capacity)
+        2. Queue failures (message drops, connection issues)
+        3. Queue-level latency (slow queue operations affecting all clients)
+
+        Returns True if the queue itself is broken, False if just buffering.
+        """
+        if queue_id not in health_scores:
+            return False
+
+        health = health_scores[queue_id]
+        symptoms = health.symptoms
+
+        # Check symptoms for real queue faults
+        for symptom in symptoms:
+            symptom_lower = symptom.lower()
+
+            # Real queue faults (marked by our symptom detector)
+            if 'queue fault' in symptom_lower:
+                return True
+
+            # Capacity saturation
+            if 'capacity' in symptom_lower or 'saturation' in symptom_lower:
+                return True
+
+            # Queue errors/failures
+            if 'error' in symptom_lower and 'queue' in symptom_lower:
+                return True
+
+            # Queue-level latency (not just depth increase)
+            if 'latency' in symptom_lower and 'queue' in symptom_lower:
+                return True
+
+        # If only symptom is "buffering (producer/consumer imbalance)", not a queue fault
+        for symptom in symptoms:
+            if 'buffering' in symptom.lower() and 'imbalance' in symptom.lower():
+                return False
+
+        # Default: If queue has symptoms but none of the above, conservatively say no fault
+        return False
+
     def validate_edge(self, callee: str, caller: str,
                      baseline: Dict, current: Dict,
                      health_scores: Dict) -> Tuple[float, str]:
@@ -80,7 +137,14 @@ class CausalGraphReasoner:
         return results
 
     def _trace_blast_radius(self, root: str, health_scores, baseline, current) -> CausalHypothesis:
-        """Walks the graph upstream to find explained nodes."""
+        """
+        Walks the graph upstream to find explained nodes.
+
+        Queue-aware propagation:
+        - Skips queues as intermediate nodes in blast radius UNLESS the queue itself has real issues
+        - Queues are passive buffers, not active components that cause faults
+        - Only includes queues if they have: capacity limits, failures, or queue-level latency
+        """
         h = CausalHypothesis(
             root_cause_node=root,
             coverage_score=0.0
@@ -102,7 +166,18 @@ class CausalGraphReasoner:
             callers = list(self.topology.predecessors(curr))
 
             for caller in callers:
-                if caller in visited: continue
+                if caller in visited:
+                    continue
+
+                # Check if caller is a queue - if so, apply queue-aware logic
+                if self._is_queue_node(caller):
+                    # Only include queue in blast radius if it has real issues
+                    if not self._has_queue_fault(caller, health_scores):
+                        # Queue is just buffering normally - skip it and continue to producers/consumers
+                        # Don't add to explained_nodes, but mark as visited to avoid loops
+                        visited.add(caller)
+                        h.narrative.append(f"  -> Skipped queue {caller} (normal buffering)")
+                        continue
 
                 link = self._verify_propagation(curr, caller, baseline, current, health_scores)
 

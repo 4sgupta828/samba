@@ -923,13 +923,26 @@ def revert_noisy_neighbor(component, params: Dict[str, Any]):
 
 def hot_shard(component: Service, params: Dict[str, Any]):
     """
-    Simulates hot shard by skewing traffic to a specific pod.
+    Simulates hot shard by injecting expensive processing on a specific pod.
+
+    Models a scenario where one shard (e.g., large tenant, celebrity user, complex dataset)
+    is significantly more expensive to process than others, causing the pod handling
+    that shard to become saturated and trigger downstream faults.
+
+    This fault:
+    1. Skews traffic to a specific pod (optional, via skew_factor)
+    2. Injects per-request processing cost (CPU + latency) on that pod
+    3. Ensures the pod reaches saturation (~80-90% capacity utilization)
+    4. Triggers observable downstream symptoms: latency spikes, errors, reduced RPS
 
     Args:
-        component: The Service to apply traffic skew to
+        component: The Service to apply hot shard to
         params:
             - target_pod_index (int or 'random'): Which pod to make hot
-            - skew_factor (float, e.g., 0.8 for 80%): How much traffic to send to hot pod
+            - skew_factor (float, 0.5-0.8): Traffic distribution to hot pod [default: 0.6]
+            - cpu_multiplier (float): CPU cost multiplier [default: auto-calculated]
+            - shard_latency_ms (float): Additional latency per request [default: auto-calculated]
+            - target_utilization (float): Target pod utilization [default: 0.85]
     """
     if not isinstance(component, Service):
         component._emit_log("WARN", "hot_shard can only be applied to Service components.")
@@ -940,7 +953,8 @@ def hot_shard(component: Service, params: Dict[str, Any]):
         return
 
     target_pod_index = params.get("target_pod_index", 0)
-    skew_factor = params.get("skew_factor", 0.8)
+    skew_factor = params.get("skew_factor", 0.6)
+    target_utilization = params.get("target_utilization", 0.85)
 
     # Support random pod selection
     if target_pod_index == 'random':
@@ -955,7 +969,11 @@ def hot_shard(component: Service, params: Dict[str, Any]):
     # Identify the hot shard pod
     hot_pod = component.pods[target_pod_index]
 
-    # Build traffic weights
+    if not hasattr(hot_pod, 'dynamics') or hot_pod.dynamics is None:
+        component._emit_log("ERROR", f"Hot pod {hot_pod.id} does not have dynamics engine")
+        return
+
+    # Build traffic weights (skew traffic to hot pod)
     num_pods = len(component.pods)
     remaining_weight = 1.0 - skew_factor
     other_weight = remaining_weight / (num_pods - 1) if num_pods > 1 else 0.0
@@ -967,15 +985,102 @@ def hot_shard(component: Service, params: Dict[str, Any]):
         else:
             component.traffic_weights[pod.id] = other_weight
 
-    component._emit_log("WARN", f"Hot shard: {skew_factor*100:.0f}% traffic to pod {hot_pod.id}")
+    # Calculate processing cost to inject to reach target utilization
+    # Strategy: Increase per-request cost so the hot pod reaches saturation
+
+    # Get current pod state
+    current_cpu = hot_pod.dynamics.cpu_percent if hasattr(hot_pod.dynamics, 'cpu_percent') else 30.0
+    current_thread_util = (hot_pod.thread_pool.count / hot_pod.thread_pool.capacity) if hot_pod.thread_pool.capacity > 0 else 0.5
+
+    # Calculate how much to increase load to reach target utilization
+    # If we're sending skew_factor of traffic to this pod, we need to ensure it saturates
+    # CPU multiplier: Scale based on how much more traffic this pod will handle
+    baseline_traffic_share = 1.0 / num_pods
+    traffic_increase_factor = skew_factor / baseline_traffic_share  # e.g., 0.6 / 0.33 = 1.8x
+
+    # Calculate required CPU multiplier to reach target utilization
+    # New CPU = current_cpu * traffic_increase_factor * cpu_multiplier
+    # We want: current_cpu * traffic_increase_factor * cpu_multiplier >= target_utilization * 100
+    required_cpu = target_utilization * 100.0  # e.g., 85%
+    available_headroom = max(10.0, required_cpu - current_cpu)  # At least 10% headroom
+
+    # CPU multiplier accounts for traffic increase + extra shard cost
+    if 'cpu_multiplier' in params:
+        cpu_multiplier = params['cpu_multiplier']
+    else:
+        # Auto-calculate: Need enough multiplier to reach target after traffic skew
+        # If current CPU is 30% and we're sending 1.8x traffic, we'd reach 54%
+        # To reach 85%, we need: 85 / 54 = 1.57x more CPU cost
+        effective_cpu_with_traffic = current_cpu * traffic_increase_factor
+        if effective_cpu_with_traffic < required_cpu:
+            cpu_multiplier = required_cpu / max(effective_cpu_with_traffic, 10.0)
+        else:
+            cpu_multiplier = 1.5  # Add some shard cost even if already saturated
+
+    # Clamp cpu_multiplier to reasonable range
+    cpu_multiplier = max(1.5, min(cpu_multiplier, 5.0))
+
+    # Calculate latency injection (models expensive shard processing)
+    if 'shard_latency_ms' in params:
+        shard_latency_ms = params['shard_latency_ms']
+    else:
+        # Base latency + scaling with CPU multiplier
+        # Higher CPU cost → more scheduler contention → more latency
+        base_shard_latency = 50.0  # Base: 50ms for expensive shard
+        shard_latency_ms = base_shard_latency * (cpu_multiplier ** 0.7)  # Sublinear scaling
+
+    # Clamp latency to reasonable range
+    shard_latency_ms = max(30.0, min(shard_latency_ms, 500.0))
+
+    # Apply processing cost to hot pod
+    if not hasattr(hot_pod, 'baseline_cpu_multiplier'):
+        hot_pod.baseline_cpu_multiplier = 1.0
+
+    hot_pod.cpu_cost_multiplier = cpu_multiplier
+    hot_pod.dynamics.fault_latency_additive_ms = shard_latency_ms
+
+    # Set CPU floor to ensure pod shows saturation symptoms
+    target_cpu_floor = min(required_cpu, 90.0)
+    hot_pod.dynamics.fault_cpu_floor_percent = target_cpu_floor
+
+    # Store fault params for revert
+    hot_pod._hot_shard_params = {
+        'cpu_multiplier': cpu_multiplier,
+        'latency_ms': shard_latency_ms,
+        'cpu_floor': target_cpu_floor
+    }
+
+    component._emit_log("WARN",
+        f"Hot shard: Pod {hot_pod.id} | "
+        f"traffic={skew_factor*100:.0f}% | "
+        f"CPU_mult={cpu_multiplier:.2f}x | "
+        f"latency=+{shard_latency_ms:.0f}ms | "
+        f"target_CPU={target_cpu_floor:.0f}% | "
+        f"Expected to trigger saturation and downstream faults")
 
 def revert_hot_shard(component: Service, params: Dict[str, Any]):
-    """Revert hot shard by resetting traffic weights to uniform."""
+    """Revert hot shard by resetting traffic weights and removing processing cost."""
     if not isinstance(component, Service):
         return
 
+    # Reset traffic weights to uniform distribution
     component.traffic_weights = {}
-    component._emit_log("INFO", "Hot shard reverted - uniform traffic distribution")
+
+    # Find and revert the hot pod
+    for pod in component.pods:
+        if hasattr(pod, '_hot_shard_params'):
+            # Revert processing cost injection
+            if hasattr(pod, 'cpu_cost_multiplier'):
+                pod.cpu_cost_multiplier = 1.0
+            if hasattr(pod, 'dynamics') and pod.dynamics:
+                pod.dynamics.fault_latency_additive_ms = 0.0
+                pod.dynamics.fault_cpu_floor_percent = 0.0
+
+            # Clean up tracking
+            del pod._hot_shard_params
+            component._emit_log("INFO", f"Hot shard reverted for pod {pod.id}")
+
+    component._emit_log("INFO", "Hot shard reverted - uniform traffic distribution and processing cost")
 
 def network_partition(component: NetworkLink, params: Dict[str, Any]):
     """

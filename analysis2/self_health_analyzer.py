@@ -109,19 +109,34 @@ class SelfHealthAnalyzer:
                 else:
                     performance_score = max(performance_score, 6.0)
 
-        # Check Queue Depth/Lag Increase
+        # Check Queue Depth/Lag Increase (with rate imbalance analysis)
         for queue_metric in ['queue_depth', 'queue_lag']:
             if queue_metric in current and queue_metric in baseline:
                 q_stat = compare_distributions(baseline[queue_metric], current[queue_metric])
                 if q_stat.significant and q_stat.effect_size > 1.5:
-                    symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f})")
-                    max_effect_size = max(max_effect_size, q_stat.effect_size)
+                    # Queues are passive buffers - check if this is a real queue problem
+                    # or just normal buffering due to producer/consumer rate imbalance
+                    is_queue_fault = self._analyze_queue_rate_imbalance(
+                        node_id, node_type, baseline, current, q_stat.effect_size
+                    )
 
-                    # Queue buildup is evidence of bottleneck
-                    if q_stat.effect_size > 3.0:
-                        performance_score = max(performance_score, 10.0)
+                    if is_queue_fault:
+                        # True queue problem: capacity limits, failures, queue-level latency
+                        symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f}) - QUEUE FAULT")
+                        max_effect_size = max(max_effect_size, q_stat.effect_size)
+
+                        # Queue fault is strong evidence
+                        if q_stat.effect_size > 3.0:
+                            performance_score = max(performance_score, 10.0)
+                        else:
+                            performance_score = max(performance_score, min(10.0, q_stat.effect_size * 2.5))
                     else:
-                        performance_score = max(performance_score, min(10.0, q_stat.effect_size * 2.5))
+                        # Normal buffering - queue is working as intended
+                        # Downweight this symptom significantly (it's not a queue problem)
+                        symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f}) - buffering (producer/consumer imbalance)")
+                        # Don't score this as queue's problem - just context info
+                        performance_score = max(performance_score, min(2.0, q_stat.effect_size * 0.3))
+
                     break  # Only report once for queue metrics
 
         # 3. Check for "Limp Mode" / Deadlock Patterns
@@ -167,3 +182,84 @@ class SelfHealthAnalyzer:
             return compare_distributions(baseline[name], current[name])
         # Return dummy result if missing
         return type('obj', (object,), {'effect_size': 0.0, 'significant': False})
+
+    def _analyze_queue_rate_imbalance(self, node_id: str, node_type: str,
+                                       baseline: Dict, current: Dict,
+                                       queue_depth_effect_size: float) -> bool:
+        """
+        Analyzes whether queue depth increase is due to:
+        1. Queue itself having problems (capacity, failures) → TRUE (queue fault)
+        2. Normal buffering due to producer/consumer rate imbalance → FALSE (not queue's fault)
+
+        Returns:
+            True if queue itself is faulty (should be marked as root cause candidate)
+            False if queue is just buffering normally (producer or consumer is the problem)
+        """
+        # Only apply this analysis to queue nodes
+        if node_type not in ['queue', 'MessageQueue']:
+            return False  # Not a queue, treat normally
+
+        # Get queue metrics
+        curr_queue_depth = np.mean(current.get('queue_depth', np.array([0])))
+        base_queue_depth = np.mean(baseline.get('queue_depth', np.array([0])))
+
+        # Check for queue-specific faults
+        # 1. Queue capacity saturation (near max capacity)
+        limits = self.config_extractor.get_limits_for_node(node_id, node_type)
+        max_queue_capacity = limits.get('max_queue_depth', float('inf'))
+
+        if max_queue_capacity < float('inf') and curr_queue_depth > max_queue_capacity * 0.9:
+            # Queue is at capacity - this IS a queue problem (undersized)
+            return True
+
+        # 2. Check for queue failures/errors
+        # If queue has errors (message drops, connection failures), it's a queue problem
+        if 'internal_error_rate' in current:
+            curr_err_rate = np.mean(current['internal_error_rate'])
+            if curr_err_rate > 0.01:  # >1% error rate
+                return True
+
+        # 3. Check for producer/consumer rate imbalance
+        # If we have producer and consumer rate metrics, analyze them
+        producer_rate_curr = np.mean(current.get('producer_rate', np.array([0])))
+        consumer_rate_curr = np.mean(current.get('consumer_rate', np.array([0])))
+        producer_rate_base = np.mean(baseline.get('producer_rate', np.array([0])))
+        consumer_rate_base = np.mean(baseline.get('consumer_rate', np.array([0])))
+
+        # If we have rate data, analyze imbalance
+        if producer_rate_curr > 0 or consumer_rate_curr > 0:
+            # Rate imbalance: producer producing much faster than consumer consuming
+            rate_ratio = producer_rate_curr / max(consumer_rate_curr, 0.1)
+
+            if rate_ratio > 1.5:
+                # Producer is overwhelming consumer - this is normal buffering
+                # The problem is with producer (too fast) or consumer (too slow)
+                # NOT the queue itself
+                return False
+
+            if consumer_rate_curr < consumer_rate_base * 0.5:
+                # Consumer slowed down significantly - consumer problem, not queue
+                return False
+
+            if producer_rate_curr > producer_rate_base * 1.5:
+                # Producer sped up significantly - producer problem, not queue
+                return False
+
+        # 4. Check for queue-level latency affecting all operations
+        # If the queue itself has high latency (e.g., slow disk, network issues),
+        # this would affect ALL producers and consumers
+        if 'avg_latency' in current and 'avg_latency' in baseline:
+            lat_stat = compare_distributions(baseline['avg_latency'], current['avg_latency'])
+            if lat_stat.significant and lat_stat.effect_size > 2.0:
+                # Queue operations themselves are slow - this IS a queue problem
+                return True
+
+        # 5. Default: If queue depth is extremely high but none of the above apply,
+        # conservatively assume it's buffering (not queue fault)
+        # However, if queue depth is VERY high (effect_size > 4.0), it might be undersized
+        if queue_depth_effect_size > 4.0 and curr_queue_depth > 1000:
+            # Extremely high queue depth - likely undersized queue
+            return True
+
+        # Default: Normal buffering, not a queue fault
+        return False
