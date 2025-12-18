@@ -331,9 +331,162 @@ class WhiteboxRCAEngine:
 
         # --- PHASE 2: Network Partition Detection (NEW) ---
         # Detect network partitions: completely blocked communication between nodes
-        # Strategy: If two nodes have zero throughput on their connection edge,
-        # this indicates a network partition
+        # Strategy 1: Check metrics for data gaps on edges (provides context)
+        # Strategy 2: Check logs for connection timeout patterns (PRIMARY signal)
+        # Double confirmation aligns with human diagnosis approach
         network_partitions = []
+        metric_gaps = {}  # Track edges with metric gaps for confirmation
+
+        # STRATEGY 1: Detect metric gaps (secondary confirmation)
+        # Check if per-dependency metrics show gaps during fault period
+        if metrics_df is not None and fault_start_time is not None:
+            try:
+                # Filter for dependency request metrics
+                dep_metrics = metrics_df[metrics_df['name'].str.contains('dependency.requests', na=False)].copy()
+
+                if not dep_metrics.empty:
+                    # Extract dependency_id from labels dict
+                    dep_metrics['dependency_id'] = dep_metrics['labels'].apply(
+                        lambda x: x.get('dependency_id') if isinstance(x, dict) else None
+                    )
+
+                    # Filter out rows without dependency_id
+                    dep_metrics = dep_metrics[dep_metrics['dependency_id'].notna()]
+
+                    if not dep_metrics.empty:
+                        # Split into baseline and current periods
+                        baseline_df = dep_metrics[dep_metrics['sim_time'] < fault_start_time]
+                        current_df = dep_metrics[dep_metrics['sim_time'] >= fault_start_time]
+
+                        # Calculate duration of each period
+                        baseline_duration = fault_start_time if fault_start_time > 0 else 1
+                        current_duration = current_df['sim_time'].max() - fault_start_time if len(current_df) > 0 else 1
+
+                        # Group by component and dependency to find gaps
+                        for (component_id, dep_id), baseline_group in baseline_df.groupby(['component_id', 'dependency_id']):
+                            # Check if this dependency had regular activity in baseline
+                            baseline_count = len(baseline_group)
+                            baseline_total_reqs = baseline_group['value'].sum() if 'value' in baseline_group.columns else 0
+
+                            if baseline_count >= 3 and baseline_total_reqs > 10:  # Was active in baseline
+                                # Check if we have data in current period
+                                current_group = current_df[
+                                    (current_df['component_id'] == component_id) &
+                                    (current_df['dependency_id'] == dep_id)
+                                ]
+                                current_count = len(current_group)
+
+                                # Calculate FREQUENCY (samples per second) instead of absolute count
+                                baseline_freq = baseline_count / baseline_duration
+                                current_freq = current_count / current_duration if current_duration > 0 else 0
+
+                                # Detect gap: frequency dropped by >50% (network partition may not drop to zero due to retries/fallbacks)
+                                if current_freq < baseline_freq * 0.5:
+                                    # Map component_id to service
+                                    if component_id and component_id.startswith('pod_'):
+                                        service = '_'.join(component_id.split('_')[1:-1])
+                                    else:
+                                        service = component_id
+
+                                    if service and dep_id:
+                                        metric_gaps[(service, dep_id)] = {
+                                            'baseline_samples': baseline_count,
+                                            'current_samples': current_count,
+                                            'gap_ratio': 1.0 - (current_freq / baseline_freq) if baseline_freq > 0 else 1.0,
+                                            'baseline_freq': baseline_freq,
+                                            'current_freq': current_freq
+                                        }
+
+                # Report detected gaps
+                if metric_gaps:
+                    print(f"  [Metric Gaps] Detected {len(metric_gaps)} edges with metric frequency drops")
+                    for (src, tgt), info in list(metric_gaps.items())[:3]:
+                        print(f"    {src} -> {tgt}: {info['baseline_freq']:.3f} → {info['current_freq']:.3f}/s ({info['gap_ratio']*100:.0f}% drop)")
+
+            except Exception as e:
+                print(f"  [!] Warning: Metric gap detection failed: {e}")
+
+        # STRATEGY 2: Scan logs for connection timeout patterns (most reliable signal)
+        if logs_file and logs_file.exists():
+            import json
+            connection_errors = {}  # {(source, target): count}
+
+            # Calculate fault window (fault_start_time to end of episode)
+            # Only count errors during the fault period, not baseline
+            fault_window_start = fault_start_time if fault_start_time else 0
+
+            try:
+                with open(logs_file, 'r') as f:
+                    for line in f:
+                        try:
+                            log_entry = json.loads(line)
+
+                            # CRITICAL: Only count errors during fault period
+                            # Logs use nanosecond timestamps, need to convert to seconds
+                            log_timestamp_ns = log_entry.get('timestamp', 0)
+                            log_timestamp_s = log_timestamp_ns / 1e9 if log_timestamp_ns > 1e12 else log_timestamp_ns
+
+                            # Skip if before fault injection (baseline period)
+                            if log_timestamp_s < fault_window_start:
+                                continue
+
+                            message = log_entry.get('message', '')
+
+                            # Detect "Connection timeout to X" or "Connection timed out: network partition between X and Y"
+                            if 'connection timeout' in message.lower() or 'connection timed out' in message.lower():
+                                # Extract target from message
+                                # Pattern: "... to <target>" or "... between <source> and <target>"
+                                if ' to ' in message:
+                                    parts = message.split(' to ')
+                                    if len(parts) >= 2:
+                                        target = parts[-1].split(':')[0].split(',')[0].strip()
+
+                                        # Get component ID from attributes
+                                        attributes = log_entry.get('attributes', {})
+                                        component_id = attributes.get('component.id') or log_entry.get('component_id')
+
+                                        # Map pod to service
+                                        if component_id and component_id.startswith('pod_'):
+                                            # Extract service name from pod_<service>_<num>
+                                            service = '_'.join(component_id.split('_')[1:-1])
+                                        else:
+                                            service = component_id
+
+                                        if service and target:
+                                            key = (service, target)
+                                            connection_errors[key] = connection_errors.get(key, 0) + 1
+                        except:
+                            continue
+
+                # Check if any edge has significant connection errors
+                for (source, target), count in connection_errors.items():
+                    if count >= 10:  # At least 10 connection timeouts indicates partition
+                        # Check if this edge exists in topology
+                        if self.topology.has_edge(source, target):
+                            edge_data = self.topology.edges[source, target]
+
+                            # Build reason with double confirmation if metric gap also detected
+                            gap_info = metric_gaps.get((source, target))
+                            if gap_info:
+                                reason = (f'Network partition detected: {source} -> {target} '
+                                         f'(Logs: {count} connection timeouts, '
+                                         f'Metrics: {gap_info["gap_ratio"]*100:.0f}% frequency drop '
+                                         f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
+                                confidence = 0.98  # Higher confidence with double confirmation
+                            else:
+                                reason = f'Network partition detected: {source} -> {target} ({count} connection timeout errors in logs)'
+                                confidence = 0.95
+
+                            network_partitions.append({
+                                'source': source,
+                                'target': target,
+                                'edge_type': edge_data.get('type', 'unknown'),
+                                'reason': reason,
+                                'confidence': confidence,
+                                'double_confirmed': gap_info is not None
+                            })
+            except Exception as e:
+                print(f"  [!] Warning: Log-based partition detection failed: {e}")
 
         for u, v in self.topology.edges:
             edge_data = self.topology.edges[u, v]
@@ -411,6 +564,44 @@ class WhiteboxRCAEngine:
                                 'confidence': 0.95
                             })
 
+                # PATTERN 2: Network partition blocks calls entirely (zero outbound calls)
+                # Service has inbound traffic + internal errors, but ZERO outbound calls
+                # Check if:
+                # 1. Caller had outbound traffic in baseline (edge was active)
+                # 2. Caller has zero outbound traffic now (edge is silent)
+                # 3. Caller has high internal error rate (service is failing)
+                # 4. Caller has inbound traffic (service is being used)
+                baseline_caller = baseline_data.get(u, {})
+                current_caller = current_data.get(u, {})
+
+                baseline_out_rps = baseline_caller.get('outbound_rps', np.array([]))
+                current_out_rps = current_caller.get('outbound_rps', np.array([]))
+                current_in_rps = current_caller.get('inbound_rps', np.array([]))
+                current_error_rate = current_caller.get('internal_error_rate', np.array([]))
+
+                if (len(baseline_out_rps) > 0 and len(current_out_rps) > 0 and
+                    len(current_in_rps) > 0 and len(current_error_rate) > 0):
+
+                    baseline_avg_out = np.mean(baseline_out_rps)
+                    current_avg_out = np.mean(current_out_rps)
+                    current_avg_in = np.mean(current_in_rps)
+                    current_avg_error = np.mean(current_error_rate)
+
+                    # Detect partition: was calling target, now silent + high errors + has inbound traffic
+                    was_active = baseline_avg_out > 1.0  # Was making calls
+                    now_silent = current_avg_out < 0.1  # No calls now
+                    has_inbound = current_avg_in > 0.5  # Service is being used
+                    has_errors = current_avg_error > 0.5  # Service is erroring
+
+                    if was_active and now_silent and has_inbound and has_errors:
+                        network_partitions.append({
+                            'source': u,
+                            'target': v,
+                            'edge_type': edge_type,
+                            'reason': f'Network partition: {u} -> {v} (edge silent: {baseline_avg_out:.1f} -> {current_avg_out:.1f} RPS, service error rate: {current_avg_error*100:.0f}%)',
+                            'confidence': 0.90
+                        })
+
         # If network partitions detected, return early with global_network as root cause
         if network_partitions:
             print(f"  [!] Network partition detected: {len(network_partitions)} blocked edge(s)")
@@ -418,6 +609,11 @@ class WhiteboxRCAEngine:
                 print(f"      - {partition['reason']}")
 
             # Return global_network as the root cause
+            # Score breakdown: 100 points from network partition detection (log + metric evidence)
+            # Calculate average confidence across all detected partitions
+            avg_confidence = sum(p['confidence'] for p in network_partitions) / len(network_partitions)
+            double_confirmed_count = sum(1 for p in network_partitions if p.get('double_confirmed', False))
+
             return [{
                 'node': 'global_network',
                 'score': 100.0,
@@ -429,16 +625,44 @@ class WhiteboxRCAEngine:
                 'self_score': 0.0,
                 'temporal_score': 0.0,
                 'trace_score': 0.0,
+                'log_score': 100.0,  # All 100 points from log-based network partition detection
                 'symptoms': ['Network partition detected between components'],
                 'blamed_by': [],
                 'temporal_info': {},
                 'trace_info': {},
-                'health_metadata': {},
+                'health_metadata': {
+                    'network_partition_count': len(network_partitions),
+                    'avg_confidence': avg_confidence,
+                    'double_confirmed_count': double_confirmed_count,
+                    'detection_method': 'log_analysis + metric_gaps' if double_confirmed_count > 0 else 'log_analysis'
+                },
+                'score_breakdown': {
+                    # All components zero except log_bonus
+                    'base_health_score': 0.0,
+                    'trace_symptom_bonus': 0.0,
+                    'symptom_strength_bonus': 0.0,
+                    'trace_boost': 0.0,
+                    'base_before_penalties': 0.0,
+                    'base_after_penalties': 0.0,
+                    'physics_coverage': 0.0,
+                    'coverage_score': 0.0,
+                    'guilt_component': 0.0,
+                    'temporal_component': 0.0,
+                    'impact_bonus': 0.0,
+                    'capacity_bonus': 0.0,
+                    'confirmation_score': 0.0,
+                    'log_bonus': 100.0,  # All 100 points from network partition detection
+                    'victim_penalty_applied': False,
+                    'healthy_penalty_applied': False
+                },
                 'is_trace_authoritative': True,
                 'story': [
                     '🔴 ROOT CAUSE: global_network (Network Partition)',
                     '   Network partitions detected:',
-                    *[f'   - {p["reason"]}' for p in network_partitions]
+                    *[f'   - {p["reason"]}' for p in network_partitions],
+                    f'',
+                    f'   Detection confidence: {avg_confidence*100:.0f}%',
+                    f'   Double-confirmed edges: {double_confirmed_count}/{len(network_partitions)}'
                 ],
                 'network_partitions': network_partitions
             }]

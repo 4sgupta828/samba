@@ -528,6 +528,10 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         if not traces_file.exists():
             traces_file = None
 
+        logs_file = episode_dir / 'logs.jsonl'
+        if not logs_file.exists():
+            logs_file = None
+
         # 4. LEVEL 1: Service-level RCA (with pod-level integration)
         engine = WhiteboxRCAEngine(adapter.topology)
         service_results = engine.analyze_incident(
@@ -535,6 +539,7 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
             metrics_df=adapter.metrics_df,
             fault_start_time=fault_start_time,
             traces_file=traces_file,
+            logs_file=logs_file,  # Add logs for network partition detection
             baseline_pods=baseline_pods,  # Pass pod data for integrated scoring
             current_pods=current_pods
         )

@@ -77,14 +77,17 @@ class InfrastructureContextExporter:
         contains the complete graph structure. This file only adds deployment history
         and configuration details not needed for basic GNN training.
 
-        CRITICAL: Filter out internal simulation components (ComputeAgent, NetworkLink)
+        CRITICAL: Filter out internal simulation components (ComputeAgent)
         that are implementation details, not part of the logical architecture.
+
+        NOTE: NetworkLink (global_network) is now included to enable network partition
+        root cause analysis. RCA needs to detect complete network failures between components.
         """
         components = []
         relationships = []
 
         # Internal component types that should not be exposed
-        INTERNAL_TYPES = ['ComputeAgent', 'NetworkLink']
+        INTERNAL_TYPES = ['ComputeAgent']  # NetworkLink now included for RCA
 
         for comp_id, component in self.registry.items():
             comp_type = component.__class__.__name__
