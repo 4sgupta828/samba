@@ -11,6 +11,18 @@ from src.core.ground_truth import CausalityTracker
 from src.core.scenario_events import ScenarioEventTracker, sim_time_to_timestamp
 from src.failures.modes import FAILURE_MODES
 
+# Pod-level faults that should be applied to all pods when targeting a Service
+# These faults affect ComputeAgent/Pod resources (CPU, memory, threads) and must be
+# applied at pod level, not service level
+POD_LEVEL_FAULTS = [
+    'cpu_saturation',
+    'memory_leak',
+    'memory_pressure',
+    'memory_thrashing',  # NEW: Periodic memory allocation bursts
+    'inject_latency',
+    'inject_errors'
+]
+
 
 class TrainingFailureInjector:
     """
@@ -187,8 +199,7 @@ class TrainingFailureInjector:
             failure_func = FAILURE_MODES.get(failure_mode)
             if failure_func:
                 # For pod-level faults, apply to all pods
-                pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
-                is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
+                is_pod_level_fault = failure_mode in POD_LEVEL_FAULTS and hasattr(target, 'pods') and target.pods
                 targets_to_apply = target.pods if is_pod_level_fault else [target]
                 
                 if progression == 'step':
@@ -467,10 +478,7 @@ class TrainingFailureInjector:
             failure_func = FAILURE_MODES.get(failure_mode)
             if failure_func:
                 # Check if this is a pod-level fault being applied to a service
-                # Pod-level faults: memory_leak, cpu_saturation
-                pod_level_faults = ['memory_leak', 'cpu_saturation']
-
-                if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
+                if failure_mode in POD_LEVEL_FAULTS and hasattr(target, 'pods') and target.pods:
                     # Apply fault to all pods of the service
                     print(f"   Applying '{failure_mode}' to {len(target.pods)} pods of {target_id}")
                     for pod in target.pods:
@@ -489,10 +497,9 @@ class TrainingFailureInjector:
         # FIXED (2025-12-15): ExternalServices don't have pods OR dynamics - apply directly to them
         from src.components.external import ExternalService
 
-        pod_level_faults = ['cpu_saturation', 'memory_leak', 'inject_latency', 'inject_errors']
         is_external_service = isinstance(target, ExternalService)
 
-        if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods and not is_external_service:
+        if failure_mode in POD_LEVEL_FAULTS and hasattr(target, 'pods') and target.pods and not is_external_service:
             # Apply gradual change to all pods of the service
             print(f"   Applying gradual '{failure_mode}' to {len(target.pods)} pods of {target_id}")
             for pod in target.pods:
@@ -650,9 +657,7 @@ class TrainingFailureInjector:
                 try:
                     # BUGFIX (2025-12-15): Apply revert to pods for pod-level faults
                     # Must match injection logic to avoid silent failures
-                    pod_level_faults = ['memory_leak', 'cpu_saturation']
-
-                    if failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods:
+                    if failure_mode in POD_LEVEL_FAULTS and hasattr(target, 'pods') and target.pods:
                         # Revert fault on all pods of the service
                         print(f"   Reverting '{failure_mode}' on {len(target.pods)} pods of {target_id}")
                         for pod in target.pods:
@@ -677,9 +682,8 @@ class TrainingFailureInjector:
         # FIXED (2025-12-15): ExternalServices don't have pods - apply revert directly to them
         from src.components.external import ExternalService
 
-        pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure', 'inject_latency', 'inject_errors']
         is_external_service = isinstance(target, ExternalService)
-        is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods and not is_external_service
+        is_pod_level_fault = failure_mode in POD_LEVEL_FAULTS and hasattr(target, 'pods') and target.pods and not is_external_service
         targets_to_revert = target.pods if is_pod_level_fault else [target]
 
         if failure_mode == 'inject_latency':
@@ -774,8 +778,7 @@ class TrainingFailureInjector:
         elif failure_mode == 'memory_pressure':
             # Reduce memory pressure gradually (like injection, but in reverse)
             # Use the same gradual mechanism as injection but with decreasing progress
-            pod_level_faults = ['cpu_saturation', 'memory_leak', 'memory_pressure']
-            is_pod_level_fault = failure_mode in pod_level_faults and hasattr(target, 'pods') and target.pods
+            is_pod_level_fault = failure_mode in POD_LEVEL_FAULTS and hasattr(target, 'pods') and target.pods
             targets_to_revert = target.pods if is_pod_level_fault else [target]
 
             failure_func = FAILURE_MODES.get(failure_mode)

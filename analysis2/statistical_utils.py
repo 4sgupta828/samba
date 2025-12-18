@@ -101,37 +101,75 @@ def detect_changepoint(data: np.ndarray) -> bool:
 
 def compare_distributions(baseline: np.ndarray, current: np.ndarray, alpha=0.05) -> StatResult:
     """
-    SOTA Comparison: Combines Mann-Whitney U, Cohen's d, and Changepoint detection.
+    SOTA Comparison with STRICT statistical rigor to prevent false positives.
+
+    Combines:
+    - Mann-Whitney U test (non-parametric significance)
+    - Cohen's d (effect size magnitude)
+    - Baseline stability validation (prevents detecting noise as signal)
+    - Minimum effect size thresholds (prevents flagging trivial changes)
+    - Sample size validation
+
+    STRICT criteria:
+    - Requires BOTH statistical significance (p < alpha) AND meaningful effect size (d > 0.5)
+    - Validates baseline is stable before comparison
+    - Higher minimum effect size than standard (0.5 instead of 0.2)
     """
     # Clean NaNs
     baseline = baseline[~np.isnan(baseline)]
     current = current[~np.isnan(current)]
 
-    if len(baseline) < 5 or len(current) < 5:
+    # 0. Minimum sample size check (increased from 5 to 10 for better statistical power)
+    if len(baseline) < 10 or len(current) < 10:
         return StatResult(False, 1.0, 0.0, 'insufficient_data')
 
-    # 1. Significance Test (Mann-Whitney U robust to non-normal data)
+    # 1. Baseline Stability Check (CRITICAL for avoiding false positives)
+    # If baseline is too noisy, we can't reliably detect real changes
+    # A high CV (>0.5) means baseline is unstable - reject comparison
+    baseline_mean = np.mean(baseline)
+    baseline_std = np.std(baseline)
+
+    if baseline_mean != 0:
+        baseline_cv = baseline_std / abs(baseline_mean)
+        if baseline_cv > 0.5:
+            # Baseline too unstable - any "change" is likely just noise
+            return StatResult(False, 1.0, 0.0, 'unstable_baseline', confidence='very_low')
+
+    # 2. Significance Test (Mann-Whitney U robust to non-normal data)
     try:
         _, p_value = stats.mannwhitneyu(baseline, current, alternative='two-sided')
     except ValueError:
         p_value = 1.0
 
-    # 2. Magnitude (Effect Size)
+    # 3. Magnitude (Effect Size)
     effect_size = calculate_effect_size(baseline, current)
     category = categorize_effect_size(effect_size)
 
-    # 3. Structural Change (Did the pattern actually break?)
+    # 4. Structural Change (Did the pattern actually break?)
     combined_series = np.concatenate([baseline, current])
     cp_detected = detect_changepoint(combined_series)
 
-    # 4. Final Significance Logic
-    # Significant if: (Low P-value AND Non-negligible Effect) OR (Structural Changepoint Detected)
-    is_significant = (p_value < alpha and category != 'negligible') or cp_detected
+    # 5. STRICT Significance Logic (prevents false positives from benign variance)
+    # OLD: (p_value < alpha and category != 'negligible') or cp_detected
+    # NEW: Require BOTH statistical significance AND meaningful effect size (d >= 0.5)
+    #      OR very strong changepoint with large effect
 
-    # 5. Confidence Score
+    # Minimum effect size for "medium" (0.5) instead of "small" (0.2)
+    # This filters out trivial changes that might be statistically significant but not practically meaningful
+    has_significant_p_value = p_value < alpha
+    has_meaningful_effect = abs(effect_size) >= 0.5  # STRICT: medium+ effect only
+    has_strong_changepoint = cp_detected and abs(effect_size) >= 0.8  # Changepoint must be backed by large effect
+
+    # Main logic: Need BOTH significance and meaningful effect, OR very strong changepoint
+    is_significant = (has_significant_p_value and has_meaningful_effect) or has_strong_changepoint
+
+    # 6. Confidence Score
     confidence = 'low'
     if is_significant:
-        if abs(effect_size) > 0.8 and cp_detected: confidence = 'high'
-        elif abs(effect_size) > 0.5: confidence = 'medium'
+        if abs(effect_size) > 1.0 and cp_detected and p_value < 0.01:
+            confidence = 'high'  # Very strong evidence
+        elif abs(effect_size) > 0.8 and p_value < 0.05:
+            confidence = 'medium'  # Strong evidence
+        # If only borderline (d=0.5-0.8), keep confidence='low'
 
     return StatResult(is_significant, p_value, effect_size, category, cp_detected, confidence)
