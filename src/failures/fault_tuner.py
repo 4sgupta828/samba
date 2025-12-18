@@ -808,20 +808,21 @@ class FaultParameterTuner:
         baseline_util = max(0.0, min(0.5, baseline_util))  # Clamp to 0-50% (sanity check)
 
         # Step 2: Calculate target utilization based on severity
-        # Severity 0.0 → 40% utilization (subtle)
-        # Severity 0.5 → 70% utilization (moderate)
+        # COORDINATED WITH RCA THRESHOLD (70%):
+        # Severity 0.0 → 40% utilization (subtle, below threshold)
+        # Severity 0.5 → 78% utilization (moderate, clearly above 70% threshold)
         # Severity 1.0 → 95% utilization (severe)
         if severity < 0.3:
-            # Subtle: 40-60% utilization
-            target_util = 0.40 + (severity / 0.3) * 0.20
+            # Subtle: 40-65% utilization (may not trigger RCA)
+            target_util = 0.40 + (severity / 0.3) * 0.25
         elif severity < 0.7:
-            # Moderate: 60-85% utilization
+            # Moderate: 65-88% utilization (reliably above 70% RCA threshold)
             normalized = (severity - 0.3) / 0.4
-            target_util = 0.60 + (normalized * 0.25)
+            target_util = 0.65 + (normalized * 0.23)
         else:
-            # Severe: 85-95% utilization
+            # Severe: 88-95% utilization
             normalized = (severity - 0.7) / 0.3
-            target_util = 0.85 + (normalized * 0.10)
+            target_util = 0.88 + (normalized * 0.07)
 
         # Step 3: Calculate exhaustion needed
         # Need to exhaust: (target - baseline) as % of total capacity

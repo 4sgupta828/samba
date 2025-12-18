@@ -66,7 +66,7 @@ class RCAThresholds:
     # === Self-Health Detection ===
 
     # Resource saturation
-    resource_saturation_threshold: float = 0.9  # 90% of resource limit
+    resource_saturation_threshold: float = 0.7  # 70% of resource limit (lowered to catch moderate severity faults)
 
     # Effect sizes for degradation detection
     min_effect_size_small: float = 0.5  # Cohen's d: small-medium
