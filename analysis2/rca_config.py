@@ -79,6 +79,29 @@ class RCAThresholds:
     error_rate_moderate: float = 0.1  # 10% errors = moderate issue
     error_rate_severe: float = 0.2  # 20% errors = severe issue
 
+    # === Error Proxy Detection (for components without error_rate) ===
+
+    # Cache hit rate degradation (relative drop)
+    cache_hit_rate_drop_threshold: float = 0.2  # 20% drop (e.g., 95% -> 75%)
+    cache_min_baseline_percentile: float = 10  # Must have >10th percentile traffic
+
+    # Database query errors (effect size based)
+    db_error_min_effect_size: float = 1.0  # Cohen's d: medium effect
+    db_min_baseline_percentile: float = 10  # Must have >10th percentile traffic
+
+    # Queue timeout failures (effect size + primary symptom check)
+    # CRITICAL: Only use if queue itself is faulty, not just buffering
+    queue_timeout_min_effect_size: float = 1.0  # Cohen's d: medium effect
+    queue_min_baseline_percentile: float = 10  # Must have >10th percentile traffic
+
+    # External service errors (effect size based)
+    # Lower threshold since external failures are critical
+    external_error_min_effect_size: float = 0.8  # Cohen's d: small-medium
+    external_min_baseline_percentile: float = 10  # Must have >10th percentile traffic
+
+    # Error proxy value: When degradation detected, treat as this error rate
+    error_proxy_value: float = 0.5  # 50% error rate equivalent
+
     def __init__(self, overrides: Dict[str, Any] = None):
         """
         Create threshold config with optional overrides.

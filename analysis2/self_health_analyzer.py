@@ -97,6 +97,10 @@ class SelfHealthAnalyzer:
         normalized['avg_latency'] = self._get_metric(data, f'service.{node_id}.duration', 'db.query.latency')
         normalized['internal_error_rate'] = self._get_metric(data, f'service.{node_id}.error_rate')
         normalized['inbound_rps'] = self._get_metric(data, f'service.{node_id}.requests')
+
+        # Cache-specific metrics (for external caches)
+        normalized['cache_hit_rate'] = self._get_metric(data, 'cache.hit_rate')
+        normalized['cache_errors'] = self._get_metric(data, 'component.errors.total')
         normalized['dependency_latency'] = self._get_metric(data, f'service.{node_id}.dependency.duration')
         normalized['dependency_error_rate'] = self._get_metric(data, f'service.{node_id}.dependency.error_rate')
         normalized['outbound_rps'] = self._get_metric(data, f'service.{node_id}.dependency.requests')
@@ -271,6 +275,18 @@ class SelfHealthAnalyzer:
 
         # === PHASE 4: SECONDARY SYMPTOMS (Performance Degradation) ===
         if not found_primary:
+            # Check Cache Hit Rate (for external caches)
+            if 'cache_hit_rate' in current and 'cache_hit_rate' in baseline:
+                base_hit = np.mean(baseline['cache_hit_rate']) if len(baseline['cache_hit_rate']) > 0 else 0
+                curr_hit = np.mean(current['cache_hit_rate']) if len(current['cache_hit_rate']) > 0 else 0
+                hit_rate_drop = base_hit - curr_hit
+
+                if base_hit > 0.1 and hit_rate_drop > 0.2:  # >20% drop in hit rate
+                    symptoms.append(f"Cache hit rate dropped ({base_hit:.1%} → {curr_hit:.1%})")
+                    # Significant cache degradation - treat as PRIMARY symptom
+                    found_primary = True
+                    resource_score = max(resource_score, 10.0)
+
             # Check Error Rate
             err_stat = self._check_metric('internal_error_rate', baseline, current)
             if err_stat.significant and err_stat.effect_size > self.thresholds.min_effect_size_medium:

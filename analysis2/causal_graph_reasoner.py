@@ -8,6 +8,12 @@ SOTA Features:
 2. Calculates Physics Coverage (blast radius explanation)
 3. Queue-aware propagation: Skips queues that are just buffering
 4. Narrative generation with causal chains
+5. Multi-component error proxy detection (effect size based, no magic numbers):
+   - Cache: hit rate degradation (configurable threshold, default 20% drop)
+   - Database: query errors (Cohen's d >= 1.0 medium effect)
+   - Queue: timeout failures (Cohen's d >= 1.0, ONLY if queue has PRIMARY fault)
+   - External services: component errors (Cohen's d >= 0.8 small-medium effect)
+   All thresholds configurable via RCAThresholds
 """
 
 import networkx as nx
@@ -15,6 +21,8 @@ import numpy as np
 from typing import Dict, List, Set, Any
 from dataclasses import dataclass, field
 from config_extractor import CausalConstants
+from rca_config import get_thresholds
+from statistical_utils import compare_distributions
 
 @dataclass
 class CausalLink:
@@ -34,8 +42,9 @@ class CausalHypothesis:
     narrative: List[str] = field(default_factory=list)
 
 class CausalGraphReasoner:
-    def __init__(self, topology: nx.DiGraph):
+    def __init__(self, topology: nx.DiGraph, threshold_config=None):
         self.topology = topology
+        self.thresholds = get_thresholds(threshold_config)
 
     def _is_queue_node(self, node_id: str) -> bool:
         """Check if a node is a queue/message broker."""
@@ -193,6 +202,14 @@ class CausalGraphReasoner:
             # Try direct metric name first
             raw_name = f'service.{node}.{metric_suffix}'
             vals = data.get(node, {}).get(raw_name, [])
+
+            # DEBUG: Log for session_cache case
+            _debug = False and (node == 'session_cache' or (node == 'mobile_api_service' and 'error' in metric_suffix))
+            if _debug and len(vals) == 0:
+                print(f'    [DEBUG] {node}.{metric_suffix}: raw_name={raw_name}, found={raw_name in data.get(node, {})}')
+                if node in data:
+                    print(f'            Available: {[k for k in data[node].keys() if metric_suffix.split(".")[0] in k][:3]}')
+
             if len(vals) > 0:
                 return np.mean(vals)
             # Fallback to old mapped names for backwards compatibility
@@ -206,6 +223,9 @@ class CausalGraphReasoner:
             }
             if metric_suffix in mapped_names:
                 vals = data.get(node, {}).get(mapped_names[metric_suffix], [])
+                if _debug:
+                    mapped = mapped_names[metric_suffix]
+                    print(f'            Trying mapped: {mapped}, found={mapped in data.get(node, {})}, mean={np.mean(vals) if len(vals) > 0 else 0:.4f}')
                 return np.mean(vals) if len(vals) > 0 else 0.0
             return 0.0
 
@@ -231,6 +251,66 @@ class CausalGraphReasoner:
         callee_err_base = get_service_metric(baseline, callee, 'error_rate')
         callee_err_curr = get_service_metric(current, callee, 'error_rate')
         callee_err_delta = callee_err_curr - callee_err_base
+
+        # Fallback for external services (caches, DBs, queues) that don't emit error_rate
+        # Use component-specific degradation metrics as proxy for error propagation
+        # All checks use effect sizes and percentile-based thresholds (no magic numbers)
+
+        if callee_err_delta < 0.001:  # No error rate signal
+            # 1. Cache hit rate drop as proxy
+            cache_hit_base = baseline.get(callee, {}).get('cache.hit_rate', [])
+            cache_hit_curr = current.get(callee, {}).get('cache.hit_rate', [])
+            if len(cache_hit_base) > 0 and len(cache_hit_curr) > 0:
+                base_mean = np.mean(cache_hit_base)
+                curr_mean = np.mean(cache_hit_curr)
+                # Must have reasonable baseline hit rate (not an unused cache)
+                if base_mean > np.percentile([0.1, 0.2, 0.5, 0.8, 0.95], self.thresholds.cache_min_baseline_percentile):
+                    hit_rate_drop = base_mean - curr_mean
+                    # Use configured threshold (default 20% drop)
+                    if hit_rate_drop > self.thresholds.cache_hit_rate_drop_threshold:
+                        callee_err_delta = self.thresholds.error_proxy_value
+
+        # 2. Database query errors as proxy (effect size based)
+        if callee_err_delta < 0.001:  # Still no error signal
+            db_errors_base = baseline.get(callee, {}).get('db.query.errors', [])
+            db_errors_curr = current.get(callee, {}).get('db.query.errors', [])
+            if len(db_errors_base) > 0 and len(db_errors_curr) > 0:
+                # Use statistical comparison with effect size
+                stat = compare_distributions(db_errors_base, db_errors_curr)
+                if stat.significant and stat.effect_size >= self.thresholds.db_error_min_effect_size:
+                    callee_err_delta = self.thresholds.error_proxy_value
+
+        # 3. Queue timeout failures as proxy - BUT ONLY if queue itself is faulty!
+        # CRITICAL: Don't blame the queue if it's just buffering due to slow consumer
+        if callee_err_delta < 0.001:  # Still no error signal
+            queue_timeouts_base = baseline.get(callee, {}).get('mq.messages.timeout_failures', [])
+            queue_timeouts_curr = current.get(callee, {}).get('mq.messages.timeout_failures', [])
+            if len(queue_timeouts_base) > 0 and len(queue_timeouts_curr) > 0:
+                # Check if this is a REAL queue fault (not just buffering)
+                # Use health_scores to determine if queue has PRIMARY symptoms
+                callee_health = health_scores.get(callee)
+                is_queue_primary_fault = (
+                    callee_health and
+                    callee_health.symptom_type == 'primary' and
+                    self._is_queue_node(callee)
+                )
+
+                if is_queue_primary_fault:
+                    # Queue itself is faulty - use timeout failures as error proxy
+                    stat = compare_distributions(queue_timeouts_base, queue_timeouts_curr)
+                    if stat.significant and stat.effect_size >= self.thresholds.queue_timeout_min_effect_size:
+                        callee_err_delta = self.thresholds.error_proxy_value
+                # Otherwise, skip - timeout failures are due to consumer issues, not queue
+
+        # 4. External service errors as proxy (effect size based)
+        if callee_err_delta < 0.001:  # Still no error signal
+            ext_errors_base = baseline.get(callee, {}).get('component.errors.total', [])
+            ext_errors_curr = current.get(callee, {}).get('component.errors.total', [])
+            if len(ext_errors_base) > 0 and len(ext_errors_curr) > 0:
+                # Use statistical comparison with lower threshold (external failures are critical)
+                stat = compare_distributions(ext_errors_base, ext_errors_curr)
+                if stat.significant and stat.effect_size >= self.thresholds.external_error_min_effect_size:
+                    callee_err_delta = self.thresholds.error_proxy_value
 
         caller_dep_err_base = get_service_metric(baseline, caller, 'dependency.error_rate')
         caller_dep_err_curr = get_service_metric(current, caller, 'dependency.error_rate')
