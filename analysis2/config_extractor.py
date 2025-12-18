@@ -10,8 +10,12 @@ from typing import Dict, Any
 class CausalConstants:
     """Tunable parameters for Causal Physics logic."""
     # Latency: How much relative growth (Current/Base) counts as degradation?
-    # 1.2 = 20% slowdown
+    # 1.2 = 20% slowdown (strict)
     MIN_LATENCY_GROWTH = 1.2
+
+    # Latency (Relaxed): Lower threshold for propagation detection
+    # 1.15 = 15% slowdown (more lenient for real-world scenarios)
+    MIN_LATENCY_GROWTH_RELAXED = 1.15
 
     # Propagation: How much of the Callee's pain must the Caller see?
     # 0.2 = Caller must reflect at least 20% of the Callee's relative degradation
@@ -23,6 +27,10 @@ class CausalConstants:
 
     # Deadlock: Massive latency spike required to suspect deadlock propagation
     DEADLOCK_GROWTH_THRESHOLD = 3.0
+
+    # Capacity: RPS drop threshold
+    # 0.2 = 20% drop in RPS indicates capacity reduction
+    MIN_RPS_DROP = 0.2
 
 class ConfigExtractor:
     def __init__(self, config_data: Dict[str, Any] = None):

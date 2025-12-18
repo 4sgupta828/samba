@@ -231,17 +231,10 @@ class DatasetAdapter:
             
             # 2. Group by Metric Name
             for raw_metric_name, metric_rows in node_group.groupby('name'):
-                
-                # 3. Map to Standard Signal Name
-                # Check if raw name contains any key from METRIC_MAP
-                signal_name = None
-                for key, mapped_name in METRIC_MAP.items():
-                    if key in raw_metric_name:
-                        signal_name = mapped_name
-                        break
-                
-                if not signal_name:
-                    continue # Skip metrics we don't know how to use
+
+                # 3. Use RAW metric name (NO MAPPING!)
+                # Just store metrics with their original names
+                signal_name = raw_metric_name
                 
                 # 4. Extract Values (Handle simple floats vs summary dicts)
                 # CRITICAL FIX: Aggregate by timestamp first!
@@ -250,8 +243,13 @@ class DatasetAdapter:
                 # For gauge metrics (latency, CPU), AVERAGE across dimensions
 
                 # Determine if this is a counter or gauge metric
-                is_counter = any(keyword in signal_name for keyword in [
-                    'error', 'request', 'rps', 'count', 'total'
+                # NOTE: error_rate, rps are GAUGES (rates), not counters!
+                # Only _count, _total, _requests (without _rate suffix) are counters
+                is_gauge_rate = any(signal_name.endswith(suffix) for suffix in [
+                    '_rate', '_ratio', 'rps', '_utilization', '_usage'
+                ])
+                is_counter = not is_gauge_rate and any(keyword in signal_name for keyword in [
+                    'request', 'count', 'total', 'error'
                 ])
 
                 # Group by timestamp

@@ -1,172 +1,39 @@
 """
 whitebox_rca.py
 
-The SOTA Root Cause Analysis Engine (v4.1).
-Integrates:
-1. Self-Health (Saturation + Deadlock detection)
-2. Edge Disambiguation (Traffic vs. Retry patterns)
-3. Hub Bias Correction (Guilt Ratio)
-4. Probabilistic Blame Discounting (Solves Proxy/Middleman problem)
-5. Causal Narratives
-6. Temporal Causality Analysis (Changepoint detection)
-7. Trace-Based Latency Analysis (Self-time vs total-time)
+The SOTA Root Cause Analysis Engine (vFinal - Transparent Physics).
+1. Heuristics Removed: No symptom counting, no victim penalties.
+2. Logic: Self + Physics Coverage + Semantics.
+3. Output: Detailed score composition for explainability.
 """
 
 import numpy as np
 import networkx as nx
-import math
 import pandas as pd
 from typing import Dict, List, Any, Optional
-from collections import defaultdict
 from pathlib import Path
 
 # Core Components
 from self_health_analyzer import SelfHealthAnalyzer
-from disambiguator import CallerCalleeDisambiguator
 from config_extractor import ConfigExtractor
-from causal_chain_analyzer import CausalChainAnalyzer
 from causal_graph_reasoner import CausalGraphReasoner
 
-# NEW: Temporal and Trace Analysis
+# Supplemental Components
 from temporal_analyzer import TemporalAnalyzer
-from trace_analyzer import TraceAnalyzer
 from log_analyzer import LogAnalyzer
+from trace_analyzer import TraceAnalyzer
 
 class WhiteboxRCAEngine:
-    def __init__(self, topology: nx.DiGraph, config: Dict = None, threshold_config: Dict = None):
+    def __init__(self, topology: nx.DiGraph, config: Dict = None):
         self.topology = topology
         self.config_extractor = ConfigExtractor(config)
 
-        # NEW: Threshold configuration (reduces brittleness)
-        from rca_config import get_thresholds
-        self.thresholds = get_thresholds(threshold_config)
+        self.self_analyzer = SelfHealthAnalyzer(self.config_extractor)
+        self.reasoner = CausalGraphReasoner(topology)
 
-        # Pass threshold config to all analyzers
-        self.self_analyzer = SelfHealthAnalyzer(self.config_extractor, threshold_config)
-        self.reasoner = CausalGraphReasoner(topology)  # Physics Engine
-        self.disambiguator = CallerCalleeDisambiguator(self.reasoner)  # Hybrid Disambiguator
-        self.storyteller = CausalChainAnalyzer(topology)
-
-        # NEW: Advanced analyzers
         self.temporal_analyzer = TemporalAnalyzer(topology)
-        self.trace_analyzer = TraceAnalyzer(topology)  # Pass topology for service-level aggregation
+        self.trace_analyzer = TraceAnalyzer(topology)
         self.log_analyzer = LogAnalyzer()
-
-    def validate_ground_truth(self, ground_truth_node: str, candidates: List[Dict]) -> Dict:
-        """
-        Validate that the ground truth label actually shows evidence of being faulty.
-
-        This helps identify:
-        1. Invalid ground truth labels (fault injection didn't work)
-        2. Data quality issues
-        3. Cases where RCA should not be evaluated
-
-        Returns:
-            Dict with validation results including is_valid, confidence, reasons, and evidence_score
-        """
-        # Find ground truth in candidates
-        gt_candidate = None
-        for c in candidates:
-            if c['node'] == ground_truth_node:
-                gt_candidate = c
-                break
-
-        if not gt_candidate:
-            return {
-                'is_valid': False,
-                'confidence': 'unknown',
-                'evidence_score': 0,
-                'max_evidence_score': 12,
-                'reasons': [f"Ground truth node '{ground_truth_node}' not found in topology"],
-                'verdict': "❌ Ground truth node not found in analysis",
-                'ground_truth_node': ground_truth_node,
-                'ground_truth_rank': None,
-                'ground_truth_score': 0,
-            }
-
-        # Score evidence using adaptive thresholds
-        evidence_score = 0
-        reasons = []
-
-        # 1. Check for symptoms (0-3 points)
-        symptom_count = len(gt_candidate.get('symptoms', []))
-        if symptom_count > 0:
-            evidence_score += min(3, symptom_count)
-            reasons.append(f"✓ Has {symptom_count} symptoms detected")
-        else:
-            reasons.append("⚠️ No symptoms detected")
-
-        # 2. Check trace evidence (0-5 points)
-        trace_info = gt_candidate.get('trace_info', {})
-        if trace_info:
-            is_authoritative = trace_info.get('is_authoritative', False)
-            self_time_deg = trace_info.get('self_time_degradation', 1.0)
-
-            if is_authoritative:
-                if self_time_deg > self.thresholds.min_effect_size_large:
-                    evidence_score += 5
-                    reasons.append(f"✓ Strong authoritative trace evidence: {self_time_deg:.1f}x degradation")
-                elif self_time_deg > self.thresholds.min_effect_size_medium:
-                    evidence_score += 3
-                    reasons.append(f"✓ Moderate authoritative trace evidence: {self_time_deg:.1f}x degradation")
-                else:
-                    evidence_score += 1
-                    reasons.append(f"⚠️ Weak authoritative trace evidence: {self_time_deg:.1f}x degradation")
-            else:
-                reasons.append("⚠️ Non-authoritative trace evidence (might be victim)")
-        else:
-            reasons.append("⚠️ No trace evidence")
-
-        # 3. Check health status (0-2 points)
-        is_healthy = gt_candidate.get('is_healthy', True)
-        if not is_healthy:
-            evidence_score += 2
-            reasons.append("✓ Marked as unhealthy by health filter")
-        else:
-            reasons.append("⚠️ Marked as healthy by health filter")
-
-        # 4. Check integrated score (0-2 points)
-        integrated_score = gt_candidate.get('integrated_score', 0)
-        if integrated_score > self.thresholds.min_absolute_severity:
-            evidence_score += 2
-            reasons.append(f"✓ High integrated_score: {integrated_score:.1f}")
-        elif integrated_score > 0:
-            evidence_score += 1
-            reasons.append(f"⚠️ Low integrated_score: {integrated_score:.1f}")
-        else:
-            reasons.append("⚠️ Zero integrated_score")
-
-        # Determine validity using statistical thresholds
-        # Max score: 12 points
-        # High confidence: 8+, Medium: 5-7, Low: 2-4, Very low: 0-1
-        if evidence_score >= 8:
-            is_valid = True
-            confidence = 'high'
-            verdict = "✅ Strong evidence that ground truth is actually faulty"
-        elif evidence_score >= 5:
-            is_valid = True
-            confidence = 'medium'
-            verdict = "⚠️ Moderate evidence of fault - RCA should catch this"
-        elif evidence_score >= 2:
-            is_valid = False
-            confidence = 'low'
-            verdict = "⚠️ Weak evidence of fault - possibly invalid ground truth"
-        else:
-            is_valid = False
-            confidence = 'very_low'
-            verdict = "❌ No evidence of fault - likely invalid ground truth label"
-
-        return {
-            'is_valid': is_valid,
-            'confidence': confidence,
-            'evidence_score': evidence_score,
-            'max_evidence_score': 12,
-            'reasons': reasons,
-            'verdict': verdict,
-            'ground_truth_node': ground_truth_node,
-            'ground_truth_rank': None,  # Will be filled in by caller
-            'ground_truth_score': gt_candidate.get('score', 0),
-        }
 
     def calculate_integrated_health_score(self,
                                           node: str,
@@ -269,80 +136,55 @@ class WhiteboxRCAEngine:
         return integrated_score, metadata
 
     def analyze_incident(self,
-                         baseline_data: Dict[str, Dict[str, np.ndarray]],
-                         current_data: Dict[str, Dict[str, np.ndarray]],
+                         baseline_data: Dict, current_data: Dict,
                          metrics_df: Optional[pd.DataFrame] = None,
                          fault_start_time: Optional[float] = None,
                          traces_file: Optional[Path] = None,
                          logs_file: Optional[Path] = None,
-                         baseline_pods: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
-                         current_pods: Optional[Dict[str, Dict[str, np.ndarray]]] = None) -> List[Dict]:
+                         baseline_pods=None, current_pods=None) -> List[Dict]:
 
-        # --- PHASE 1: Self-Health (Internal Evidence) ---
+        # --- PHASE 1: Self-Health (Whitebox + Blackbox Inference) ---
         self_scores = {}
-        self_analyses = {}  # Store full analysis objects for physics engine
-        symptoms_map = {}
-
         for node in self.topology.nodes:
-            # Skip pod-level nodes - they are analyzed separately in pod forensics
-            node_attrs = self.topology.nodes[node]
-            if node_attrs.get('parent_service') is not None:
-                # This is a pod - skip it
-                continue
+            if self.topology.nodes[node].get('parent_service'): continue
 
-            # Get node type from topology metadata if available
-            node_type = node_attrs.get('type', 'Service')
-
-            # Skip infrastructure/control plane nodes
-            if node_type == 'DeploymentController':
-                continue
-
+            node_type = self.topology.nodes[node].get('type', 'Service')
             b_metrics = baseline_data.get(node, {})
             c_metrics = current_data.get(node, {})
 
-            analysis = self.self_analyzer.analyze(node, node_type, b_metrics, c_metrics)
-            self_scores[node] = analysis.self_degradation_score
-            self_analyses[node] = analysis  # Store full analysis for physics
-            symptoms_map[node] = analysis.symptoms
+            # A. Whitebox Analysis
+            if c_metrics:
+                analysis = self.self_analyzer.analyze(node, node_type, b_metrics, c_metrics)
 
-        # --- PHASE 1.5: Temporal Causality Analysis (NEW) ---
-        temporal_scores = {}
-        if metrics_df is not None and fault_start_time is not None:
-            try:
-                temporal_scores = self.temporal_analyzer.analyze(
-                    metrics_df, fault_start_time, self_scores
-                )
-            except Exception as e:
-                print(f"  [!] Warning: Temporal analysis failed: {e}")
+            # B. Blackbox Inference
+            else:
+                callers = list(self.topology.predecessors(node))
+                if callers:
+                    c_views_base = [baseline_data.get(c, {}) for c in callers]
+                    c_views_curr = [current_data.get(c, {}) for c in callers]
+                    analysis = self.self_analyzer.infer_blackbox_health(
+                        node, c_views_base, c_views_curr
+                    )
+                else:
+                    continue # Orphan node
 
-        # --- PHASE 1.6: Trace Analysis (NEW) ---
-        trace_scores = {}
-        if traces_file is not None and fault_start_time is not None:
-            try:
-                trace_scores = self.trace_analyzer.analyze(
-                    traces_file, fault_start_time
-                )
-            except Exception as e:
-                print(f"  [!] Warning: Trace analysis failed: {e}")
+            self_scores[node] = analysis
 
-        # --- PHASE 1.7: Log Analysis (NEW) ---
-        log_scores = {}
-        if logs_file and logs_file.exists():
-            try:
-                log_scores = self.log_analyzer.analyze(logs_file, fault_start_time)
-            except Exception as e:
-                print(f"  [!] Warning: Log analysis failed: {e}")
+        # --- PHASE 2: Physics Coverage ---
+        candidates = [n for n, s in self_scores.items() if s.is_root_cause_candidate]
 
-        # --- PHASE 2: Network Partition Detection (NEW) ---
-        # Detect network partitions: completely blocked communication between nodes
-        # Strategy 1: Check metrics for data gaps on edges (provides context)
-        # Strategy 2: Check logs for connection timeout patterns (PRIMARY signal)
-        # Double confirmation aligns with human diagnosis approach
+        physics_hypotheses = self.reasoner.calculate_global_coverage(
+            candidates, self_scores, baseline_data, current_data
+        )
+
+        # --- PHASE 3: Network Partition Detection ---
+        # Detect complete communication failure between nodes (global_network)
+        # Use multiple strategies for double confirmation
+        network_partition_candidate = None
         network_partitions = []
         metric_gaps = {}  # Track edges with metric gaps for confirmation
 
         # STRATEGY 1: Detect metric gaps (secondary confirmation)
-        # Check if per-dependency metrics show gaps during fault period
         if metrics_df is not None and fault_start_time is not None:
             try:
                 # Filter for dependency request metrics
@@ -384,7 +226,7 @@ class WhiteboxRCAEngine:
                                 baseline_freq = baseline_count / baseline_duration
                                 current_freq = current_count / current_duration if current_duration > 0 else 0
 
-                                # Detect gap: frequency dropped by >50% (network partition may not drop to zero due to retries/fallbacks)
+                                # Detect gap: frequency dropped by >50%
                                 if current_freq < baseline_freq * 0.5:
                                     # Map component_id to service
                                     if component_id and component_id.startswith('pod_'):
@@ -401,23 +243,21 @@ class WhiteboxRCAEngine:
                                             'current_freq': current_freq
                                         }
 
-                # Report detected gaps
-                if metric_gaps:
-                    print(f"  [Metric Gaps] Detected {len(metric_gaps)} edges with metric frequency drops")
-                    for (src, tgt), info in list(metric_gaps.items())[:3]:
-                        print(f"    {src} -> {tgt}: {info['baseline_freq']:.3f} → {info['current_freq']:.3f}/s ({info['gap_ratio']*100:.0f}% drop)")
+                        # Report detected gaps
+                        if metric_gaps:
+                            print(f"  [Metric Gaps] Detected {len(metric_gaps)} edges with metric frequency drops")
+                            for (src, tgt), info in list(metric_gaps.items())[:3]:
+                                print(f"    {src} -> {tgt}: {info['baseline_freq']:.3f} → {info['current_freq']:.3f}/s ({info['gap_ratio']*100:.0f}% drop)")
 
             except Exception as e:
                 print(f"  [!] Warning: Metric gap detection failed: {e}")
 
-        # STRATEGY 2: Scan logs for connection timeout patterns (most reliable signal)
-        if logs_file and logs_file.exists():
+        # STRATEGY 2: Scan logs for connection timeout patterns
+        # DISABLED: Log-based detection causes false positives (timeouts are often symptoms, not cause)
+        # Only use metric-based detection for now
+        if False and logs_file and logs_file.exists() and fault_start_time:
             import json
             connection_errors = {}  # {(source, target): count}
-
-            # Calculate fault window (fault_start_time to end of episode)
-            # Only count errors during the fault period, not baseline
-            fault_window_start = fault_start_time if fault_start_time else 0
 
             try:
                 with open(logs_file, 'r') as f:
@@ -425,33 +265,27 @@ class WhiteboxRCAEngine:
                         try:
                             log_entry = json.loads(line)
 
-                            # CRITICAL: Only count errors during fault period
-                            # Logs use nanosecond timestamps, need to convert to seconds
+                            # Only count errors during fault period
                             log_timestamp_ns = log_entry.get('timestamp', 0)
                             log_timestamp_s = log_timestamp_ns / 1e9 if log_timestamp_ns > 1e12 else log_timestamp_ns
 
-                            # Skip if before fault injection (baseline period)
-                            if log_timestamp_s < fault_window_start:
+                            if log_timestamp_s < fault_start_time:
                                 continue
 
                             message = log_entry.get('message', '')
 
-                            # Detect "Connection timeout to X" or "Connection timed out: network partition between X and Y"
+                            # Detect connection timeouts
                             if 'connection timeout' in message.lower() or 'connection timed out' in message.lower():
-                                # Extract target from message
-                                # Pattern: "... to <target>" or "... between <source> and <target>"
                                 if ' to ' in message:
                                     parts = message.split(' to ')
                                     if len(parts) >= 2:
                                         target = parts[-1].split(':')[0].split(',')[0].strip()
 
-                                        # Get component ID from attributes
                                         attributes = log_entry.get('attributes', {})
                                         component_id = attributes.get('component.id') or log_entry.get('component_id')
 
                                         # Map pod to service
                                         if component_id and component_id.startswith('pod_'):
-                                            # Extract service name from pod_<service>_<num>
                                             service = '_'.join(component_id.split('_')[1:-1])
                                         else:
                                             service = component_id
@@ -465,164 +299,35 @@ class WhiteboxRCAEngine:
                 # Check if any edge has significant connection errors
                 for (source, target), count in connection_errors.items():
                     if count >= 10:  # At least 10 connection timeouts indicates partition
-                        # Check if this edge exists in topology
-                        if self.topology.has_edge(source, target):
-                            edge_data = self.topology.edges[source, target]
-
-                            # Build reason with double confirmation if metric gap also detected
-                            gap_info = metric_gaps.get((source, target))
-                            if gap_info:
-                                reason = (f'Network partition detected: {source} -> {target} '
-                                         f'(Logs: {count} connection timeouts, '
-                                         f'Metrics: {gap_info["gap_ratio"]*100:.0f}% frequency drop '
-                                         f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
-                                confidence = 0.98  # Higher confidence with double confirmation
-                            else:
-                                reason = f'Network partition detected: {source} -> {target} ({count} connection timeout errors in logs)'
-                                confidence = 0.95
-
+                        # Build reason with double confirmation if metric gap also detected
+                        gap_info = metric_gaps.get((source, target))
+                        if gap_info:
+                            reason = (f'Network partition detected: {source} -> {target} '
+                                     f'(Logs: {count} connection timeouts, '
+                                     f'Metrics: {gap_info["gap_ratio"]*100:.0f}% frequency drop '
+                                     f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
+                            confidence = 0.98  # Higher confidence with double confirmation
                             network_partitions.append({
                                 'source': source,
                                 'target': target,
-                                'edge_type': edge_data.get('type', 'unknown'),
                                 'reason': reason,
                                 'confidence': confidence,
-                                'double_confirmed': gap_info is not None
+                                'double_confirmed': True
                             })
             except Exception as e:
                 print(f"  [!] Warning: Log-based partition detection failed: {e}")
 
-        for u, v in self.topology.edges:
-            edge_data = self.topology.edges[u, v]
-            edge_type = edge_data.get('type', 'sync_http')
-
-            # Skip non-dependency edges
-            if edge_type in ['pod_pool', 'pod_placement', 'node_placement']:
-                continue
-
-            # Check for blocked throughput indicating network partition
-            # For async_consume edges: check for queue backlog explosion
-            if edge_type == 'async_consume':
-                # Strategy: Network partition causes queue to build up massively
-                # because consumer cannot pull messages from queue
-                queue_metrics_base = baseline_data.get(u, {})
-                queue_metrics_curr = current_data.get(u, {})
-                consumer_metrics_base = baseline_data.get(v, {})
-
-                # Check queue depth growth using STATISTICAL methods
-                baseline_depth = queue_metrics_base.get('queue_depth', np.array([]))
-                current_depth = queue_metrics_curr.get('queue_depth', np.array([]))
-
-                if len(baseline_depth) > 0 and len(current_depth) > 0:
-                    # Check if consumer was active using percentile-based threshold
-                    baseline_consumer_rps = consumer_metrics_base.get('inbound_rps', np.array([]))
-                    activity_threshold = self.thresholds.get_dynamic_threshold(
-                        baseline_consumer_rps, 'consumer_rps',
-                        self.thresholds.consumer_activity_percentile
-                    )
-                    was_active = len(baseline_consumer_rps) > 0 and np.mean(baseline_consumer_rps) > activity_threshold
-
-                    # Detect partition using EFFECT SIZE instead of absolute thresholds
-                    has_large_growth = self.thresholds.has_large_effect(baseline_depth, current_depth, 'queue')
-
-                    # Additional check: current depth should be significantly high
-                    # Use 90th percentile of baseline as minimum threshold
-                    baseline_p90 = np.percentile(baseline_depth, 90)
-                    current_avg = np.mean(current_depth)
-                    is_significantly_high = current_avg > max(baseline_p90 * 2, 10)  # At least 2x p90 or 10 msgs
-
-                    if was_active and has_large_growth and is_significantly_high:
-                        baseline_avg_depth = np.mean(baseline_depth)
-                        current_avg_depth = np.mean(current_depth)
-
-                        network_partitions.append({
-                            'source': u,
-                            'target': v,
-                            'edge_type': edge_type,
-                            'reason': f'Blocked async consumption: {u} -> {v} (queue backlog exploded from {baseline_avg_depth:.0f} to {current_avg_depth:.0f} messages, consumer unreachable)',
-                            'confidence': 0.95
-                        })
-
-            # For sync edges: check for complete failure (100% errors + zero throughput)
-            elif edge_type in ['sync_http', 'sync_db', 'sync_cache', 'sync_external']:
-                caller_metrics = current_data.get(u, {})
-                dep_error_rate = caller_metrics.get('dependency_error_rate', np.array([]))
-                dep_rps = caller_metrics.get('outbound_rps', np.array([]))
-
-                if len(dep_error_rate) > 0 and len(dep_rps) > 0:
-                    avg_error = np.mean(dep_error_rate)
-                    avg_rps = np.mean(dep_rps)
-
-                    # High error rate but RPS exists (trying but failing)
-                    if avg_error > 0.95 and avg_rps > 0.1:
-                        # Check baseline to confirm degradation
-                        baseline_error = baseline_data.get(u, {}).get('dependency_error_rate', np.array([]))
-                        baseline_avg_error = np.mean(baseline_error) if len(baseline_error) > 0 else 0
-
-                        if baseline_avg_error < 0.1:  # Was healthy before
-                            network_partitions.append({
-                                'source': u,
-                                'target': v,
-                                'edge_type': edge_type,
-                                'reason': f'Complete connection failure: {u} -> {v} ({avg_error*100:.0f}% errors)',
-                                'confidence': 0.95
-                            })
-
-                # PATTERN 2: Network partition blocks calls entirely (zero outbound calls)
-                # Service has inbound traffic + internal errors, but ZERO outbound calls
-                # Check if:
-                # 1. Caller had outbound traffic in baseline (edge was active)
-                # 2. Caller has zero outbound traffic now (edge is silent)
-                # 3. Caller has high internal error rate (service is failing)
-                # 4. Caller has inbound traffic (service is being used)
-                baseline_caller = baseline_data.get(u, {})
-                current_caller = current_data.get(u, {})
-
-                baseline_out_rps = baseline_caller.get('outbound_rps', np.array([]))
-                current_out_rps = current_caller.get('outbound_rps', np.array([]))
-                current_in_rps = current_caller.get('inbound_rps', np.array([]))
-                current_error_rate = current_caller.get('internal_error_rate', np.array([]))
-
-                if (len(baseline_out_rps) > 0 and len(current_out_rps) > 0 and
-                    len(current_in_rps) > 0 and len(current_error_rate) > 0):
-
-                    baseline_avg_out = np.mean(baseline_out_rps)
-                    current_avg_out = np.mean(current_out_rps)
-                    current_avg_in = np.mean(current_in_rps)
-                    current_avg_error = np.mean(current_error_rate)
-
-                    # Detect partition: was calling target, now silent + high errors + has inbound traffic
-                    was_active = baseline_avg_out > 1.0  # Was making calls
-                    now_silent = current_avg_out < 0.1  # No calls now
-                    has_inbound = current_avg_in > 0.5  # Service is being used
-                    has_errors = current_avg_error > 0.5  # Service is erroring
-
-                    if was_active and now_silent and has_inbound and has_errors:
-                        network_partitions.append({
-                            'source': u,
-                            'target': v,
-                            'edge_type': edge_type,
-                            'reason': f'Network partition: {u} -> {v} (edge silent: {baseline_avg_out:.1f} -> {current_avg_out:.1f} RPS, service error rate: {current_avg_error*100:.0f}%)',
-                            'confidence': 0.90
-                        })
-
-        # If network partitions detected, save for later inclusion in candidates
-        # DO NOT return early - we need to run normal service-level analysis too
-        # Connection timeouts can be caused by service failures, not just network partitions
-        network_partition_candidate = None
+        # Create global_network candidate if partitions detected
         if network_partitions:
             print(f"  [!] Network partition detected: {len(network_partitions)} blocked edge(s)")
             for partition in network_partitions:
                 print(f"      - {partition['reason']}")
 
-            # Prepare global_network as a candidate (will be added to results later)
-            # Score: Only use this if double-confirmed (both logs + metrics)
-            # Otherwise, connection timeouts are likely symptoms of service failures
+            # Score based on confirmation level
             avg_confidence = sum(p['confidence'] for p in network_partitions) / len(network_partitions)
             double_confirmed_count = sum(1 for p in network_partitions if p.get('double_confirmed', False))
 
             # Only add as strong candidate if double-confirmed (logs + metrics)
-            # Otherwise, score lower to let service-level analysis take priority
             if double_confirmed_count > 0:
                 network_score = 100.0  # Strong evidence
                 print(f"  [!] Double-confirmed partition (logs + metrics), treating as high-confidence root cause")
@@ -633,45 +338,12 @@ class WhiteboxRCAEngine:
             network_partition_candidate = {
                 'node': 'global_network',
                 'score': network_score,
-                'integrated_score': 0.0,
-                'guilt_raw': 0.0,
-                'guilt_adjusted': 0.0,
-                'discount_factor': 1.0,
-                'max_outgoing_conf': 0.0,
-                'self_score': 0.0,
-                'temporal_score': 0.0,
-                'trace_score': 0.0,
-                'log_score': network_score,  # Score from network partition detection
-                'symptoms': ['Network partition detected between components'],
-                'blamed_by': [],
-                'temporal_info': {},
-                'trace_info': {},
-                'health_metadata': {
-                    'network_partition_count': len(network_partitions),
-                    'avg_confidence': avg_confidence,
-                    'double_confirmed_count': double_confirmed_count,
-                    'detection_method': 'log_analysis + metric_gaps' if double_confirmed_count > 0 else 'log_analysis'
+                'score_composition': {
+                    'base_health': {'raw': 0, 'confidence': 'high', 'multiplier': 1.0, 'points': 0},
+                    'physics_coverage': {'raw': 0, 'weight': 60.0, 'points': 0},
+                    'semantic_bonus': {'is_primary': True, 'coverage_context': 'high', 'points': 0},
+                    'supplements': {'temporal': 0, 'trace': 0, 'trace_degradation': 0, 'logs': network_score}
                 },
-                'score_breakdown': {
-                    # All components zero except log_bonus
-                    'base_health_score': 0.0,
-                    'trace_symptom_bonus': 0.0,
-                    'symptom_strength_bonus': 0.0,
-                    'trace_boost': 0.0,
-                    'base_before_penalties': 0.0,
-                    'base_after_penalties': 0.0,
-                    'physics_coverage': 0.0,
-                    'coverage_score': 0.0,
-                    'guilt_component': 0.0,
-                    'temporal_component': 0.0,
-                    'impact_bonus': 0.0,
-                    'capacity_bonus': 0.0,
-                    'confirmation_score': 0.0,
-                    'log_bonus': network_score,  # Score from network partition detection
-                    'victim_penalty_applied': False,
-                    'healthy_penalty_applied': False
-                },
-                'is_trace_authoritative': True,
                 'story': [
                     '🔴 ROOT CAUSE: global_network (Network Partition)',
                     '   Network partitions detected:',
@@ -680,406 +352,278 @@ class WhiteboxRCAEngine:
                     f'   Detection confidence: {avg_confidence*100:.0f}%',
                     f'   Double-confirmed edges: {double_confirmed_count}/{len(network_partitions)}'
                 ],
-                'network_partitions': network_partitions
+                'integrated_score': 0.0,
+                'self_score': 0.0,
+                'symptoms': [f'Network partition detected ({len(network_partitions)} blocked edges)'],
+                'health_metadata': {
+                    'network_partition_count': len(network_partitions),
+                    'avg_confidence': avg_confidence,
+                    'double_confirmed_count': double_confirmed_count,
+                    'detection_method': 'log_analysis + metric_gaps' if double_confirmed_count > 0 else 'log_analysis'
+                },
+                'guilt_ratio': 0.0,
+                'temporal_score': 0.0,
+                'trace_score': 0.0,
+                'is_trace_authoritative': True,
+                'blamed_by': []
             }
 
-        # --- PHASE 2.3: Physics Coverage (The "Precision Scope") ---
-        candidates = [n for n, analysis in self_analyses.items() if analysis.is_root_cause_candidate]
+        # --- PHASE 4: Supplemental Evidence ---
+        temporal_scores = {}
+        if metrics_df is not None and fault_start_time:
+            try: temporal_scores = self.temporal_analyzer.detect_first_impact_times(metrics_df, fault_start_time)
+            except: pass
 
-        physics_hypotheses = self.reasoner.calculate_global_coverage(
-            candidates, self_analyses, baseline_data, current_data
-        )
+        trace_evidence = {}
+        if traces_file and fault_start_time:
+            try: trace_evidence = self.trace_analyzer.analyze(traces_file, fault_start_time)
+            except: pass
 
-        # --- PHASE 2.5: Graph Propagation (External Evidence) ---
-        # "Who blames who?" - Track both incoming votes and outgoing blame
-        incoming_votes = defaultdict(list) # target -> [votes]
-        outgoing_blame = defaultdict(list) # source -> [confidence_scores]
+        log_scores = {}
+        if logs_file and logs_file.exists():
+            try: log_scores = self.log_analyzer.analyze(logs_file, fault_start_time)
+            except: pass
 
-        for u, v in self.topology.edges:
-            edge_data = self.topology.edges[u, v]
-            edge_type = edge_data.get('type', 'sync_http')
-
-            # Skip non-dependency edges (pod_pool, pod_placement, etc.)
-            if edge_type in ['pod_pool', 'pod_placement', 'node_placement']:
-                continue
-
-            # Handle async consume edges differently
-            # For async_consume: queue -> consumer
-            # If consumer is degraded, it's likely the consumer's fault (slow processing)
-            # not the queue's fault
-            if edge_type == 'async_consume':
-                # Check if consumer (v) is degraded
-                consumer_score = self_scores.get(v, 0.0)
-                if consumer_score > 2.0:
-                    # Consumer is degraded - likely consumer's fault
-                    # Don't blame the queue (u)
-                    pass
-                continue
-
-            # For sync edges (HTTP, cache, DB, external service calls)
-            # u calls v. Analyze the edge.
-            # Pass full context for physics validation
-            verdict = self.disambiguator.analyze_edge(
-                u, v,
-                caller_metrics_base=baseline_data.get(u, {}),
-                caller_metrics_curr=current_data.get(u, {}),
-                callee_metrics_base=baseline_data.get(v, {}),
-                callee_metrics_curr=current_data.get(v, {}),
-                baseline_data=baseline_data,
-                current_data=current_data,
-                health_scores=self_analyses
-            )
-
-            if verdict.blames_callee:
-                # u blames v (standard)
-                # Use confidence from disambiguator as the vote weight
-                weight = verdict.confidence
-                incoming_votes[v].append({'source': u, 'weight': weight, 'reason': verdict.reason})
-                outgoing_blame[u].append(weight)
-
-            elif verdict.blames_caller:
-                # v implies u is attacking (DDoS)
-                # Use confidence from disambiguator
-                weight = verdict.confidence
-                incoming_votes[u].append({'source': v, 'weight': weight, 'reason': verdict.reason})
-                outgoing_blame[v].append(weight)
-
-        # --- PHASE 3: Global Ranking with Hub Bias Correction ---
+        # --- PHASE 4: SOTA Ranking & Explainability ---
         rankings = []
-
         for node in self.topology.nodes:
-            # Skip pod-level nodes - they are analyzed separately in pod forensics
-            node_attrs = self.topology.nodes[node]
-            if node_attrs.get('parent_service') is not None:
-                continue
+            if node not in self_scores: continue
 
-            # Skip infrastructure/control plane nodes
-            if node_attrs.get('type') == 'DeploymentController':
-                continue
+            # === COMPONENT 1: BASE HEALTH (0-50 points) ===
+            # Pod-level analysis is AUTHORITATIVE when available (more granular than service aggregates)
+            service_self_score = self_scores[node].self_degradation_score
+            service_confidence = self_scores[node].confidence
 
-            # 1. Calculate Integrated Health Score (Service + Pod, Coverage-Weighted)
-            service_self_score = self_scores.get(node, 0.0)
+            # Calculate integrated score (considers pod-level if available)
             integrated_score, health_metadata = self.calculate_integrated_health_score(
                 node, service_self_score, baseline_pods, current_pods
             )
 
-            # 1.5. Capacity Degradation Detection (Zombie Pod Detection)
-            # Check if some pods are zombies (not serving traffic) causing capacity loss
-            capacity_degradation_bonus = 0.0
+            # PRINCIPLED: Always use pod-integrated score when pods exist (it's the ground truth)
+            # Service-level score is just a lossy aggregate - only use it as fallback
             if health_metadata.get('source') == 'pod-level':
-                degraded_count = health_metadata.get('degraded_count', 0)
-                total_count = health_metadata.get('total_count', 0)
-
-                if total_count > 0 and degraded_count > 0:
-                    # Check if any degraded pods have zombie symptoms
-                    zombie_count = 0
-                    for pod_id in [n for n in self.topology.nodes
-                                   if self.topology.nodes[n].get('parent_service') == node]:
-                        pod_curr = current_pods.get(pod_id, {})
-                        pod_base = baseline_pods.get(pod_id, {})
-
-                        if not pod_curr:
-                            continue
-
-                        # Check for zombie pattern: was active, now has zero throughput
-                        base_rps = np.mean(pod_base.get('inbound_rps', np.array([0])))
-                        curr_rps = np.mean(pod_curr.get('inbound_rps', np.array([0])))
-
-                        if base_rps > self.thresholds.was_active_absolute and curr_rps < self.thresholds.throughput_near_zero_absolute:
-                            zombie_count += 1
-
-                    # If we have zombie pods, this indicates capacity degradation
-                    if zombie_count > 0:
-                        capacity_loss_pct = (zombie_count / total_count) * 100
-                        capacity_degradation_bonus = min(20.0, zombie_count * 5.0)  # Up to 20 bonus points
-                        health_metadata['zombie_pods'] = zombie_count
-                        health_metadata['capacity_loss_pct'] = capacity_loss_pct
-
-            # 2. Trace Analysis (for victim detection and authoritative evidence)
-            trace_info = trace_scores.get(node, {})
-            trace_score = trace_info.get('trace_score', 0.0)
-            is_trace_authoritative = trace_info.get('is_authoritative', False)
-
-            # Victim detection: high total-time but low self-time = waiting on dependencies
-            total_time_degradation = trace_info.get('total_time_degradation', 1.0)
-            self_time_degradation = trace_info.get('self_time_degradation', 1.0)
-            is_victim = (total_time_degradation > 3.0 and self_time_degradation < 1.5)
-
-            # 3. Guilt Ratio (External Evidence) - Hub Bias Correction
-            # P_in: Probability node is faulty based on callers
-            callers = list(self.topology.predecessors(node))
-            votes = incoming_votes[node]
-            vote_sum = sum(v['weight'] for v in votes)
-
-            if len(callers) > 0:
-                guilt_ratio = vote_sum / len(callers)
-                # Dampen for small N to avoid noise (Law of Large Numbers)
-                if len(callers) < 5:
-                    guilt_ratio *= 0.8
+                # Pod analysis is authoritative - use high confidence
+                self_val = integrated_score
+                confidence = 'high'  # Pod-level is concrete evidence
+                confidence_multiplier = 1.0
             else:
-                guilt_ratio = 0.0
+                # No pods or pod score lower - use service-level as fallback
+                self_val = service_self_score
+                confidence = service_confidence
+                confidence_multiplier = {'high': 1.0, 'medium': 0.8, 'low': 0.5}.get(confidence, 0.8)
 
-            # 4. Probabilistic Blame Discounting (Solving Proxy/Middleman Problem)
-            # P_out: Probability node is blaming downstream dependencies
-            # If I am blaming downstream dependencies with high confidence,
-            # I am likely a conduit, not the root cause.
-            # Discount Factor = 1.0 - (Max_Outgoing_Confidence * 0.8)
-            # We use 0.8 as max discount because shared faults can exist
-            my_outgoing = outgoing_blame.get(node, [])
-            max_outgoing_conf = max(my_outgoing) if my_outgoing else 0.0
-            discount_factor = 1.0 - (max_outgoing_conf * 0.8)
+            weighted_self = self_val * 5.0 * confidence_multiplier  # 0-50 points
 
-            # Net Fault Probability: P_root ≈ P_in × (1 - P_out)
-            adjusted_guilt = guilt_ratio * discount_factor
+            # === COMPONENT 2: PHYSICS COVERAGE (0-60 points) ===
+            # How much of the system's pain does this node explain?
+            # This is THE most important signal for root cause
+            raw_coverage = physics_hypotheses.get(node).coverage_score if node in physics_hypotheses else 0.0
+            weighted_coverage = raw_coverage * 60.0  # 0-60 points
 
-            # 5. Impact Bonus (Log Traffic)
-            b_metrics = baseline_data.get(node, {})
-            traffic_metric = b_metrics.get('inbound_rps')
-            if traffic_metric is None or (hasattr(traffic_metric, '__len__') and len(traffic_metric) == 0):
-                traffic_metric = b_metrics.get('request_rate')
+            # === COMPONENT 3: SEMANTIC TYPE (0-40 points) ===
+            # PRIMARY symptoms (cause) get major boost
+            # SECONDARY symptoms (effect) get zero
+            is_primary = (self_scores[node].symptom_type == 'primary')
 
-            if traffic_metric is not None and hasattr(traffic_metric, '__len__') and len(traffic_metric) > 0:
-                traffic_vol = np.mean(traffic_metric)
-            else:
-                traffic_vol = 1.0
-
-            impact_bonus = math.log10(max(1.0, traffic_vol))
-
-            # 6. Temporal Score
-            temporal_info = temporal_scores.get(node, {})
-            temporal_score = temporal_info.get('temporal_score', 0.0)
-
-            # 7. Healthy Node Filtering (NEW) - Eliminate false positives
-            # Filter out nodes that are clearly healthy to avoid noise
-            is_healthy = False
-            health_filter_reason = None
-
-            # Check pod-level only detections with low coverage
-            if health_metadata.get('source') == 'pod-level':
-                coverage = health_metadata.get('coverage', 0.0)
-                degraded_count = health_metadata.get('degraded_count', 0)
-                max_severity = health_metadata.get('max_severity', 0.0)
-
-                # Low coverage outliers: use configurable threshold
-                if coverage < self.thresholds.pod_coverage_threshold and service_self_score < self.thresholds.min_absolute_severity:
-                    # Also check: no external blame (not being blamed by others)
-                    if guilt_ratio < self.thresholds.guilt_ratio_threshold:
-                        # Apply multiple safeguards to avoid filtering true root causes
-                        # Use RELATIVE thresholds based on distribution, not absolute values
-
-                        # SAFEGUARD 1: Severe pod degradation (top 10% of all scores)
-                        # Use pure percentile-based comparison (no magic numbers)
-                        # If a node is in the top 10% of severity, it's significant regardless of absolute value
-                        all_scores = [self_scores.get(n, 0.0) for n in self.topology.nodes]
-
-                        # For small samples, still use percentile but with more conservative threshold
-                        # Small N: use median (50th percentile) to be less aggressive
-                        # Large N: use 90th percentile for top 10% detection
-                        percentile = 50 if len(all_scores) <= 5 else 90
-                        severity_threshold = np.percentile(all_scores, percentile)
-
-                        if max_severity > severity_threshold:
-                            # Don't filter - in top 10% of severity distribution
-                            # This correctly handles cases where most nodes are healthy (threshold≈0)
-                            # and identifies the most degraded node as significant
-                            pass
-                        # SAFEGUARD 2: Temporal correlation (statistically significant)
-                        # Use relative ranking: top 20% of temporal scores
-                        elif temporal_score > 0 and integrated_score > 0:
-                            temporal_ratio = temporal_score / max(1.0, integrated_score)
-                            if temporal_ratio > 2.0:  # Temporal evidence is 2x stronger than symptoms
-                                # Don't filter - strong timing correlation
-                                pass
-                        # SAFEGUARD 3: Trace analysis (authoritative or strong signal)
-                        elif is_trace_authoritative or (trace_score > 0 and trace_score / max(1.0, integrated_score) > 3.0):
-                            # Don't filter - traces confirm service involvement
-                            pass
-                        # SAFEGUARD 4: Capacity loss (zombie pods detected)
-                        elif health_metadata.get('zombie_pods', 0) > 0:
-                            # Don't filter - capacity degradation detected
-                            pass
-                        else:
-                            # All safeguards passed - safe to filter as healthy noise
-                            is_healthy = True
-                            health_filter_reason = f"Outlier pod detection ({degraded_count} pod(s), {coverage*100:.0f}% coverage) with no service-level symptoms"
-
-            # Check nodes with zero symptoms but appearing in rankings due to noise
-            # IMPORTANT: Don't filter nodes with pod-level symptoms (e.g., hot_shard)
-            # Pod-level symptoms ARE real symptoms, even if service-level is 0
-            has_pod_symptoms = health_metadata.get('source') == 'pod-level' and integrated_score > 0
-
-            if service_self_score == 0.0 and integrated_score < 1.0:
-                # If no symptoms, no guilt, and no temporal signal, likely healthy
-                # EXCEPTION: Don't filter if has pod-level symptoms
-                if guilt_ratio == 0.0 and temporal_score == 0.0 and not has_pod_symptoms:
-                    is_healthy = True
-                    health_filter_reason = "No symptoms detected"
-
-            # 8. Calculate Final Score (First Principles Formula)
-            # Initialize all score components for explainability
-            base_health_score = integrated_score * 10.0
-            trace_symptom_bonus = 0.0
-            symptom_strength_bonus = 0.0
-            trace_boost = 0.0
-            victim_penalty_applied = False
-            healthy_penalty_applied = False
-
-            base_score = base_health_score
-
-            # FIX 1: Enhanced symptom detection using trace data
-            # For infrastructure components (cache, queue, external) with no symptoms
-            # but strong trace evidence, treat trace as symptom
-            node_type = self.topology.nodes[node].get('type', 'Service')
-            is_infrastructure = node_type in ['ExternalCache', 'MessageQueue', 'ExternalService', 'SqlDatabase']
-
-            if is_infrastructure and service_self_score == 0 and is_trace_authoritative:
-                # Use trace degradation as symptom for infrastructure
-                if self_time_degradation > self.thresholds.min_effect_size_medium:
-                    # Add symptom-equivalent score based on trace evidence
-                    trace_symptom_bonus = min(10.0, self_time_degradation * 2.0)
-                    base_score += trace_symptom_bonus
-
-            # FIX 1B: Boost strong symptom evidence when NO trace data available
-            # Services with multiple symptoms but no traces get unfairly penalized
-            symptom_count = len(symptoms_map.get(node, []))
-            has_no_trace = trace_score == 0
-
-            # Don't boost if this is likely a victim (NOT the root cause)
-            # Victim indicators: high blame on dependencies, low self-time if traces exist
-            is_likely_victim = is_victim or (max_outgoing_conf > 0.7)
-
-            if has_no_trace and symptom_count >= 2 and service_self_score > 2.0 and not is_healthy and not is_likely_victim:
-                # Multiple symptoms with no trace = strong local evidence
-                # Boost to compete with trace-based scores
-                # Use adaptive boost based on symptom strength
-                symptom_strength_bonus = min(100.0, symptom_count * 20.0 + integrated_score * 10.0)
-                base_score += symptom_strength_bonus
-
-            # FIX 2: Authoritative trace evidence boost (adaptive multiplier)
-            # Instead of flat +50, use multiplier based on degradation severity
-            # Authoritative trace = definitive evidence, should dominate symptom-only scores
-            if is_trace_authoritative:
-                if self_time_degradation > self.thresholds.min_effect_size_very_large:
-                    # Critical degradation (>3x): large boost
-                    trace_boost = trace_score * 6.0 + 80.0
-                elif self_time_degradation > self.thresholds.min_effect_size_large:
-                    # Severe degradation (>2x): moderate boost
-                    trace_boost = trace_score * 5.0 + 60.0
+            # Refined: Consider both type AND coverage
+            if is_primary:
+                # Primary symptoms with good coverage are strong candidates
+                if raw_coverage > 0.5:
+                    semantic_bonus = 40.0  # Strong root cause signal
+                elif raw_coverage > 0.2:
+                    semantic_bonus = 30.0  # Moderate root cause signal
                 else:
-                    # Moderate degradation: standard boost
-                    trace_boost = trace_score * 4.0 + 40.0
-                base_score += trace_boost
+                    semantic_bonus = 20.0  # Isolated primary symptom
+            else:
+                # Secondary symptoms are likely victims, but high coverage victims matter
+                if raw_coverage > 0.7:
+                    semantic_bonus = 10.0  # Major victim (might be proxy)
+                else:
+                    semantic_bonus = 0.0   # Minor victim
 
-            # Store base score before penalties for explainability
-            base_score_before_penalties = base_score
+            # === COMPONENT 4: TEMPORAL EVIDENCE (0-15 points) ===
+            # First to break gets bonus
+            min_time = min(temporal_scores.values()) if temporal_scores else 0
+            is_early = (temporal_scores.get(node, float('inf')) <= min_time + 5.0)
+            temporal_bonus = 15.0 if is_early else 0.0
 
-            # Victim penalty: If confirmed victim, heavily penalize
-            # (Keep in rankings but score very low)
-            if is_victim and integrated_score < 2.0:
-                base_score = base_score * 0.1  # 90% penalty
-                victim_penalty_applied = True
+            # === COMPONENT 5: TRACE EVIDENCE (0-35 points) ===
+            # Authoritative trace evidence (self-time degradation)
+            trace_info = trace_evidence.get(node, {})
+            trace_auth = trace_info.get('is_authoritative', False)
+            self_time_deg = trace_info.get('self_time_degradation', 1.0)
 
-            # Healthy node penalty: Strongly penalize clearly healthy nodes
-            # EXCEPTION: Don't penalize if has authoritative trace evidence
-            if is_healthy and not is_trace_authoritative:
-                base_score = base_score * 0.05  # 95% penalty (stronger than victim penalty)
-                healthy_penalty_applied = True
+            if trace_auth:
+                # Scale based on degradation severity
+                if self_time_deg > 3.0:
+                    trace_bonus = 35.0  # Severe degradation
+                elif self_time_deg > 2.0:
+                    trace_bonus = 25.0  # Moderate degradation
+                else:
+                    trace_bonus = 15.0  # Minor degradation
+            else:
+                trace_bonus = 0.0
 
-            # B. Physics Coverage Bonus
-            # If this node explains 80% of symptoms, it gets massive points.
-            coverage_val = physics_hypotheses.get(node).coverage_score if node in physics_hypotheses else 0.0
+            # === COMPONENT 6: LOG EVIDENCE (0-20 points) ===
+            log_bonus = min(20.0, log_scores.get(node, {}).get('log_score', 0.0))
 
-            # C. Supplemental Evidence
-            # Log bonus
-            log_bonus = log_scores.get(node, {}).get('log_score', 0.0)
-
-            # Confirmation signals: External evidence is SECONDARY
-            # Use ADJUSTED guilt (with probabilistic discounting) instead of raw guilt
-            guilt_component = adjusted_guilt * 20.0
-            temporal_component = temporal_score * 2.0
-
-            confirmation_score = (
-                guilt_component +              # Adjusted Guilt: 0-20 (with proxy discounting!)
-                temporal_component +           # Temporal: 0-40
-                impact_bonus +                 # Impact: 0-3 (log scale)
-                capacity_degradation_bonus     # Capacity Loss: 0-20 (zombie pods)
+            # === FINAL SCORE (0-220 max) ===
+            # Balanced formula: No single component dominates
+            # Primary + High Coverage + Early = Strong Root Cause
+            final_score = (
+                weighted_self +      # 0-50: Internal health
+                weighted_coverage +  # 0-60: Explanatory power (MOST IMPORTANT)
+                semantic_bonus +     # 0-40: Cause vs Effect
+                temporal_bonus +     # 0-15: First mover advantage
+                trace_bonus +        # 0-35: Authoritative evidence
+                log_bonus            # 0-20: Log evidence
             )
 
-            # --- THE HYBRID FORMULA ---
-            # Self(base_score) + Coverage(40) + Confirmation
-            physics_coverage_bonus = coverage_val * 40.0
+            # Get symptoms from analysis
+            symptoms = self_scores[node].symptoms if node in self_scores else []
 
-            final_score = base_score + physics_coverage_bonus + confirmation_score + log_bonus
-
-            # Store results with complete score breakdown for explainability
             rankings.append({
                 'node': node,
                 'score': round(final_score, 2),
+                'score_composition': {
+                    'base_health': {
+                        'raw': round(self_val, 2),
+                        'confidence': confidence,
+                        'multiplier': confidence_multiplier,
+                        'points': round(weighted_self, 1)
+                    },
+                    'physics_coverage': {
+                        'raw': round(raw_coverage, 2),
+                        'weight': 60.0,
+                        'points': round(weighted_coverage, 1)
+                    },
+                    'semantic_bonus': {
+                        'is_primary': is_primary,
+                        'coverage_context': 'high' if raw_coverage > 0.5 else 'medium' if raw_coverage > 0.2 else 'low',
+                        'points': semantic_bonus
+                    },
+                    'supplements': {
+                        'temporal': temporal_bonus,
+                        'trace': trace_bonus,
+                        'trace_degradation': round(self_time_deg, 2) if trace_auth else 0,
+                        'logs': log_bonus
+                    }
+                },
+                'story': physics_hypotheses.get(node).narrative if node in physics_hypotheses else [],
+                # Compatibility fields for run_rca_batch.py
                 'integrated_score': round(integrated_score, 2),
-                'guilt_raw': round(guilt_ratio, 2),
-                'guilt_adjusted': round(adjusted_guilt, 2),
-                'discount_factor': round(discount_factor, 2),
-                'max_outgoing_conf': round(max_outgoing_conf, 2),
                 'self_score': round(service_self_score, 2),
-                'temporal_score': round(temporal_score, 2),
-                'trace_score': round(trace_score, 2),
-                'log_score': round(log_bonus, 2),
-                'symptoms': symptoms_map.get(node, []),
-                'blamed_by': [v['source'] for v in votes],
-                'temporal_info': temporal_info,
-                'trace_info': trace_info,
-                'health_metadata': health_metadata,
-                'is_trace_authoritative': is_trace_authoritative,
-                'is_healthy': is_healthy,
-                'health_filter_reason': health_filter_reason,
-                'story': [],  # Populated later
-                # NEW: Complete score breakdown for UI explainability
-                'score_breakdown': {
-                    'base_health_score': round(base_health_score, 2),
-                    'trace_symptom_bonus': round(trace_symptom_bonus, 2),
-                    'symptom_strength_bonus': round(symptom_strength_bonus, 2),
-                    'trace_boost': round(trace_boost, 2),
-                    'base_before_penalties': round(base_score_before_penalties, 2),
-                    'victim_penalty_applied': victim_penalty_applied,
-                    'healthy_penalty_applied': healthy_penalty_applied,
-                    'base_after_penalties': round(base_score, 2),
-                    'physics_coverage': round(physics_coverage_bonus, 2),
-                    'coverage_score': round(coverage_val, 3),
-                    'guilt_component': round(guilt_component, 2),
-                    'temporal_component': round(temporal_component, 2),
-                    'impact_bonus': round(impact_bonus, 2),
-                    'capacity_bonus': round(capacity_degradation_bonus, 2),
-                    'log_bonus': round(log_bonus, 2),
-                    'confirmation_score': round(confirmation_score, 2),
-                }
+                'symptoms': symptoms,
+                'health_metadata': health_metadata,  # Includes pod-level details
+                'guilt_ratio': 0.0,  # Not used in pure physics model
+                'temporal_score': temporal_bonus,
+                'trace_score': trace_bonus,
+                'is_trace_authoritative': trace_auth,
+                'blamed_by': []  # Not used in pure physics model
             })
 
         # Add network partition candidate if detected
-        if network_partition_candidate is not None:
+        if network_partition_candidate:
             rankings.append(network_partition_candidate)
-            print(f"  [+] Added global_network candidate with score {network_partition_candidate['score']}")
 
-        # Sort descending
-        sorted_rankings = sorted(rankings, key=lambda x: x['score'], reverse=True)
+        return sorted(rankings, key=lambda x: x['score'], reverse=True)
 
-        # --- PHASE 4: Story Generation ---
-        if sorted_rankings:
-            top_candidate = sorted_rankings[0]
-            top_node = top_candidate['node']
+    def validate_ground_truth(self, ground_truth_node: str, candidates: List[Dict]) -> Dict:
+        """
+        Validate that the ground truth label actually shows evidence of being faulty.
 
-            # Get narrative from Physics engine if available, else standard
-            if top_node in physics_hypotheses:
-                story = physics_hypotheses[top_node].narrative
-            else:
-                story = []
+        Returns:
+            Dict with validation results
+        """
+        # Find ground truth in candidates
+        gt_candidate = None
+        for c in candidates:
+            if c['node'] == ground_truth_node:
+                gt_candidate = c
+                break
 
-            if not story:
-                story = self.storyteller.generate_story(
-                    top_node,
-                    top_candidate['symptoms'],
-                    incoming_votes
-                )
+        if not gt_candidate:
+            return {
+                'is_valid': False,
+                'confidence': 'unknown',
+                'evidence_score': 0,
+                'max_evidence_score': 10,
+                'reasons': [f"Ground truth node '{ground_truth_node}' not found in topology"],
+                'verdict': "❌ Ground truth node not found in analysis",
+                'ground_truth_node': ground_truth_node,
+                'ground_truth_rank': None,
+                'ground_truth_score': 0,
+            }
 
-            top_candidate['story'] = story
+        # Score evidence
+        evidence_score = 0
+        reasons = []
 
-        return sorted_rankings
+        # 1. Check for symptoms (0-3 points)
+        self_val = gt_candidate['score_composition']['base_health']['raw']
+        if self_val > 0:
+            evidence_score += min(3, int(self_val))
+            reasons.append(f"✓ Self-degradation score: {self_val:.1f}")
+        else:
+            reasons.append("⚠️ No self-degradation detected")
+
+        # 2. Check physics coverage (0-3 points)
+        coverage = gt_candidate['score_composition']['physics_coverage']['raw']
+        if coverage > 0.5:
+            evidence_score += 3
+            reasons.append(f"✓ High physics coverage: {coverage:.1%}")
+        elif coverage > 0.2:
+            evidence_score += 2
+            reasons.append(f"✓ Moderate physics coverage: {coverage:.1%}")
+        elif coverage > 0:
+            evidence_score += 1
+            reasons.append(f"⚠️ Low physics coverage: {coverage:.1%}")
+        else:
+            reasons.append("⚠️ No physics coverage")
+
+        # 3. Check semantic type (0-2 points)
+        is_primary = gt_candidate['score_composition']['semantic_bonus']['is_primary']
+        if is_primary:
+            evidence_score += 2
+            reasons.append("✓ Primary symptom type (cause)")
+        else:
+            reasons.append("⚠️ Secondary symptom type (effect)")
+
+        # 4. Check supplemental evidence (0-2 points)
+        supplements = gt_candidate['score_composition']['supplements']
+        if supplements['trace'] > 0:
+            evidence_score += 1
+            reasons.append("✓ Trace evidence present")
+        if supplements['temporal'] > 0:
+            evidence_score += 1
+            reasons.append("✓ Temporal evidence present")
+
+        # Determine validity
+        if evidence_score >= 7:
+            is_valid = True
+            confidence = 'high'
+            verdict = "✅ Strong evidence that ground truth is actually faulty"
+        elif evidence_score >= 4:
+            is_valid = True
+            confidence = 'medium'
+            verdict = "⚠️ Moderate evidence of fault - RCA should catch this"
+        elif evidence_score >= 2:
+            is_valid = False
+            confidence = 'low'
+            verdict = "⚠️ Weak evidence of fault - possibly invalid ground truth"
+        else:
+            is_valid = False
+            confidence = 'very_low'
+            verdict = "❌ No evidence of fault - likely invalid ground truth label"
+
+        return {
+            'is_valid': is_valid,
+            'confidence': confidence,
+            'evidence_score': evidence_score,
+            'max_evidence_score': 10,
+            'reasons': reasons,
+            'verdict': verdict,
+            'ground_truth_node': ground_truth_node,
+            'ground_truth_rank': None,  # Will be filled in by caller
+            'ground_truth_score': gt_candidate.get('score', 0),
+        }

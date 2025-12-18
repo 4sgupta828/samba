@@ -1,11 +1,15 @@
 """
 self_health_analyzer.py
 
-Analyzes a single node for INTERNAL degradation.
-Distinguishes between:
-1. Saturation (High CPU/Mem/Threads) -> Root Cause
-2. Limp Mode (High Latency + Low CPU) -> Deadlock/Hang (Root Cause)
-3. Dependency-Only (High Latency to downstream) -> Victim
+Analyzes INTERNAL degradation with PRIMARY vs SECONDARY symptom classification.
+Integrates battle-tested queue analysis and threshold configuration.
+
+SOTA Features:
+1. Primary Symptoms (Cause): Resource saturation, deadlocks, queue faults
+2. Secondary Symptoms (Effect): Latency spikes, error increases
+3. Queue-aware analysis: Distinguishes real queue faults from normal buffering
+4. Blackbox inference: Virtual sensors for external dependencies
+5. Adaptive thresholds: Configurable for different environments
 """
 
 import numpy as np
@@ -18,95 +22,261 @@ from config_extractor import ConfigExtractor
 class SelfHealthResult:
     node_id: str
     is_root_cause_candidate: bool
-    self_degradation_score: float # 0.0 to 10.0
+    self_degradation_score: float
+    symptom_type: str  # 'primary' (Cause) vs 'secondary' (Effect)
     symptoms: List[str]
-    confidence: str # 'high', 'medium', 'low'
+    confidence: str = 'medium'  # 'high', 'medium', 'low'
 
 class SelfHealthAnalyzer:
     def __init__(self, config_extractor: ConfigExtractor = None, threshold_config=None):
         self.config_extractor = config_extractor or ConfigExtractor()
 
-        # Load threshold configuration
-        from rca_config import get_thresholds
-        self.thresholds = get_thresholds(threshold_config)
+        # Load adaptive threshold configuration
+        try:
+            from rca_config import get_thresholds
+            self.thresholds = get_thresholds(threshold_config)
+        except ImportError:
+            # Fallback to hardcoded thresholds if rca_config not available
+            self.thresholds = type('obj', (), {
+                'resource_saturation_threshold': 0.9,
+                'min_effect_size_small': 0.5,
+                'min_effect_size_medium': 1.0,
+                'min_effect_size_large': 2.0,
+                'min_effect_size_very_large': 3.0,
+                'error_rate_minor': 0.01,
+                'error_rate_moderate': 0.1,
+                'error_rate_severe': 0.5,
+                'thread_saturation_threshold': 0.8,
+                'throughput_near_zero_absolute': 0.1,
+                'was_active_absolute': 1.0
+            })()
 
-        self.resource_metrics = [
-            'cpu_usage', 'memory_usage', 'thread_pool_active',
-            'garbage_collection_time', 'internal_error_rate'
+        # PRIMARY metrics: Internal resource constraints (The Smoking Gun)
+        # Using RAW metric names from simulation
+        self.primary_metrics = [
+            'container.cpu.utilization', 'pod.cpu.utilization',
+            'container.memory.usage_mb', 'pod.memory.usage',
+            'thread_pool.threads.active', 'db.connections.active',
+            'connection_pool.connections.active'
         ]
 
-        # Performance degradation metrics (latency, errors, queue)
-        self.performance_metrics = [
-            'avg_latency', 'internal_error_rate',
-            'queue_depth',       # Backlog waiting in queue
-            'queue_in_flight',   # Messages being processed
-            'queue_age',         # Staleness indicator
-            'queue_utilization', # Capacity pressure
-            'queue_lag'
+        # SECONDARY metrics: Outcome of degradation (The Smoke)
+        # These are service-specific, will be built dynamically
+        self.secondary_metric_suffixes = [
+            'error_rate',  # service.{name}.error_rate
+            'duration'     # service.{name}.duration
         ]
 
-    def analyze(self, node_id: str, node_type: str, 
-                baseline: Dict[str, np.ndarray], 
+        # QUEUE metrics: Special handling (can be primary or secondary depending on root cause)
+        self.queue_metrics = [
+            'mq.messages.visible',      # Backlog waiting in queue
+            'mq.messages.in_flight',    # Messages being processed
+            'mq.messages.age_seconds',  # Staleness indicator
+            'mq.queue.utilization',     # Capacity pressure
+            'consumer.lag', 'queue.lag' # Consumer lag
+        ]
+
+    def _get_metric(self, data: Dict[str, np.ndarray], *possible_names) -> np.ndarray:
+        """Try multiple possible metric names, return first found."""
+        for name in possible_names:
+            if name in data and len(data[name]) > 0:
+                return data[name]
+        return np.array([])
+
+    def _normalize_metrics(self, node_id: str, data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Create normalized view with standard names for backward compatibility."""
+        normalized = dict(data)  # Start with all raw metrics
+
+        # Map raw names to standard names for backward compatibility
+        normalized['cpu_usage'] = self._get_metric(data, 'container.cpu.utilization', 'pod.cpu.utilization', 'db.cpu.utilization')
+        normalized['memory_usage'] = self._get_metric(data, 'container.memory.usage_mb', 'pod.memory.usage')
+        normalized['thread_pool_active'] = self._get_metric(data, 'thread_pool.threads.active', 'db.connections.active', 'connection_pool.connections.active')
+        normalized['thread_pool_queue'] = self._get_metric(data, 'thread_pool.queue.depth', 'connection_pool.queue_depth')
+
+        # Service-specific metrics (build dynamically)
+        normalized['avg_latency'] = self._get_metric(data, f'service.{node_id}.duration', 'db.query.latency')
+        normalized['internal_error_rate'] = self._get_metric(data, f'service.{node_id}.error_rate')
+        normalized['inbound_rps'] = self._get_metric(data, f'service.{node_id}.requests')
+        normalized['dependency_latency'] = self._get_metric(data, f'service.{node_id}.dependency.duration')
+        normalized['dependency_error_rate'] = self._get_metric(data, f'service.{node_id}.dependency.error_rate')
+        normalized['outbound_rps'] = self._get_metric(data, f'service.{node_id}.dependency.requests')
+
+        # Queue metrics
+        normalized['queue_depth'] = self._get_metric(data, 'mq.messages.visible', 'queue.depth')
+        normalized['queue_in_flight'] = self._get_metric(data, 'mq.messages.in_flight')
+        normalized['queue_age'] = self._get_metric(data, 'mq.messages.age_seconds')
+        normalized['queue_utilization'] = self._get_metric(data, 'mq.queue.utilization')
+
+        return normalized
+
+    def analyze(self, node_id: str, node_type: str,
+                baseline: Dict[str, np.ndarray],
                 current: Dict[str, np.ndarray]) -> SelfHealthResult:
-        
+
+        # 1. Standard Whitebox Analysis (If metrics exist)
+        if current:
+            # Normalize metrics to standard names for backward compatibility
+            baseline_norm = self._normalize_metrics(node_id, baseline)
+            current_norm = self._normalize_metrics(node_id, current)
+            return self._analyze_whitebox(node_id, node_type, baseline_norm, current_norm)
+
+        # 2. No metrics? Return empty (Caller will handle Blackbox Inference)
+        return SelfHealthResult(node_id, False, 0.0, 'secondary', [])
+
+    def infer_blackbox_health(self, node_id: str,
+                              callers_baseline: List[Dict],
+                              callers_current: List[Dict]) -> SelfHealthResult:
+        """
+        Synthesizes health for a node based on what its Callers see.
+        For blackbox external services without direct metrics.
+        """
         symptoms = []
-        max_effect_size = 0.0
+        score = 0.0
+
+        # 1. Check Latency (The main signal for external APIs)
+        base_lats = [np.mean(c.get('dependency_latency', [0])) for c in callers_baseline]
+        curr_lats = [np.mean(c.get('dependency_latency', [0])) for c in callers_current]
+
+        avg_base_lat = np.mean(base_lats) if base_lats else 0.0
+        avg_curr_lat = np.mean(curr_lats) if curr_lats else 0.0
+
+        if avg_curr_lat > 0.01:
+            growth = (avg_curr_lat + 0.001) / (avg_base_lat + 0.001)
+            if growth > 1.5:
+                symptoms.append(f"Inferred High Latency ({growth:.1f}x from callers)")
+                score = 10.0
+            elif growth > 1.2:
+                symptoms.append(f"Inferred Latency Elevation")
+                score = 5.0
+
+        # 2. Check Errors
+        base_errs = [np.mean(c.get('dependency_error_rate', [0])) for c in callers_baseline]
+        curr_errs = [np.mean(c.get('dependency_error_rate', [0])) for c in callers_current]
+
+        avg_curr_err = np.mean(curr_errs) if curr_errs else 0.0
+        avg_base_err = np.mean(base_errs) if base_errs else 0.0
+
+        if avg_curr_err - avg_base_err > 0.01:
+            symptoms.append(f"Inferred Error Spike ({(avg_curr_err*100):.1f}%)")
+            score = 10.0
+
+        # DECISION: Symptom Type
+        # For a Blackbox, High Latency/Errors IS the root state (we can't see inside)
+        # Treat as PRIMARY since it's the deepest we can observe
+        symptom_type = 'primary' if score > 5.0 else 'secondary'
+
+        return SelfHealthResult(
+            node_id=node_id,
+            is_root_cause_candidate=(score > 4.0),
+            self_degradation_score=score,
+            symptom_type=symptom_type,
+            symptoms=symptoms
+        )
+
+    def _analyze_whitebox(self, node_id, node_type, baseline, current) -> SelfHealthResult:
+        symptoms = []
         resource_score = 0.0
-        
-        # 1. Check Resource Saturation
+        performance_score = 0.0
+        limp_mode_score = 0.0
+        found_primary = False
+
         limits = self.config_extractor.get_limits_for_node(node_id, node_type)
-        
-        for metric in self.resource_metrics:
+
+        # === PHASE 1: PRIMARY SYMPTOMS (Resource Saturation) ===
+        for metric in self.primary_metrics:
             if metric in current and metric in baseline:
                 stat = compare_distributions(baseline[metric], current[metric])
-                
-                # Check for Limit Saturation (e.g., Active Threads near Max Threads)
                 curr_max = np.max(current[metric]) if len(current[metric]) > 0 else 0
 
                 limit_hit = False
                 if metric == 'thread_pool_active' and curr_max > limits['max_threads'] * self.thresholds.resource_saturation_threshold:
-                    symptoms.append(f"Thread Pool Saturation ({curr_max}/{limits['max_threads']})")
+                    symptoms.append(f"Thread Pool Saturation ({curr_max:.0f}/{limits['max_threads']})")
                     limit_hit = True
 
                 if stat.significant and stat.effect_size > self.thresholds.min_effect_size_small:
-                    symptoms.append(f"{metric} increased (d={stat.effect_size:.2f})")
-                    max_effect_size = max(max_effect_size, stat.effect_size)
+                    symptoms.append(f"{metric} spike (d={stat.effect_size:.2f})")
 
                     if limit_hit or stat.effect_size > self.thresholds.min_effect_size_large:
-                        resource_score = max(resource_score, 10.0) # Definite saturation
+                        resource_score = max(resource_score, 10.0)
+                        found_primary = True
+                    elif stat.effect_size > self.thresholds.min_effect_size_medium:
+                        resource_score = max(resource_score, min(10.0, stat.effect_size * 2.5))
+                        found_primary = True
                     else:
                         resource_score = max(resource_score, min(10.0, stat.effect_size * 2.5))
 
-        # 2. Check Performance Degradation (Latency, Errors, Queue Depth)
-        performance_score = 0.0
+        # === PHASE 2: PRIMARY SYMPTOMS (Deadlock Detection) ===
+        lat_stat = self._check_metric('avg_latency', baseline, current)
+        cpu_stat = self._check_metric('cpu_usage', baseline, current)
 
-        # Check Latency Degradation
-        if 'avg_latency' in current and 'avg_latency' in baseline:
-            lat_stat = compare_distributions(baseline['avg_latency'], current['avg_latency'])
-            if lat_stat.significant and lat_stat.effect_size > self.thresholds.min_effect_size_medium:
-                symptoms.append(f"Latency increased (d={lat_stat.effect_size:.2f})")
-                max_effect_size = max(max_effect_size, lat_stat.effect_size)
+        # Pattern A: High Latency + LOW CPU = Process is hung/deadlocked
+        if lat_stat.effect_size > 1.5 and cpu_stat.effect_size < -0.2:
+            symptoms.append("⚠️ Potential Deadlock (High Latency / Low CPU)")
+            limp_mode_score = 10.0
+            found_primary = True
 
-                # Latency increase is strong evidence of root cause
-                if lat_stat.effect_size > self.thresholds.min_effect_size_very_large:
-                    performance_score = max(performance_score, 10.0)
-                elif lat_stat.effect_size > self.thresholds.min_effect_size_large:
-                    performance_score = max(performance_score, 8.0)
-                else:
-                    performance_score = max(performance_score, min(10.0, lat_stat.effect_size * 3.0))
+        # Pattern B: Zombie Pod - Thread Saturation + Zero Throughput
+        if 'thread_pool_active' in current and 'inbound_rps' in current:
+            curr_threads = np.mean(current['thread_pool_active']) if len(current['thread_pool_active']) > 0 else 0
+            curr_rps = np.mean(current['inbound_rps']) if len(current['inbound_rps']) > 0 else 0
+            base_rps = np.mean(baseline.get('inbound_rps', np.array([0]))) if 'inbound_rps' in baseline else 0
 
-        # Check Error Rate Increase
-        if 'internal_error_rate' in current and 'internal_error_rate' in baseline:
-            err_stat = compare_distributions(baseline['internal_error_rate'], current['internal_error_rate'])
-            curr_err_mean = np.mean(current['internal_error_rate']) if len(current['internal_error_rate']) > 0 else 0
-            base_err_mean = np.mean(baseline['internal_error_rate']) if len(baseline['internal_error_rate']) > 0 else 0
+            thread_saturation = curr_threads > limits['max_threads'] * self.thresholds.thread_saturation_threshold
+            zero_throughput = curr_rps < self.thresholds.throughput_near_zero_absolute
+            was_active = base_rps > self.thresholds.was_active_absolute
 
-            # Check for significant absolute increase or relative increase
-            if (curr_err_mean > self.thresholds.error_rate_minor and curr_err_mean > base_err_mean * 1.5) or err_stat.effect_size > self.thresholds.min_effect_size_medium:
+            if thread_saturation and zero_throughput and was_active:
+                symptoms.append(f"⚠️ Zombie Pod (Thread Deadlock): {curr_threads:.0f}/{limits['max_threads']} threads, RPS {base_rps:.1f} → {curr_rps:.1f}")
+                limp_mode_score = max(limp_mode_score, 10.0)
+                found_primary = True
+
+        # === PHASE 3: QUEUE METRICS (Can be PRIMARY or SECONDARY) ===
+        # Use relaxed CV threshold (1.0) for high-variance queue metrics
+        queue_fault_count = 0
+        queue_buffering_count = 0
+
+        for queue_metric in self.queue_metrics:
+            if queue_metric in current and queue_metric in baseline:
+                q_stat = compare_distributions(baseline[queue_metric], current[queue_metric], cv_threshold=1.0)
+
+                # Use threshold of 0.5 (medium effect) for queue metrics
+                if q_stat.significant and abs(q_stat.effect_size) >= 0.5:
+                    # Determine if this is a REAL queue fault or just buffering
+                    # CRITICAL: ALL queue metrics must go through rate imbalance analysis
+                    # Even in_flight, age, utilization can be due to slow consumer
+                    is_queue_fault = self._analyze_queue_rate_imbalance(
+                        node_id, node_type, baseline, current, q_stat.effect_size
+                    )
+
+                    if is_queue_fault:
+                        # TRUE queue fault → PRIMARY symptom
+                        symptoms.append(f"{queue_metric} spike (d={q_stat.effect_size:.2f})")
+                        if q_stat.effect_size > 3.0:
+                            performance_score = max(performance_score, 10.0)
+                        else:
+                            performance_score = max(performance_score, min(10.0, q_stat.effect_size * 2.5))
+                        queue_fault_count += 1
+                    else:
+                        # Normal buffering → Don't treat as fault
+                        # Give minimal score (just for context) - this is NOT the queue's fault!
+                        symptoms.append(f"{queue_metric} increased (buffering - producer/consumer imbalance)")
+                        # Very small contribution: 0.5 points max per metric
+                        performance_score = max(performance_score, min(0.5, q_stat.effect_size * 0.1))
+                        queue_buffering_count += 1
+
+        # CRITICAL: Only mark as PRIMARY if MAJORITY of queue symptoms are faults (not buffering)
+        # This prevents one false-positive queue metric from contaminating the entire classification
+        if queue_fault_count > 0 and queue_fault_count > queue_buffering_count:
+            found_primary = True
+
+        # === PHASE 4: SECONDARY SYMPTOMS (Performance Degradation) ===
+        if not found_primary:
+            # Check Error Rate
+            err_stat = self._check_metric('internal_error_rate', baseline, current)
+            if err_stat.significant and err_stat.effect_size > self.thresholds.min_effect_size_medium:
+                curr_err_mean = np.mean(current['internal_error_rate']) if len(current['internal_error_rate']) > 0 else 0
                 symptoms.append(f"Error rate increased ({curr_err_mean:.1%})")
-                max_effect_size = max(max_effect_size, err_stat.effect_size)
 
-                # Error rate increase is strong evidence
                 if curr_err_mean > self.thresholds.error_rate_severe:
                     performance_score = max(performance_score, 10.0)
                 elif curr_err_mean > self.thresholds.error_rate_moderate:
@@ -114,172 +284,95 @@ class SelfHealthAnalyzer:
                 else:
                     performance_score = max(performance_score, 6.0)
 
-        # Check Queue Metrics (depth, in_flight, age, utilization, lag)
-        # These are orthogonal metrics that indicate different problems
-        # NOTE: Queue metrics naturally have higher variance (messages fluctuate)
-        # Use relaxed CV threshold (1.0) to avoid rejecting legitimate signals
-        for queue_metric in ['queue_depth', 'queue_in_flight', 'queue_age', 'queue_utilization', 'queue_lag']:
-            if queue_metric in current and queue_metric in baseline:
-                q_stat = compare_distributions(baseline[queue_metric], current[queue_metric], cv_threshold=1.0)
-                # Note: effect_size is Cohen's d (standardized), not ratio
-                # Cohen's d: 0.2=small, 0.5=medium, 0.8=large
-                # Use threshold of 0.5 (medium effect) for queue metrics
-                if q_stat.significant and abs(q_stat.effect_size) >= 0.5:
-                    # Different queue metrics indicate different problems:
-                    # - queue_depth: backlog building (slow consumer OR fast producer)
-                    # - queue_in_flight: processing delay (slow consumer processing)
-                    # - queue_age: messages not consumed fast enough
-                    # - queue_utilization: capacity pressure (undersized queue)
+            # Check Latency
+            if lat_stat.significant and lat_stat.effect_size > self.thresholds.min_effect_size_medium:
+                symptoms.append(f"Latency spike (d={lat_stat.effect_size:.2f})")
+                if lat_stat.effect_size > self.thresholds.min_effect_size_very_large:
+                    performance_score = max(performance_score, 10.0)
+                elif lat_stat.effect_size > self.thresholds.min_effect_size_large:
+                    performance_score = max(performance_score, 8.0)
+                else:
+                    performance_score = max(performance_score, min(10.0, lat_stat.effect_size * 3.0))
 
-                    # For queue_depth and queue_lag, check if this is a real queue problem
-                    # or just normal buffering due to producer/consumer rate imbalance
-                    if queue_metric in ['queue_depth', 'queue_lag']:
-                        is_queue_fault = self._analyze_queue_rate_imbalance(
-                            node_id, node_type, baseline, current, q_stat.effect_size
-                        )
-                    else:
-                        # For in_flight, age, utilization: always treat as queue symptoms
-                        # These directly indicate queue/consumer issues
-                        is_queue_fault = (node_type in ['queue', 'MessageQueue'])
-
-                    if is_queue_fault:
-                        # True queue problem: capacity limits, failures, queue-level latency, processing delay
-                        symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f})")
-                        max_effect_size = max(max_effect_size, q_stat.effect_size)
-
-                        # Queue fault is strong evidence
-                        if q_stat.effect_size > 3.0:
-                            performance_score = max(performance_score, 10.0)
-                        else:
-                            performance_score = max(performance_score, min(10.0, q_stat.effect_size * 2.5))
-                    else:
-                        # Normal buffering - queue is working as intended
-                        # Downweight this symptom significantly (it's not a queue problem)
-                        symptoms.append(f"{queue_metric} increased (d={q_stat.effect_size:.2f}) - buffering (producer/consumer imbalance)")
-                        # Don't score this as queue's problem - just context info
-                        performance_score = max(performance_score, min(2.0, q_stat.effect_size * 0.3))
-
-        # 3. Check for "Limp Mode" / Deadlock Patterns
-        lat_stat = self._check_metric('avg_latency', baseline, current)
-        cpu_stat = self._check_metric('cpu_usage', baseline, current)
-
-        limp_mode_score = 0.0
-
-        # Pattern A: High Latency + LOW CPU = Process is hung/deadlocked
-        if lat_stat.effect_size > 1.5 and cpu_stat.effect_size < -0.2:
-            symptoms.append("⚠️ Potential Deadlock (High Latency / Low CPU)")
-            limp_mode_score = 10.0 # Critical finding
-
-        # Pattern B: Thread Saturation + Zero Throughput = Zombie Pod (all threads deadlocked)
-        # This catches pods that have all threads blocked but aren't serving any traffic
-        if 'thread_pool_active' in current and 'inbound_rps' in current:
-            curr_threads = np.mean(current['thread_pool_active']) if len(current['thread_pool_active']) > 0 else 0
-            curr_rps = np.mean(current['inbound_rps']) if len(current['inbound_rps']) > 0 else 0
-            base_rps = np.mean(baseline.get('inbound_rps', np.array([0]))) if 'inbound_rps' in baseline else 0
-
-            # High thread usage but zero/minimal throughput + was previously active
-            thread_saturation = curr_threads > limits['max_threads'] * self.thresholds.thread_saturation_threshold
-            zero_throughput = curr_rps < self.thresholds.throughput_near_zero_absolute
-            was_active = base_rps > self.thresholds.was_active_absolute
-
-            if thread_saturation and zero_throughput and was_active:
-                symptoms.append(f"⚠️ Zombie Pod (Thread Deadlock): {curr_threads:.0f}/{limits['max_threads']} threads saturated, RPS dropped from {base_rps:.1f} to {curr_rps:.1f}")
-                limp_mode_score = max(limp_mode_score, 10.0) # Critical finding
-
-        # 4. Final Scoring
+        # === FINAL SCORING ===
         final_score = max(resource_score, performance_score, limp_mode_score)
-        
+        confidence = 'high' if final_score > 7.0 else 'medium' if final_score > 4.0 else 'low'
+
         return SelfHealthResult(
             node_id=node_id,
             is_root_cause_candidate=(final_score > 4.0),
             self_degradation_score=final_score,
+            symptom_type='primary' if found_primary else 'secondary',
             symptoms=symptoms,
-            confidence='high' if final_score > 7.0 else 'medium'
+            confidence=confidence
         )
 
     def _check_metric(self, name, baseline, current) -> StatResult:
         if name in baseline and name in current:
             return compare_distributions(baseline[name], current[name])
-        # Return dummy result if missing
         return type('obj', (object,), {'effect_size': 0.0, 'significant': False})
 
     def _analyze_queue_rate_imbalance(self, node_id: str, node_type: str,
                                        baseline: Dict, current: Dict,
                                        queue_depth_effect_size: float) -> bool:
         """
-        Analyzes whether queue depth increase is due to:
-        1. Queue itself having problems (capacity, failures) → TRUE (queue fault)
-        2. Normal buffering due to producer/consumer rate imbalance → FALSE (not queue's fault)
+        CRITICAL: Distinguishes real queue faults from normal buffering.
+
+        This solves the "audit_queue vs audit_service" problem:
+        - If queue depth increases due to slow consumer → NOT queue's fault (SECONDARY)
+        - If queue depth increases due to queue capacity/failures → IS queue's fault (PRIMARY)
 
         Returns:
-            True if queue itself is faulty (should be marked as root cause candidate)
-            False if queue is just buffering normally (producer or consumer is the problem)
+            True if queue itself is faulty (PRIMARY symptom)
+            False if queue is just buffering (SECONDARY effect of consumer/producer issues)
         """
-        # Only apply this analysis to queue nodes
+        # Only apply to queue nodes
         if node_type not in ['queue', 'MessageQueue']:
-            return False  # Not a queue, treat normally
+            return False
 
-        # Get queue metrics
         curr_queue_depth = np.mean(current.get('queue_depth', np.array([0])))
         base_queue_depth = np.mean(baseline.get('queue_depth', np.array([0])))
 
-        # Check for queue-specific faults
-        # 1. Queue capacity saturation (near max capacity)
         limits = self.config_extractor.get_limits_for_node(node_id, node_type)
+
+        # CHECK 1: Queue capacity saturation
         max_queue_capacity = limits.get('max_queue_depth', float('inf'))
-
         if max_queue_capacity < float('inf') and curr_queue_depth > max_queue_capacity * 0.9:
-            # Queue is at capacity - this IS a queue problem (undersized)
-            return True
+            return True  # Queue is undersized → PRIMARY fault
 
-        # 2. Check for queue failures/errors
-        # If queue has errors (message drops, connection failures), it's a queue problem
+        # CHECK 2: Queue failures/errors
         if 'internal_error_rate' in current:
             curr_err_rate = np.mean(current['internal_error_rate'])
             if curr_err_rate > 0.01:  # >1% error rate
-                return True
+                return True  # Queue has errors → PRIMARY fault
 
-        # 3. Check for producer/consumer rate imbalance
-        # If we have producer and consumer rate metrics, analyze them
+        # CHECK 3: Producer/Consumer rate imbalance
         producer_rate_curr = np.mean(current.get('producer_rate', np.array([0])))
         consumer_rate_curr = np.mean(current.get('consumer_rate', np.array([0])))
         producer_rate_base = np.mean(baseline.get('producer_rate', np.array([0])))
         consumer_rate_base = np.mean(baseline.get('consumer_rate', np.array([0])))
 
-        # If we have rate data, analyze imbalance
         if producer_rate_curr > 0 or consumer_rate_curr > 0:
-            # Rate imbalance: producer producing much faster than consumer consuming
             rate_ratio = producer_rate_curr / max(consumer_rate_curr, 0.1)
 
             if rate_ratio > 1.5:
-                # Producer is overwhelming consumer - this is normal buffering
-                # The problem is with producer (too fast) or consumer (too slow)
-                # NOT the queue itself
-                return False
+                return False  # Producer overwhelming consumer → NOT queue's fault
 
             if consumer_rate_curr < consumer_rate_base * 0.5:
-                # Consumer slowed down significantly - consumer problem, not queue
-                return False
+                return False  # Consumer slowed down → NOT queue's fault
 
             if producer_rate_curr > producer_rate_base * 1.5:
-                # Producer sped up significantly - producer problem, not queue
-                return False
+                return False  # Producer sped up → NOT queue's fault
 
-        # 4. Check for queue-level latency affecting all operations
-        # If the queue itself has high latency (e.g., slow disk, network issues),
-        # this would affect ALL producers and consumers
+        # CHECK 4: Queue-level latency (queue operations themselves are slow)
         if 'avg_latency' in current and 'avg_latency' in baseline:
             lat_stat = compare_distributions(baseline['avg_latency'], current['avg_latency'])
             if lat_stat.significant and lat_stat.effect_size > 2.0:
-                # Queue operations themselves are slow - this IS a queue problem
-                return True
+                return True  # Queue operations slow → PRIMARY fault
 
-        # 5. Default: If queue depth is extremely high but none of the above apply,
-        # conservatively assume it's buffering (not queue fault)
-        # However, if queue depth is VERY high (effect_size > 4.0), it might be undersized
+        # CHECK 5: Extremely high queue depth
         if queue_depth_effect_size > 4.0 and curr_queue_depth > 1000:
-            # Extremely high queue depth - likely undersized queue
-            return True
+            return True  # Queue likely undersized → PRIMARY fault
 
-        # Default: Normal buffering, not a queue fault
+        # Default: Normal buffering, not queue's fault
         return False
