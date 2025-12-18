@@ -340,10 +340,16 @@ class CapacityPlanner:
         # This ensures memory leaks have visible impact despite low concurrent requests
         consumer_memory_mb = 256  # vs 512 for standard services
 
+        # Message concurrency = how many messages can be processed in parallel per pod
+        # Set to match the calculated concurrency (before headroom multiplier)
+        # This ensures we don't pull more messages than we can process concurrently
+        message_concurrency = max(1, concurrency_per_pod)
+
         config = {
             'desired_replicas': final_replicas,
             'thread_pool_size': threads,
             'db_connection_pool_capacity': db_connections,
+            'message_concurrency': message_concurrency,  # Parallel message processing limit
             'memory_capacity_mb': consumer_memory_mb,  # Right-sized for low throughput
             'timeouts': {
                 'database_call_seconds': max(0.2, timeout_sec),
@@ -356,9 +362,12 @@ class CapacityPlanner:
                 'required_consumer_rps': required_consumer_rps,
                 'baseline_stable_replicas': baseline_stable_replicas,
                 'burst_factor': burst_factor,
-                'drain_margin': drain_margin
+                'drain_margin': drain_margin,
+                'message_concurrency': message_concurrency
             }
         }
+
+        logger.info(f"  → Message concurrency: {message_concurrency} (parallel messages per pod)")
 
         return config
 
@@ -488,6 +497,38 @@ class CapacityPlanner:
             queries_per_core = 1000.0 / res_prof.cpu_ms_per_request
             needed_cores = math.ceil((rps / queries_per_core) * headroom)
             config['cpu_cores'] = max(2, int(needed_cores))
+
+        elif role == 'queue':
+            # --- Queue Capacity Planning ---
+            # Set queue capacity based on production rate, buffer time, and burst characteristics
+            # This enables backpressure when queues fill up (matching real-world systems)
+
+            if rps <= 0:
+                rps = 1.0  # Minimum for calculation
+
+            # Buffer time: how many seconds of messages the queue should hold
+            # Typical values: 30-60s for real-time systems, 300s+ for batch systems
+            # This gives consumers time to catch up during temporary slowdowns
+            buffer_time_seconds = 60.0  # Default: 1 minute buffer
+
+            # Burst multiplier: account for traffic spikes
+            # Real-world systems need headroom for burst traffic
+            burst_multiplier = 2.0 if phi < 0.5 else 1.5  # More headroom when robust
+
+            # Calculate capacity: production_rate * buffer_time * burst_factor
+            base_capacity = rps * buffer_time_seconds * burst_multiplier
+
+            # Add safety margin for fragility
+            safety_margin = 1.0 + (0.5 * (1.0 - phi))  # phi=0 → 1.5x, phi=1 → 1.0x
+
+            final_capacity = int(base_capacity * safety_margin)
+
+            # Reasonable bounds: minimum 1000, maximum 100k messages
+            final_capacity = max(1000, min(100000, final_capacity))
+
+            config['capacity'] = final_capacity
+
+            logger.info(f"Queue {node_id}: capacity={final_capacity} (prod_rps={rps:.1f}, buffer={buffer_time_seconds}s, burst={burst_multiplier}x)")
 
         return config
 

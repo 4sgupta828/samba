@@ -18,8 +18,14 @@ class MessageQueue(EnrichedComponent):
         # Load centralized configuration
         config = get_simulation_config().messaging.message_queue
 
-        # SimPy resource to manage messages
-        self.store = simpy.Store(env)
+        # Queue capacity limit (matching real-world systems)
+        # RabbitMQ: queue max-length, Kafka: retention limits, SQS: 120k in-flight
+        # Defaults to 10000, but can be overridden via IAC config
+        self.capacity = 10000  # Will be set by capacity planner or IAC config
+
+        # SimPy resource to manage messages with capacity limit
+        # This enables backpressure - producers block when queue is full
+        self.store = simpy.Store(env, capacity=self.capacity)
 
         # Internal state for visibility timeout simulation
         self.in_flight_messages: Dict[int, Message] = {}
@@ -37,6 +43,10 @@ class MessageQueue(EnrichedComponent):
         self.age_samples = []
         self.sample_window = get_simulation_config().defaults.sample_window_seconds
         self.metrics_sampling_interval = config.metrics_sampling_interval_seconds
+
+        # Backpressure tracking for producer throttling metrics
+        self.producer_blocked_times = []  # List of (timestamp, blocked_duration_ms) tuples
+        self.producer_blocked_count = 0  # Total number of times producers were blocked
 
         # OTel Metrics - time-averaged like CloudWatch SQS metrics
         self.visible_messages_gauge = self.meter.create_observable_gauge(
@@ -69,8 +79,55 @@ class MessageQueue(EnrichedComponent):
             unit="1"
         )
 
+        # Backpressure metrics (matching real-world queue monitoring)
+        self.queue_capacity_gauge = self.meter.create_observable_gauge(
+            "mq.queue.capacity",
+            callbacks=[self._report_queue_capacity],
+            description="Maximum queue capacity (message limit)"
+        )
+        self.queue_utilization_gauge = self.meter.create_observable_gauge(
+            "mq.queue.utilization",
+            callbacks=[self._report_queue_utilization],
+            description="Queue utilization as percentage (depth/capacity)"
+        )
+        self.producer_blocked_counter = self.meter.create_counter(
+            "mq.producer.blocked",
+            description="Number of times producers were blocked due to full queue",
+            unit="1"
+        )
+        self.producer_blocked_time_gauge = self.meter.create_observable_gauge(
+            "mq.producer.blocked_time_ms",
+            callbacks=[self._report_producer_blocked_time],
+            description="Average time producers spent blocked waiting for queue space (ms)"
+        )
+        self.producer_waiting_gauge = self.meter.create_observable_gauge(
+            "mq.producer.waiting",
+            callbacks=[self._report_producers_waiting],
+            description="Number of producers currently waiting for queue space"
+        )
+
     def _apply_hcl_config(self):
         self.visibility_timeout = self.iac_config.get('visibility_timeout_seconds', 60)
+
+        # Apply queue capacity if specified in IAC config
+        # Capacity planner will set this based on production/consumption rates
+        if 'capacity' in self.iac_config:
+            old_capacity = self.capacity
+            self.capacity = self.iac_config['capacity']
+
+            # Recreate the store with new capacity if it changed
+            if self.capacity != old_capacity:
+                # Preserve existing messages
+                existing_msgs = list(self.store.items) if hasattr(self.store, 'items') else []
+
+                # Create new store with updated capacity
+                self.store = simpy.Store(self.env, capacity=self.capacity)
+
+                # Restore messages (up to new capacity)
+                for msg in existing_msgs[:self.capacity]:
+                    self.store.items.append(msg)
+
+                self._emit_log("INFO", f"Queue capacity updated: {old_capacity} → {self.capacity}")
 
     def _report_visible_messages(self, options):
         """Callback for visible messages gauge - reports time-averaged value like production systems."""
@@ -120,7 +177,49 @@ class MessageQueue(EnrichedComponent):
         yield Observation(avg_age, {
             "component.id": self.id
         })
-            
+
+    def _report_queue_capacity(self, options):
+        """Callback for queue capacity gauge."""
+        from opentelemetry.metrics import Observation
+        yield Observation(self.capacity, {
+            "component.id": self.id
+        })
+
+    def _report_queue_utilization(self, options):
+        """Callback for queue utilization gauge - reports current depth as % of capacity."""
+        from opentelemetry.metrics import Observation
+        current_depth = len(self.store.items)
+        utilization = (current_depth / self.capacity * 100.0) if self.capacity > 0 else 0.0
+        yield Observation(utilization, {
+            "component.id": self.id
+        })
+
+    def _report_producer_blocked_time(self, options):
+        """Callback for average producer blocked time - windowed average like other metrics."""
+        from opentelemetry.metrics import Observation
+
+        # Calculate average blocked time over the sample window
+        cutoff_time = self.env.now - self.sample_window
+        recent_blocks = [(t, d) for t, d in self.producer_blocked_times if t > cutoff_time]
+
+        if recent_blocks:
+            avg_blocked_ms = sum(d for _, d in recent_blocks) / len(recent_blocks)
+        else:
+            avg_blocked_ms = 0.0
+
+        yield Observation(avg_blocked_ms, {
+            "component.id": self.id
+        })
+
+    def _report_producers_waiting(self, options):
+        """Callback for number of producers currently waiting for queue space."""
+        from opentelemetry.metrics import Observation
+        # SimPy Store tracks waiting producers in put_queue
+        waiting_count = len(self.store.put_queue) if hasattr(self.store, 'put_queue') else 0
+        yield Observation(waiting_count, {
+            "component.id": self.id
+        })
+
     def run(self):
         # Start background sampling process
         self.env.process(self._sample_metrics_periodically())
@@ -155,11 +254,42 @@ class MessageQueue(EnrichedComponent):
             self.age_samples = [(t, v) for t, v in self.age_samples if t > cutoff_time]
 
     def send_message(self, body: str):
-        """Producer calls this to add a message to the queue."""
+        """
+        Producer calls this to add a message to the queue.
+        Blocks (applies backpressure) if queue is at capacity.
+        Tracks blocked time for backpressure metrics.
+        """
         self.message_counter += 1
         msg = Message(self.message_counter, body, self.env.now)
-        self._emit_log("INFO", f"Message {msg.id} sent to queue.")
-        return self.store.put(msg)
+
+        # Track if producer gets blocked waiting for queue space
+        start_time = self.env.now
+        queue_was_full = len(self.store.items) >= self.capacity
+
+        if queue_was_full:
+            self._emit_log("WARN", f"Queue at capacity ({self.capacity}), producer blocked for message {msg.id}")
+
+        # This will block if queue is full (capacity limit)
+        yield self.store.put(msg)
+
+        # Track backpressure metrics if producer was blocked
+        if queue_was_full:
+            blocked_time_ms = (self.env.now - start_time) * 1000.0
+            self.producer_blocked_times.append((self.env.now, blocked_time_ms))
+            self.producer_blocked_count += 1
+
+            # Emit counter metric for blocked event
+            self.producer_blocked_counter.add(1, {
+                "component.id": self.id
+            })
+
+            # Clean up old blocked time samples (keep only within window)
+            cutoff_time = self.env.now - self.sample_window
+            self.producer_blocked_times = [(t, d) for t, d in self.producer_blocked_times if t > cutoff_time]
+
+            self._emit_log("INFO", f"Producer unblocked after {blocked_time_ms:.1f}ms, message {msg.id} sent to queue.")
+        else:
+            self._emit_log("INFO", f"Message {msg.id} sent to queue.")
 
     def receive_message(self):
         """Consumer calls this to get a message."""

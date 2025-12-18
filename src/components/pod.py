@@ -69,8 +69,17 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
         self.thread_pool_size = getattr(config, 'thread_pool_size', 50)
         self.thread_pool = simpy.Resource(env, capacity=self.thread_pool_size)
 
+        # Message concurrency limit for async queue consumers
+        # This controls how many messages can be processed in parallel (like prefetch count in RabbitMQ)
+        # Matches real-world behavior where consumers have configurable concurrency
+        self.message_concurrency = getattr(config, 'message_concurrency', 10)
+        self.message_concurrency_semaphore = simpy.Resource(env, capacity=self.message_concurrency)
+
         # Track active request processes for crash interruption
         self.active_request_processes = set()
+
+        # Track active message processing tasks for queue consumers
+        self.active_message_processes = set()
 
         # Track samples for time-averaged gauges (like production systems)
         self.cpu_samples = []
@@ -479,32 +488,28 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                     # Exponential backoff with jitter
                     backoff_delay = min(backoff_delay * 2, max_backoff) + random.uniform(0, 1)
 
-                # Check for network partition BEFORE consuming from queue
-                self._check_network_partition(queue.id)
+                # Wait for concurrency slot before pulling next message
+                # This implements prefetch/concurrency limit like real queue consumers
+                with self.message_concurrency_semaphore.request() as req:
+                    yield req  # Wait for a slot to become available
 
-                # Wait for a message from the queue
-                msg = yield from queue.receive_message()
+                    # Check for network partition BEFORE consuming from queue
+                    self._check_network_partition(queue.id)
 
-                self._emit_log("DEBUG", f"Received message {msg.id} from queue")
+                    # Wait for a message from the queue
+                    msg = yield from queue.receive_message()
 
-                # Process message and track result for circuit breaker
-                try:
-                    # Spawn concurrent message processing and wait for result
-                    yield self.env.process(self._process_queue_message(msg, queue))
+                    self._emit_log("DEBUG", f"Received message {msg.id} from queue (in-flight: {self.message_concurrency_semaphore.count})")
 
-                    # Success - reset circuit breaker
+                    # Spawn message processing in background WITHOUT waiting for completion
+                    # This allows multiple messages to be processed concurrently
+                    proc = self.env.process(self._process_queue_message_concurrent(msg, queue, req))
+                    self.active_message_processes.add(proc)
+
+                    # Reset circuit breaker on successful receive (not waiting for processing)
                     if consecutive_failures > 0:
-                        self._emit_log("INFO", f"Circuit breaker: Processing succeeded after {consecutive_failures} failures, resetting")
-                    consecutive_failures = 0
-                    backoff_delay = 1.0  # Reset backoff
-
-                except Exception as proc_error:
-                    # Message processing failed - increment failure counter
-                    consecutive_failures += 1
-                    self._emit_log("WARN", f"Message processing failed (consecutive failures: {consecutive_failures}): {proc_error}")
-
-                    # Don't re-raise - let the message return to queue via visibility timeout
-                    # Circuit breaker will handle backpressure
+                        consecutive_failures = 0
+                        backoff_delay = 1.0
 
             except Exception as e:
                 # Queue receive failed - log and retry after delay
@@ -512,6 +517,26 @@ class Pod(EnrichedComponent, ServicePropagationMixin):
                 self._emit_log("WARN", f"Queue receive failed (consecutive failures: {consecutive_failures}): {e}")
                 yield self.env.timeout(backoff_delay)
                 backoff_delay = min(backoff_delay * 2, max_backoff)
+
+    def _process_queue_message_concurrent(self, msg, queue, concurrency_req):
+        """
+        Wrapper for processing a queue message with concurrency control.
+        Releases the concurrency semaphore after processing completes.
+
+        This enables parallel message processing - multiple messages can be processed
+        simultaneously up to the message_concurrency limit.
+        """
+        try:
+            # Process the message
+            yield from self._process_queue_message(msg, queue)
+        finally:
+            # Always release the concurrency slot when done (success or failure)
+            # This allows the next message to be pulled from the queue
+            concurrency_req.release()
+
+            # Remove from active processes
+            if self.env.active_process in self.active_message_processes:
+                self.active_message_processes.discard(self.env.active_process)
 
     def _process_queue_message(self, msg, queue):
         """

@@ -84,6 +84,12 @@ class ComputeConfig:
     cpu_capacity_cores: float = 1.0
     db_connection_pool_capacity: int = 20
 
+    # Queue consumer configuration
+    # message_concurrency controls how many messages can be processed in parallel per pod
+    # This matches real-world queue consumer behavior (prefetch count in RabbitMQ, max_messages in SQS, etc.)
+    # Set by capacity planner based on thread_pool_size
+    message_concurrency: int = 10
+
     # Node-level contention
     contention: ContentionConfig = field(default_factory=ContentionConfig)
 
