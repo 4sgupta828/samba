@@ -134,7 +134,12 @@ class FaultParameterTuner:
         # Tune parameters based on fault type
         tuned_params = baseline_params.copy()
 
-        if fault_type in ['inject_latency', 'cpu_saturation', 'queue_consumer_slowdown']:
+        if fault_type == 'queue_consumer_slowdown':
+            tuned_params = self._tune_queue_consumer_slowdown_fault(
+                baseline_params, node_rps, severity, verbose
+            )
+
+        elif fault_type in ['inject_latency', 'cpu_saturation']:
             tuned_params = self._tune_latency_fault(
                 baseline_params, total_threads, node_rps, severity, verbose
             )
@@ -297,6 +302,91 @@ class FaultParameterTuner:
                 print(f"    CPU multiplier: {required_cpu_multiplier:.2f}x")
             if 'latency_ms' in tuned:
                 print(f"    Added latency: {tuned['latency_ms']}ms")
+
+        return tuned
+
+    def _tune_queue_consumer_slowdown_fault(
+        self,
+        baseline_params: Dict[str, Any],
+        node_rps: float,
+        severity: float,
+        verbose: bool
+    ) -> Dict[str, Any]:
+        """
+        Tune queue_consumer_slowdown fault to cause visible backlog without hitting queue capacity.
+
+        Goal: Create observable queue backlog within the fault window (90s)
+        Constraint: Avoid saturating the queue (default capacity: 10,000 messages)
+
+        Strategy:
+        1. Calculate message production rate (RPS flowing into queue)
+        2. Set consumer slowdown so backlog grows to ~30-50% of queue capacity in 90s
+        3. This ensures fault is visible but doesn't trigger secondary failure (queue saturation)
+        """
+        tuned = baseline_params.copy()
+
+        # Queue capacity (hardcoded in MessageQueue component)
+        queue_capacity = 10000
+
+        # Target backlog as percentage of capacity
+        # Lower severity = smaller backlog, higher severity = larger backlog
+        # severity=0.5 → 30% capacity, severity=1.0 → 50% capacity
+        target_backlog_pct = 0.30 + (severity * 0.20)
+        target_backlog = int(queue_capacity * target_backlog_pct)
+
+        # Fault ramp duration (from exponential progression)
+        ramp_duration = 90.0  # seconds
+
+        # Message production rate (messages per second)
+        # node_rps is the RPS to the consumer service
+        # For async consumers, production rate ≈ RPS to upstream services
+        # Conservative estimate: use node_rps as proxy
+        production_rate_mps = node_rps if node_rps > 0 else 100.0
+
+        # Calculate required net accumulation rate to reach target backlog
+        # net_accumulation = production_rate - consumption_rate
+        # target_backlog = net_accumulation * ramp_duration
+        required_net_accumulation_mps = target_backlog / ramp_duration
+
+        # Consumption rate must be slowed to:
+        # consumption_rate = production_rate - required_net_accumulation
+        target_consumption_rate = production_rate_mps - required_net_accumulation_mps
+
+        # Ensure consumption rate is positive (can't have negative consumption)
+        if target_consumption_rate <= 0:
+            # Production rate too low, use minimum latency
+            tuned['latency_ms'] = 200
+            if verbose:
+                print(f"    Production rate too low, using minimum: 200ms")
+            return tuned
+
+        # Calculate required processing latency
+        # If baseline processing is ~8ms per message (from data)
+        # And we want to slow consumption by factor F:
+        # new_latency = baseline_latency + added_latency
+        # consumption_rate = 1 / (new_latency / 1000)  # messages per second
+        # → new_latency = 1000 / target_consumption_rate (ms)
+
+        # Assume baseline message processing is fast (< 10ms)
+        baseline_processing_ms = 8
+        required_total_latency_ms = (1000.0 / target_consumption_rate) if target_consumption_rate > 0 else 1000
+
+        # Added latency = total - baseline
+        added_latency_ms = max(0, required_total_latency_ms - baseline_processing_ms)
+
+        # Apply bounds: 200-500ms range (as requested by user)
+        # Min: 200ms to ensure visibility
+        # Max: 500ms to avoid too-aggressive backlog
+        added_latency_ms = max(200, min(500, added_latency_ms))
+
+        tuned['latency_ms'] = int(added_latency_ms)
+
+        if verbose:
+            print(f"    Queue capacity: {queue_capacity} messages")
+            print(f"    Target backlog: {target_backlog} messages ({target_backlog_pct*100:.0f}% capacity)")
+            print(f"    Production rate: {production_rate_mps:.1f} msg/s")
+            print(f"    Target consumption: {target_consumption_rate:.1f} msg/s")
+            print(f"    Tuned latency_ms: {tuned['latency_ms']}ms (baseline: {baseline_params.get('latency_ms', 'N/A')}ms)")
 
         return tuned
 

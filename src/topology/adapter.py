@@ -414,9 +414,12 @@ class TopologyAdapter:
 
         # Apply message concurrency (for async queue consumers)
         if 'message_concurrency' in overrides and hasattr(component, 'message_concurrency_semaphore'):
-            component.message_concurrency = overrides['message_concurrency']
-            component.message_concurrency_semaphore = simpy.Resource(
-                component.env, capacity=component.message_concurrency)
+            message_concurrency = overrides['message_concurrency']
+            # Only apply if not None (None means this service is not an async consumer)
+            if message_concurrency is not None:
+                component.message_concurrency = message_concurrency
+                component.message_concurrency_semaphore = simpy.Resource(
+                    component.env, capacity=component.message_concurrency)
 
         # Apply Timeouts (update the component's config object)
         if 'timeouts' in overrides and hasattr(component, 'iac_config'):

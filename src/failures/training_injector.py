@@ -472,7 +472,41 @@ class TrainingFailureInjector:
                     yield self.env.timeout(duration)
                     return
 
-        if failure_mode not in ['inject_latency', 'inject_errors', 'cpu_saturation', 'memory_pressure', 'cache_failure', 'disk_io_saturation', 'thread_exhaustion']:
+        # Gradual progression for queue_consumer_slowdown
+        if failure_mode == 'queue_consumer_slowdown':
+            from src.components.messaging import MessageQueue
+
+            if not isinstance(target, MessageQueue):
+                print(f"   ERROR: queue_consumer_slowdown must be applied to MessageQueue (got {type(target).__name__})")
+                yield self.env.timeout(duration)
+                return
+
+            target_latency_ms = params.get("latency_ms", 1000)
+            print(f"   Gradually increasing consumer slowdown to +{target_latency_ms}ms over {duration:.1f}s")
+
+            # Gradually increase latency over the duration
+            num_batches = 10
+            batch_interval = duration / num_batches
+
+            for batch_idx in range(num_batches):
+                if progression == 'linear':
+                    progress = (batch_idx + 1) / num_batches
+                elif progression == 'exponential':
+                    progress = ((batch_idx + 1) / num_batches) ** 2
+                else:
+                    progress = 1.0  # fallback to instant
+
+                current_latency = int(target_latency_ms * progress)
+                target.consumer_processing_latency_ms = current_latency
+                target._emit_log("INFO", f"Queue consumer slowdown batch {batch_idx+1}/{num_batches}: +{current_latency}ms latency (target: {target_latency_ms}ms)")
+
+                if batch_idx < num_batches - 1:
+                    yield self.env.timeout(batch_interval)
+
+            print(f"   Gradual queue consumer slowdown complete: +{target_latency_ms}ms latency")
+            return
+
+        if failure_mode not in ['inject_latency', 'inject_errors', 'cpu_saturation', 'memory_pressure', 'cache_failure', 'disk_io_saturation', 'thread_exhaustion', 'queue_consumer_slowdown']:
             print(f"WARNING: Gradual mode not implemented for '{failure_mode}', using instant")
             # Fall back to instant application
             failure_func = FAILURE_MODES.get(failure_mode)

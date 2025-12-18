@@ -755,12 +755,20 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
             if parent_svc and parent_svc in tuned_configs:
                 # Copy relevant resource configs to pod
                 svc_config = tuned_configs[parent_svc]
-                pod_override = {
-                    'thread_pool_size': svc_config.get('thread_pool_size'),
-                    'db_connection_pool_capacity': svc_config.get('db_connection_pool_capacity'),
-                    'timeouts': svc_config.get('timeouts')
-                }
-                nx_graph.nodes[node_id]['iac_config_overrides'] = pod_override
+                pod_override = {}
+
+                # Only copy non-None values
+                if 'thread_pool_size' in svc_config and svc_config['thread_pool_size'] is not None:
+                    pod_override['thread_pool_size'] = svc_config['thread_pool_size']
+                if 'db_connection_pool_capacity' in svc_config and svc_config['db_connection_pool_capacity'] is not None:
+                    pod_override['db_connection_pool_capacity'] = svc_config['db_connection_pool_capacity']
+                if 'message_concurrency' in svc_config and svc_config['message_concurrency'] is not None:
+                    pod_override['message_concurrency'] = svc_config['message_concurrency']
+                if 'timeouts' in svc_config and svc_config['timeouts'] is not None:
+                    pod_override['timeouts'] = svc_config['timeouts']
+
+                if pod_override:  # Only set if we have something to override
+                    nx_graph.nodes[node_id]['iac_config_overrides'] = pod_override
 
     # 7. Create Workload Config matching the target RPS
     workload_path = create_dynamic_workload(nx_graph, base_rps=int(target_rps*0.8), peak_rps=target_rps)
