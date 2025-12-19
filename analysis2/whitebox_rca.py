@@ -421,13 +421,30 @@ class WhiteboxRCAEngine:
                 node, service_self_score, baseline_pods, current_pods
             )
 
-            # PRINCIPLED: Always use pod-integrated score when pods exist (it's the ground truth)
-            # Service-level score is just a lossy aggregate - only use it as fallback
+            # PRINCIPLED: Use pod-level evidence, but weight by coverage
+            # High coverage (service-wide) = strong evidence of intrinsic problem
+            # Low coverage (outlier pods) = weak evidence, likely cascading effect
             if health_metadata.get('source') == 'pod-level':
-                # Pod analysis is authoritative - use high confidence
                 self_val = integrated_score
-                confidence = 'high'  # Pod-level is concrete evidence
-                confidence_multiplier = 1.0
+                coverage = health_metadata.get('coverage', 0)
+
+                # Coverage-based confidence: distinguish root cause from victim
+                if coverage >= 0.8:
+                    # Service-wide degradation (≥80% pods) - strong intrinsic evidence
+                    confidence = 'high'
+                    confidence_multiplier = 1.0
+                elif coverage >= 0.5:
+                    # Majority degradation (50-80% pods) - moderate evidence
+                    confidence = 'medium'
+                    confidence_multiplier = 0.6
+                elif coverage >= 0.3:
+                    # Multiple pods (30-50%) - weak evidence
+                    confidence = 'low'
+                    confidence_multiplier = 0.3
+                else:
+                    # Outlier pods (<30%) - very weak evidence (likely cascading)
+                    confidence = 'very_low'
+                    confidence_multiplier = 0.15
             else:
                 # No pods or pod score lower - use service-level as fallback
                 self_val = service_self_score

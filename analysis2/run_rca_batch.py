@@ -196,22 +196,81 @@ class DatasetAdapter:
 
     def get_data_windows(self) -> Tuple[Dict, Dict]:
         """
-        Splits metrics into Baseline (Pre-Fault) and Current (Post-Fault).
+        Splits metrics into Baseline and Current windows using point-in-time analysis.
+
+        Uses TimeWindowSelector for proper window selection:
+        - Baseline: Pre-fault period (before fault_start)
+        - Current: Window around analysis_time (during steady fault state)
+
         Returns two dictionaries: {node_id: {signal_name: np.array}}
         """
         if self.metrics_df.empty:
             return {}, {}
 
+        # Import TimeWindowSelector
+        from time_window_selector import TimeWindowSelector
+
+        # Extract timing from label
         fault_start = self.label.get('fault_start_time', 0)
-        
-        # Split DataFrame based on time
-        base_df = self.metrics_df[self.metrics_df['sim_time'] < fault_start]
-        curr_df = self.metrics_df[self.metrics_df['sim_time'] >= fault_start]
-        
+        fault_full_effect = self.label.get('fault_full_effect_time', None)
+        recovery_start = self.label.get('recovery_start_time', None)
+        episode_end_time = self.metrics_df['sim_time'].max()
+
+        # If fault_full_effect not in label, use fault_start + ramp duration
+        if fault_full_effect is None:
+            fault_ramp = self.label.get('fault_ramp_duration', 0)
+            fault_full_effect = fault_start + fault_ramp
+
+        # Initialize window selector
+        selector = TimeWindowSelector(
+            metrics_df=self.metrics_df,
+            episode_start=0,
+            episode_end=episode_end_time,
+            baseline_pct=0.25,
+            current_pct=0.15,
+            min_gap_pct=0.05
+        )
+
+        # Select analysis time: use selector's suggestion based on episode characteristics
+        # This is data-driven without using recovery information (which RCA wouldn't know)
+        #
+        # The selector will suggest a point during the episode based on:
+        # - Episode duration (percentage-based)
+        # - Time since fault_start (to ensure fault has propagated)
+        analysis_time = selector.suggest_analysis_time(
+            fault_start_time=fault_start,
+            target_percentile=0.6  # Analyze at 60% through episode
+        )
+
+        # Select windows using known fault start (simple, reliable for evaluation)
+        windows = selector.select_windows(
+            analysis_time=analysis_time,
+            known_fault_start=fault_start
+        )
+
+        print(f"  [Time Windows]")
+        print(f"    Baseline:  {windows.baseline.start:.1f}s - {windows.baseline.end:.1f}s ({windows.baseline.duration:.1f}s)")
+        print(f"    Current:   {windows.current.start:.1f}s - {windows.current.end:.1f}s ({windows.current.duration:.1f}s)")
+        print(f"    Gap:       {windows.current.start - windows.baseline.end:.1f}s")
+        print(f"    Analysis:  {analysis_time:.1f}s (T+{analysis_time - fault_start:.1f}s after fault)")
+
+        # Split DataFrame based on selected windows
+        base_df = self.metrics_df[
+            (self.metrics_df['sim_time'] >= windows.baseline.start) &
+            (self.metrics_df['sim_time'] <= windows.baseline.end)
+        ]
+        curr_df = self.metrics_df[
+            (self.metrics_df['sim_time'] >= windows.current.start) &
+            (self.metrics_df['sim_time'] <= windows.current.end)
+        ]
+
+        print(f"    Baseline metrics: {len(base_df)}")
+        print(f"    Current metrics:  {len(curr_df)}")
+
         # Process into dictionaries
         baseline_data = self._process_window(base_df)
         current_data = self._process_window(curr_df)
-        
+
         return baseline_data, current_data
 
     def _process_window(self, df: pd.DataFrame) -> Dict[str, Dict[str, np.ndarray]]:

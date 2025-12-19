@@ -1,0 +1,189 @@
+================================================================================
+COMPREHENSIVE RCA EVALUATION
+================================================================================
+Running RCA on 17 episodes with NEW time windows...
+
+[1/17] Processing data_20251218_133828...
+  [Time Windows]
+    Baseline:  0.0s - 60.0s (60.0s)
+    Current:   126.4s - 170.6s (44.2s)
+    Gap:       66.4s
+    Analysis:  170.6s (T+110.6s after fault)
+    Baseline metrics: 9093
+    Current metrics:  6833
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[2/17] Processing data_20251218_133907...
+  [Time Windows]
+    Baseline:  0.0s - 60.0s (60.0s)
+    Current:   126.4s - 170.6s (44.2s)
+    Gap:       66.4s
+    Analysis:  170.6s (T+110.6s after fault)
+    Baseline metrics: 8925
+    Current metrics:  6678
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[3/17] Processing data_20251218_133951...
+  [Time Windows]
+    Baseline:  0.0s - 60.0s (60.0s)
+    Current:   126.4s - 170.6s (44.2s)
+    Gap:       66.4s
+    Analysis:  170.6s (T+110.6s after fault)
+    Baseline metrics: 9136
+    Current metrics:  5574
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[4/17] Processing data_20251218_134033...
+  [Time Windows]
+    Baseline:  0.0s - 60.0s (60.0s)
+    Current:   126.4s - 170.6s (44.2s)
+    Gap:       66.4s
+    Analysis:  170.6s (T+110.6s after fault)
+    Baseline metrics: 9138
+    Current metrics:  6849
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[5/17] Processing data_20251218_134116...
+  [Time Windows]
+    Baseline:  0.0s - 60.0s (60.0s)
+    Current:   126.4s - 170.6s (44.2s)
+    Gap:       66.4s
+    Analysis:  170.6s (T+110.6s after fault)
+    Baseline metrics: 9124
+    Current metrics:  6830
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[6/17] Processing data_20251218_134201...
+  [Time Windows]
+    Baseline:  0.0s - 120.0s (120.0s)
+    Current:   253.9s - 343.1s (89.2s)
+    Gap:       133.9s
+    Analysis:  343.1s (T+223.1s after fault)
+    Baseline metrics: 18323
+    Current metrics:  13728
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[7/17] Processing data_20251218_134323...
+  [Time Windows]
+    Baseline:  0.0s - 120.0s (120.0s)
+    Current:   253.9s - 343.1s (89.2s)
+    Gap:       133.9s
+    Analysis:  343.1s (T+223.1s after fault)
+    Baseline metrics: 18200
+    Current metrics:  13324
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[8/17] Processing data_20251218_134428...
+  [Time Windows]
+    Baseline:  0.0s - 60.0s (60.0s)
+    Current:   126.4s - 170.6s (44.2s)
+    Gap:       66.4s
+    Analysis:  170.6s (T+110.6s after fault)
+    Baseline metrics: 8898
+    Current metrics:  6725
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[9/17] Processing data_20251218_134507...
+  [Time Windows]
+    Baseline:  0.0s - 60.0s (60.0s)
+    Current:   126.4s - 170.6s (44.2s)
+    Gap:       66.4s
+    Analysis:  170.6s (T+110.6s after fault)
+    Baseline metrics: 9124
+    Current metrics:  7222
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[10/17] Processing data_20251218_134549...
+  [Time Windows]
+    Baseline:  0.0s - 180.0s (180.0s)
+    Current:   381.4s - 515.6s (134.2s)
+    Gap:       201.4s
+    Analysis:  515.6s (T+335.6s after fault)
+    Baseline metrics: 13597
+    Current metrics:  10622
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[11/17] Processing data_20251218_134733...
+  [Time Windows]
+    Baseline:  0.0s - 180.0s (180.0s)
+    Current:   381.4s - 515.6s (134.2s)
+    Gap:       201.4s
+    Analysis:  515.6s (T+335.6s after fault)
+    Baseline metrics: 13919
+    Current metrics:  10057
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[12/17] Processing data_20251218_134908...
+  [Time Windows]
+    Baseline:  0.0s - 180.0s (180.0s)
+    Current:   381.4s - 515.6s (134.2s)
+    Gap:       201.4s
+    Analysis:  515.6s (T+335.6s after fault)
+    Baseline metrics: 13569
+    Current metrics:  9819
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[13/17] Processing data_20251218_135041...
+  [Time Windows]
+    Baseline:  0.0s - 120.0s (120.0s)
+    Current:   253.9s - 343.1s (89.2s)
+    Gap:       133.9s
+    Analysis:  343.1s (T+223.1s after fault)
+    Baseline metrics: 18246
+    Current metrics:  13672
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[14/17] Processing data_20251218_135153...
+  [Time Windows]
+    Baseline:  0.0s - 120.0s (120.0s)
+    Current:   253.9s - 343.1s (89.2s)
+    Gap:       133.9s
+    Analysis:  343.1s (T+223.1s after fault)
+    Baseline metrics: 18290
+    Current metrics:  13942
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[15/17] Processing data_20251218_135311...
+  [Time Windows]
+    Baseline:  0.0s - 180.0s (180.0s)
+    Current:   381.4s - 515.6s (134.2s)
+    Gap:       201.4s
+    Analysis:  515.6s (T+335.6s after fault)
+    Baseline metrics: 13960
+    Current metrics:  10052
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[16/17] Processing data_20251218_135452...
+  [Time Windows]
+    Baseline:  0.0s - 180.0s (180.0s)
+    Current:   381.4s - 515.6s (134.2s)
+    Gap:       201.4s
+    Analysis:  515.6s (T+335.6s after fault)
+    Baseline metrics: 13563
+    Current metrics:  9862
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+[17/17] Processing data_20251218_135627...
+  [Time Windows]
+    Baseline:  0.0s - 120.0s (120.0s)
+    Current:   253.9s - 343.1s (89.2s)
+    Gap:       133.9s
+    Analysis:  343.1s (T+223.1s after fault)
+    Baseline metrics: 17925
+    Current metrics:  11782
+  ✗ Error: 'DatasetAdapter' object has no attribute 'get_pod_data_windows'
+
+Loading old results from data/batch_run_20251218_133824/batch_results_results.json...
+
+================================================================================
+RESULTS SUMMARY
+================================================================================
+
+New Results (with improved time windows):
+  Total episodes:     0
+Traceback (most recent call last):
+  File "/Users/sgupta/samba/run_full_batch_comparison.py", line 267, in <module>
+    results = compare_results(batch_dir, old_results_file)
+  File "/Users/sgupta/samba/run_full_batch_comparison.py", line 152, in compare_results
+    print(f"  Ground truth @ 1:   {rank_1} ({rank_1/total*100:.1f}%)")
+ZeroDivisionError: division by zero
