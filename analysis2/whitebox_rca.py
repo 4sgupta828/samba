@@ -249,73 +249,38 @@ class WhiteboxRCAEngine:
                             for (src, tgt), info in list(metric_gaps.items())[:3]:
                                 print(f"    {src} -> {tgt}: {info['baseline_freq']:.3f} → {info['current_freq']:.3f}/s ({info['gap_ratio']*100:.0f}% drop)")
 
+                        # Convert metric gaps to network partitions
+                        # A significant frequency drop (>50%) indicates a network partition
+                        for (source, target), gap_info in metric_gaps.items():
+                            # High confidence: >70% drop with substantial baseline activity
+                            if gap_info['gap_ratio'] >= 0.7 and gap_info['baseline_freq'] >= 0.1:
+                                reason = (f'Network partition detected: {source} -> {target} '
+                                         f'({gap_info["gap_ratio"]*100:.0f}% frequency drop: '
+                                         f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
+                                confidence = 0.95
+                                network_partitions.append({
+                                    'source': source,
+                                    'target': target,
+                                    'reason': reason,
+                                    'confidence': confidence,
+                                    'double_confirmed': False
+                                })
+                            # Medium confidence: >50% drop with baseline activity
+                            elif gap_info['gap_ratio'] >= 0.5 and gap_info['baseline_freq'] >= 0.05:
+                                reason = (f'Network partition suspected: {source} -> {target} '
+                                         f'({gap_info["gap_ratio"]*100:.0f}% frequency drop: '
+                                         f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
+                                confidence = 0.85
+                                network_partitions.append({
+                                    'source': source,
+                                    'target': target,
+                                    'reason': reason,
+                                    'confidence': confidence,
+                                    'double_confirmed': False
+                                })
+
             except Exception as e:
                 print(f"  [!] Warning: Metric gap detection failed: {e}")
-
-        # STRATEGY 2: Scan logs for connection timeout patterns
-        # DISABLED: Log-based detection causes false positives (timeouts are often symptoms, not cause)
-        # Only use metric-based detection for now
-        if False and logs_file and logs_file.exists() and fault_start_time:
-            import json
-            connection_errors = {}  # {(source, target): count}
-
-            try:
-                with open(logs_file, 'r') as f:
-                    for line in f:
-                        try:
-                            log_entry = json.loads(line)
-
-                            # Only count errors during fault period
-                            log_timestamp_ns = log_entry.get('timestamp', 0)
-                            log_timestamp_s = log_timestamp_ns / 1e9 if log_timestamp_ns > 1e12 else log_timestamp_ns
-
-                            if log_timestamp_s < fault_start_time:
-                                continue
-
-                            message = log_entry.get('message', '')
-
-                            # Detect connection timeouts
-                            if 'connection timeout' in message.lower() or 'connection timed out' in message.lower():
-                                if ' to ' in message:
-                                    parts = message.split(' to ')
-                                    if len(parts) >= 2:
-                                        target = parts[-1].split(':')[0].split(',')[0].strip()
-
-                                        attributes = log_entry.get('attributes', {})
-                                        component_id = attributes.get('component.id') or log_entry.get('component_id')
-
-                                        # Map pod to service
-                                        if component_id and component_id.startswith('pod_'):
-                                            service = '_'.join(component_id.split('_')[1:-1])
-                                        else:
-                                            service = component_id
-
-                                        if service and target:
-                                            key = (service, target)
-                                            connection_errors[key] = connection_errors.get(key, 0) + 1
-                        except:
-                            continue
-
-                # Check if any edge has significant connection errors
-                for (source, target), count in connection_errors.items():
-                    if count >= 10:  # At least 10 connection timeouts indicates partition
-                        # Build reason with double confirmation if metric gap also detected
-                        gap_info = metric_gaps.get((source, target))
-                        if gap_info:
-                            reason = (f'Network partition detected: {source} -> {target} '
-                                     f'(Logs: {count} connection timeouts, '
-                                     f'Metrics: {gap_info["gap_ratio"]*100:.0f}% frequency drop '
-                                     f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
-                            confidence = 0.98  # Higher confidence with double confirmation
-                            network_partitions.append({
-                                'source': source,
-                                'target': target,
-                                'reason': reason,
-                                'confidence': confidence,
-                                'double_confirmed': True
-                            })
-            except Exception as e:
-                print(f"  [!] Warning: Log-based partition detection failed: {e}")
 
         # Create global_network candidate if partitions detected
         if network_partitions:
@@ -323,17 +288,21 @@ class WhiteboxRCAEngine:
             for partition in network_partitions:
                 print(f"      - {partition['reason']}")
 
-            # Score based on confirmation level
+            # Score based on metric confidence level
             avg_confidence = sum(p['confidence'] for p in network_partitions) / len(network_partitions)
-            double_confirmed_count = sum(1 for p in network_partitions if p.get('double_confirmed', False))
 
-            # Only add as strong candidate if double-confirmed (logs + metrics)
-            if double_confirmed_count > 0:
+            # Map confidence to score (metric-based detection)
+            # High confidence (0.9+): Strong evidence of network partition
+            # Medium confidence (0.8-0.9): Likely network partition
+            if avg_confidence >= 0.9:
                 network_score = 100.0  # Strong evidence
-                print(f"  [!] Double-confirmed partition (logs + metrics), treating as high-confidence root cause")
+                print(f"  [!] High-confidence partition (metrics), treating as root cause (confidence: {avg_confidence:.2f})")
+            elif avg_confidence >= 0.8:
+                network_score = 80.0  # Good evidence
+                print(f"  [!] Medium-confidence partition (metrics), strong candidate (confidence: {avg_confidence:.2f})")
             else:
-                network_score = 30.0  # Weak evidence, likely symptom of service failure
-                print(f"  [!] Single-confirmation partition (logs only), scoring lower - may be symptom not cause")
+                network_score = 50.0  # Moderate evidence
+                print(f"  [!] Low-confidence partition (metrics), moderate candidate (confidence: {avg_confidence:.2f})")
 
             network_partition_candidate = {
                 'node': 'global_network',
@@ -342,15 +311,15 @@ class WhiteboxRCAEngine:
                     'base_health': {'raw': 0, 'confidence': 'high', 'multiplier': 1.0, 'points': 0},
                     'physics_coverage': {'raw': 0, 'weight': 60.0, 'points': 0},
                     'semantic_bonus': {'is_primary': True, 'coverage_context': 'high', 'points': 0},
-                    'supplements': {'temporal': 0, 'trace': 0, 'trace_degradation': 0, 'logs': network_score}
+                    'supplements': {'temporal': 0, 'trace': 0, 'trace_degradation': 0, 'logs': 0, 'metric_gaps': network_score}
                 },
                 'story': [
                     '🔴 ROOT CAUSE: global_network (Network Partition)',
-                    '   Network partitions detected:',
+                    '   Network partitions detected via metric analysis:',
                     *[f'   - {p["reason"]}' for p in network_partitions],
                     f'',
                     f'   Detection confidence: {avg_confidence*100:.0f}%',
-                    f'   Double-confirmed edges: {double_confirmed_count}/{len(network_partitions)}'
+                    f'   Detected edges: {len(network_partitions)}'
                 ],
                 'integrated_score': 0.0,
                 'self_score': 0.0,
@@ -358,8 +327,7 @@ class WhiteboxRCAEngine:
                 'health_metadata': {
                     'network_partition_count': len(network_partitions),
                     'avg_confidence': avg_confidence,
-                    'double_confirmed_count': double_confirmed_count,
-                    'detection_method': 'log_analysis + metric_gaps' if double_confirmed_count > 0 else 'log_analysis'
+                    'detection_method': 'metric_gaps'
                 },
                 'guilt_ratio': 0.0,
                 'temporal_score': 0.0,
@@ -509,6 +477,31 @@ class WhiteboxRCAEngine:
             # Get symptoms from analysis
             symptoms = self_scores[node].symptoms if node in self_scores else []
 
+            # Enhanced story for global_network nodes with partition metadata
+            story = physics_hypotheses.get(node).narrative if node in physics_hypotheses else []
+            if node == 'global_network':
+                node_attrs = self.topology.nodes.get(node, {})
+                partition_meta = node_attrs.get('partition_metadata', {})
+                if partition_meta:
+                    edge_info = partition_meta.get('partitioned_edge', {})
+                    if edge_info:
+                        src = edge_info.get("source")
+                        tgt = edge_info.get("target")
+                        story = [
+                            '🔴 ROOT CAUSE: global_network (Network Partition)',
+                            '',
+                            '   Partitioned Edge:',
+                            f'   - Source: {src}',
+                            f'   - Target: {tgt}',
+                            f'   - Edge Type: {edge_info.get("edge_type")}',
+                            f'   - Bidirectional: {edge_info.get("bidirectional")}',
+                            '',
+                            '   This network partition blocks all communication on this edge,',
+                            '   causing cascading failures in services that depend on it.'
+                        ]
+                        # Update symptoms with partition details
+                        symptoms = [f'Network partition between {src} and {tgt}']
+
             rankings.append({
                 'node': node,
                 'score': round(final_score, 2),
@@ -537,7 +530,7 @@ class WhiteboxRCAEngine:
                         'core_strength': round(core_strength, 3)
                     }
                 },
-                'story': physics_hypotheses.get(node).narrative if node in physics_hypotheses else [],
+                'story': story,
                 # Compatibility fields for run_rca_batch.py
                 'integrated_score': round(integrated_score, 2),
                 'self_score': round(service_self_score, 2),

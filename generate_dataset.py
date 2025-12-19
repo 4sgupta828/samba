@@ -922,12 +922,30 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
         # Set target_id to global_network for fault injection
         actual_target_id = 'global_network'
 
+        # Add global_network node to topology graph so it can be analyzed by RCA
+        # This represents the network infrastructure that controls connectivity
+        nx_graph.add_node('global_network',
+                         type='NetworkLink',
+                         role='network',
+                         service_name='global_network',
+                         semantic_name='global_network',
+                         # Store partition details for RCA to explain which edge is broken
+                         partition_metadata={
+                             'partitioned_edge': {
+                                 'source': source_id,
+                                 'target': target_id,
+                                 'edge_type': edge_type,
+                                 'bidirectional': params.get('bidirectional', True)
+                             }
+                         })
+
         if verbose:
             print(f"\n[Network Partition Setup]")
             print(f"  Partitioning edge: {source_id} -> {target_id}")
             print(f"  Edge type: {edge_type}")
             print(f"  This will block all communication on this edge")
             print(f"  Target component for injection: {actual_target_id}")
+            print(f"  Added global_network node to topology for RCA analysis")
     else:
         # Normal fault injection: select one component with matching role
         valid_targets = [
