@@ -95,14 +95,12 @@ def create_score_breakdown_matrix(score_composition, final_score, node_name):
                             if confidence:
                                 confidence_scales = {'high': 5.0, 'medium': 4.0, 'low': 2.5}
                                 conf_scale = confidence_scales.get(confidence, 5.0)
-                                if multiplier is not None:
-                                    conf_scale *= multiplier
 
                                 formula_parts.append(f"{raw:.2f} × {conf_scale:.1f}")
                                 explanation_parts.append(f"confidence '{confidence}' → {conf_scale:.1f}× (high=5.0, med=4.0, low=2.5)")
 
                                 if multiplier is not None and multiplier != 1.0:
-                                    explanation_parts.append(f"multiplier: {multiplier:.2f}")
+                                    explanation_parts.append(f"confidence_multiplier: {multiplier:.2f}")
                             else:
                                 # Just show the total scale
                                 formula_parts.append(f"{raw:.2f} × {total_scale:.1f}")
