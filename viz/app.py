@@ -645,8 +645,8 @@ app.layout = dbc.Container([
                                     dbc.Input(
                                         id='batch-folder-input',
                                         type='text',
-                                        value='data/batch_run',
-                                        placeholder="Path to folder (e.g., data/batch_run)"
+                                        value='',
+                                        placeholder="Path to folder (e.g., data/batch_run_20251218_133824)"
                                     ),
                                     dbc.Button(
                                         "📁",
@@ -3590,8 +3590,17 @@ def update_batch_folder_options(n_clicks, is_open):
     import os
     from pathlib import Path
 
+    # Only run when refresh button is clicked OR when collapse is opened
+    ctx = dash.callback_context
+    if ctx.triggered:
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        # If triggered by collapse, only run when opening (is_open=True)
+        if trigger_id == 'batch-analysis-collapse' and not is_open:
+            raise dash.exceptions.PreventUpdate
+
     folders = []
     latest_batch_run = None
+    batch_run_folders = []
 
     # Add batch_run if it exists
     batch_run_path = os.path.join(BASE_DATA_DIR, 'batch_run')
@@ -3615,16 +3624,13 @@ def update_batch_folder_options(n_clicks, is_open):
         # Sort datasets by name (which includes timestamp) in reverse order (latest first)
         batch_datasets.sort(reverse=True)
 
-        # Set the latest batch_run_xxx as the default
-        if batch_datasets:
-            latest_batch_run = f'data/batch_run/{batch_datasets[0][0]}'
-
         # Add all batch datasets to the dropdown
         for item, ep_count in batch_datasets:
             folders.append({
                 'label': f'  └─ {item} ({ep_count} episodes)',
                 'value': f'data/batch_run/{item}'
             })
+            batch_run_folders.append((item, f'data/batch_run/{item}'))
 
     # Add test_batch if it exists
     test_batch_path = os.path.join(BASE_DATA_DIR, 'test_batch')
@@ -3636,20 +3642,48 @@ def update_batch_folder_options(n_clicks, is_open):
                 'value': 'data/test_batch'
             })
 
-    # Add other top-level dataset folders
+    # Add other top-level dataset folders (including batch_run_xxx)
     if os.path.exists(BASE_DATA_DIR):
         for item in os.listdir(BASE_DATA_DIR):
             if item in ['batch_run', 'test_batch']:
                 continue
             item_path = os.path.join(BASE_DATA_DIR, item)
             if os.path.isdir(item_path) and not item.startswith('.'):
-                # Check if it contains episodes directly
-                ep_dirs = [d for d in os.listdir(item_path) if d.startswith('ep_') and os.path.isdir(os.path.join(item_path, d))]
+                # Check if it contains episodes (directly or nested)
+                ep_dirs = list(Path(item_path).rglob('ep_*'))
                 if ep_dirs:
                     folders.append({
                         'label': f'📁 {item} ({len(ep_dirs)} episodes)',
                         'value': f'data/{item}'
                     })
+                    # Track batch_run_* folders for auto-selection
+                    if item.startswith('batch_run_'):
+                        batch_run_folders.append((item, f'data/{item}'))
+
+    # Find the latest batch_run_* folder (sort by timestamp)
+    if batch_run_folders:
+        import re
+        # Filter to only folders with timestamp pattern: batch_run_YYYYMMDD_HHMMSS
+        timestamped_folders = [
+            (name, path) for name, path in batch_run_folders
+            if re.match(r'batch_run_\d{8}_\d{6}', name)
+        ]
+
+        if timestamped_folders:
+            # Sort by name (which includes timestamp) in reverse order
+            timestamped_folders.sort(reverse=True, key=lambda x: x[0])
+            latest_batch_run = timestamped_folders[0][1]
+            print(f"[update_batch_folder_options] Found {len(timestamped_folders)} timestamped batch_run folders")
+            print(f"[update_batch_folder_options] Latest: {latest_batch_run}")
+        else:
+            # Fall back to first folder if no timestamped folders
+            batch_run_folders.sort(reverse=True, key=lambda x: x[0])
+            latest_batch_run = batch_run_folders[0][1]
+            print(f"[update_batch_folder_options] No timestamped folders, using: {latest_batch_run}")
+    else:
+        print(f"[update_batch_folder_options] No batch_run folders found")
+
+    print(f"[update_batch_folder_options] Total folders: {len(folders)}")
 
     # Return options and auto-select the latest batch_run folder
     return folders, latest_batch_run, latest_batch_run
