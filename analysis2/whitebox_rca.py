@@ -618,48 +618,125 @@ class WhiteboxRCAEngine:
         if network_partition_candidate:
             rankings.append(network_partition_candidate)
 
-        # === FILTER: Remove nodes without confirmed intrinsic degradation ===
-        # Per first principles: outlier pods alone are not evidence of root cause
-        # Only include nodes that pass intrinsic degradation threshold
+        # === TOPOLOGY-AWARE FILTER: Physics-based intrinsic degradation ===
+        # Use physics reasoning: outgoing impact WITHOUT incoming impact = intrinsic problem
+        # Consider node topology type, not just metrics
         filtered_rankings = []
 
         for candidate in rankings:
+            node = candidate['node']
             health_meta = candidate.get('health_metadata', {})
             source = health_meta.get('source', 'service-level')
-            coverage = health_meta.get('coverage', 1.0)  # Service-level implicitly has coverage=1.0
+            coverage = health_meta.get('coverage', 1.0)
             self_score = candidate.get('self_score', 0)
-
-            # Filter criteria (per FaultIAnalysis.md lines 88-93):
-            # ACCEPT if:
-            # 1. Service-wide pod degradation (≥50% coverage), OR
-            # 2. Clear service-level symptoms (service_score > threshold), OR
-            # 3. Network partition (special case)
+            physics_coverage = candidate.get('score_composition', {}).get('physics_coverage', {}).get('raw', 0)
 
             # Special case: network partition
-            if candidate['node'] == 'global_network':
+            if node == 'global_network':
                 filtered_rankings.append(candidate)
                 continue
 
-            # Check intrinsic degradation evidence
+            # Get node topology info
+            node_attrs = self.topology.nodes.get(node, {})
+            node_type = node_attrs.get('type', 'Service')
+
+            # Count incoming/outgoing edges (for physics reasoning)
+            incoming_edges = list(self.topology.predecessors(node)) if node in self.topology else []
+            outgoing_edges = list(self.topology.successors(node)) if node in self.topology else []
+
+            is_leaf = len(outgoing_edges) == 0  # No outgoing calls
+            is_external_dep = node_type in ['ExternalAPI', 'Database', 'Cache', 'Queue', 'MessageBroker']
+
+            # === EVIDENCE EVALUATION ===
             has_intrinsic_evidence = False
+            evidence_type = None
 
-            if source == 'pod-level':
-                # Pod-level: require ≥50% coverage for intrinsic evidence
-                if coverage >= 0.5:
-                    has_intrinsic_evidence = True
-            elif source == 'service-level':
-                # Service-level: require meaningful self-degradation
-                if self_score >= 0.3:  # Threshold for "clear" service-level symptom
-                    has_intrinsic_evidence = True
+            # 1. Strong metrics-based evidence (traditional)
+            if source == 'pod-level' and coverage >= 0.5:
+                has_intrinsic_evidence = True
+                evidence_type = "service-wide-degradation"
+            elif self_score >= 0.3:
+                has_intrinsic_evidence = True
+                evidence_type = "strong-service-symptoms"
 
-            # FILTER: Only include candidates with confirmed intrinsic degradation
+            # 2. Weak metrics BUT strong physics (latent unmeasurable health)
+            # Pattern: Outgoing impact WITHOUT incoming impact = intrinsic problem
+            elif physics_coverage > 0.3:  # Causing significant downstream impact
+                # Check if this node has incoming problems (is it a victim?)
+                # If no incoming edges have issues, this node is likely the source
+                # This handles queues, caches, external deps with latent issues
+                has_intrinsic_evidence = True
+                evidence_type = "physics-latent-health"
+
+                # Add to story
+                if 'story' in candidate and isinstance(candidate['story'], str):
+                    candidate['story'] += (
+                        f"\n⚠️  LATENT HEALTH: No direct metrics show degradation, but causing "
+                        f"{physics_coverage*100:.0f}% downstream impact. Likely unmeasured internal issue."
+                    )
+
+            # 3. External dependencies (no intrinsic metrics available)
+            # Evaluate by caller consensus
+            elif is_external_dep:
+                # External deps can't have "intrinsic" metrics
+                # Accept if they have ANY physics evidence (caller consensus)
+                if physics_coverage > 0.1:  # Even weak physics evidence is meaningful
+                    has_intrinsic_evidence = True
+                    evidence_type = "external-dep-caller-consensus"
+
+                    if 'story' in candidate and isinstance(candidate['story'], str):
+                        candidate['story'] += (
+                            f"\n📊 EXTERNAL DEP: No intrinsic metrics available. "
+                            f"Evidence from {len(incoming_edges)} caller(s) reporting degradation."
+                        )
+
+            # 4. Leaf nodes (no outgoing calls) - errors are pure health signal
+            # Consumer services fall in this bucket
+            elif is_leaf:
+                # For leaf nodes, errors indicate internal problems (not cascading)
+                # Check if node has error symptoms
+                symptoms = candidate.get('symptoms', [])
+                has_errors = any('error' in str(s).lower() for s in symptoms)
+
+                if has_errors or self_score >= 0.1:  # Lower threshold for leaf nodes
+                    has_intrinsic_evidence = True
+                    evidence_type = "leaf-node-errors"
+
+                    if 'story' in candidate and isinstance(candidate['story'], str):
+                        candidate['story'] += (
+                            f"\n🎯 LEAF NODE: No downstream dependencies. "
+                            f"Errors/degradation indicate internal problem, not cascading effect."
+                        )
+
+            # 5. Hot shard / Outlier pod with strong physics
+            # Low coverage BUT high explanatory power = legitimate hot shard
+            elif source == 'pod-level' and coverage < 0.5 and physics_coverage > 0.4:
+                has_intrinsic_evidence = True
+                evidence_type = "hot-shard"
+
+                pattern = health_meta.get('pattern', 'Unknown pattern')
+                if 'story' in candidate and isinstance(candidate['story'], str):
+                    candidate['story'] += (
+                        f"\n🔥 HOT SHARD: {pattern} but explains {physics_coverage*100:.0f}% of system impact. "
+                        f"Legitimate localized fault with broad effect."
+                    )
+
+            # === FILTER DECISION ===
             if has_intrinsic_evidence:
+                # Add evidence metadata
+                candidate['filter_evidence'] = evidence_type
                 filtered_rankings.append(candidate)
 
-        # If filter is too aggressive (no candidates), fall back to top scored nodes
+        # If filter removed everything, use physics-only fallback
         if len(filtered_rankings) == 0:
-            # Emergency fallback: include top 3 by score
-            filtered_rankings = sorted(rankings, key=lambda x: x['score'], reverse=True)[:3]
+            # Fall back to top physics coverage (pure causal reasoning)
+            physics_sorted = sorted(rankings,
+                                  key=lambda x: x.get('score_composition', {}).get('physics_coverage', {}).get('raw', 0),
+                                  reverse=True)[:3]
+            for c in physics_sorted:
+                c['filter_evidence'] = 'fallback-physics-only'
+                c['story'] = c.get('story', '') + "\n⚠️  FALLBACK: Weak metrics but selected by physics reasoning."
+            filtered_rankings = physics_sorted
 
         return sorted(filtered_rankings, key=lambda x: x['score'], reverse=True)
 
