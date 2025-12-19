@@ -288,17 +288,36 @@ class SelfHealthAnalyzer:
                     resource_score = max(resource_score, 10.0)
 
             # Check Error Rate
+            # PRINCIPLED: True self-health degradation shows BOTH errors AND resource symptoms
+            # If errors appear WITHOUT resource degradation, it's likely a cascading failure
             err_stat = self._check_metric('internal_error_rate', baseline, current)
             if err_stat.significant and err_stat.effect_size > self.thresholds.min_effect_size_medium:
                 curr_err_mean = np.mean(current['internal_error_rate']) if len(current['internal_error_rate']) > 0 else 0
-                symptoms.append(f"Error rate increased ({curr_err_mean:.1%})")
 
-                if curr_err_mean > self.thresholds.error_rate_severe:
-                    performance_score = max(performance_score, 10.0)
-                elif curr_err_mean > self.thresholds.error_rate_moderate:
-                    performance_score = max(performance_score, 8.0)
+                # Check if this component has ANY resource/primary symptoms
+                # True root causes show resource exhaustion (CPU, memory, threads, deadlocks)
+                # Victims show high errors WITHOUT resource symptoms (cascading failure)
+                has_resource_symptoms = (
+                    resource_score > 0 or  # Found resource saturation/exhaustion
+                    limp_mode_score > 0 or  # Found deadlock/zombie patterns
+                    found_primary  # Found other primary symptoms (cache faults, queue faults)
+                )
+
+                if not has_resource_symptoms and curr_err_mean > 0.1:
+                    # High errors WITHOUT any resource degradation = likely dependency victim
+                    # PRINCIPLED: If dependencies fail, service returns errors but shows no internal stress
+                    # Do NOT attribute these errors to self-health
+                    symptoms.append(f"Error rate increased ({curr_err_mean:.1%}) - no resource degradation (likely cascading failure)")
+                    # No performance_score increase - this is not a self-health issue
                 else:
-                    performance_score = max(performance_score, 6.0)
+                    # Has resource symptoms OR moderate errors - this is genuine self-degradation
+                    symptoms.append(f"Error rate increased ({curr_err_mean:.1%})")
+                    if curr_err_mean > self.thresholds.error_rate_severe:
+                        performance_score = max(performance_score, 10.0)
+                    elif curr_err_mean > self.thresholds.error_rate_moderate:
+                        performance_score = max(performance_score, 8.0)
+                    else:
+                        performance_score = max(performance_score, 6.0)
 
             # Check Latency
             if lat_stat.significant and lat_stat.effect_size > self.thresholds.min_effect_size_medium:
