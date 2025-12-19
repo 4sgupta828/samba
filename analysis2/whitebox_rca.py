@@ -441,31 +441,58 @@ class WhiteboxRCAEngine:
                 else:
                     semantic_bonus = 0.0   # Minor victim
 
+            # === CORE EVIDENCE STRENGTH ===
+            # PRINCIPLE: Supplemental signals (temporal, trace, logs) should be modulated by
+            # the strength of core evidence. This prevents false positives from cascading symptoms
+            # while not being brittle with hard thresholds.
+            #
+            # Core evidence comes from:
+            # 1. Self-degradation (weighted_self: 0-50 points)
+            # 2. Physics coverage (weighted_coverage: 0-60 points)
+            # 3. Semantic type (semantic_bonus: 0-40 points)
+            #
+            # Calculate core strength as percentage of maximum possible core score (150 points)
+            core_base_score = weighted_self + weighted_coverage + semantic_bonus
+            max_core_score = 150.0  # 50 + 60 + 40
+            core_strength = min(1.0, core_base_score / max_core_score)
+
+            # Apply soft gating: supplements are scaled by core strength
+            # - core_strength = 0.0 → supplements contribute 0% (pure victim)
+            # - core_strength = 0.1 → supplements contribute 10% (weak evidence)
+            # - core_strength = 0.5 → supplements contribute 50% (moderate evidence)
+            # - core_strength = 1.0 → supplements contribute 100% (strong evidence)
+            #
+            # This is continuous and non-brittle: any core evidence enables some supplement boost
+
             # === COMPONENT 4: TEMPORAL EVIDENCE (0-15 points) ===
-            # First to break gets bonus
+            # First to break gets bonus, scaled by core evidence strength
             min_time = min(temporal_scores.values()) if temporal_scores else 0
             is_early = (temporal_scores.get(node, float('inf')) <= min_time + 5.0)
-            temporal_bonus = 15.0 if is_early else 0.0
+            temporal_bonus_raw = 15.0 if is_early else 0.0
+            temporal_bonus = temporal_bonus_raw * core_strength
 
             # === COMPONENT 5: TRACE EVIDENCE (0-35 points) ===
-            # Authoritative trace evidence (self-time degradation)
+            # Authoritative trace evidence (self-time degradation), scaled by core strength
             trace_info = trace_evidence.get(node, {})
             trace_auth = trace_info.get('is_authoritative', False)
             self_time_deg = trace_info.get('self_time_degradation', 1.0)
+            trace_bonus_raw = 0.0
 
             if trace_auth:
                 # Scale based on degradation severity
                 if self_time_deg > 3.0:
-                    trace_bonus = 35.0  # Severe degradation
+                    trace_bonus_raw = 35.0  # Severe degradation
                 elif self_time_deg > 2.0:
-                    trace_bonus = 25.0  # Moderate degradation
+                    trace_bonus_raw = 25.0  # Moderate degradation
                 else:
-                    trace_bonus = 15.0  # Minor degradation
-            else:
-                trace_bonus = 0.0
+                    trace_bonus_raw = 15.0  # Minor degradation
+
+            trace_bonus = trace_bonus_raw * core_strength
 
             # === COMPONENT 6: LOG EVIDENCE (0-20 points) ===
-            log_bonus = min(20.0, log_scores.get(node, {}).get('log_score', 0.0))
+            # Log evidence scaled by core strength
+            log_bonus_raw = min(20.0, log_scores.get(node, {}).get('log_score', 0.0))
+            log_bonus = log_bonus_raw * core_strength
 
             # === FINAL SCORE (0-220 max) ===
             # Balanced formula: No single component dominates
@@ -503,10 +530,11 @@ class WhiteboxRCAEngine:
                         'points': semantic_bonus
                     },
                     'supplements': {
-                        'temporal': temporal_bonus,
-                        'trace': trace_bonus,
-                        'trace_degradation': round(self_time_deg, 2) if trace_auth else 0,
-                        'logs': log_bonus
+                        'temporal': round(temporal_bonus, 2),
+                        'trace': round(trace_bonus, 2),
+                        'trace_degradation': round(self_time_deg, 2),
+                        'logs': round(log_bonus, 2),
+                        'core_strength': round(core_strength, 3)
                     }
                 },
                 'story': physics_hypotheses.get(node).narrative if node in physics_hypotheses else [],
