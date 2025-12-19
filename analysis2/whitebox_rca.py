@@ -618,7 +618,50 @@ class WhiteboxRCAEngine:
         if network_partition_candidate:
             rankings.append(network_partition_candidate)
 
-        return sorted(rankings, key=lambda x: x['score'], reverse=True)
+        # === FILTER: Remove nodes without confirmed intrinsic degradation ===
+        # Per first principles: outlier pods alone are not evidence of root cause
+        # Only include nodes that pass intrinsic degradation threshold
+        filtered_rankings = []
+
+        for candidate in rankings:
+            health_meta = candidate.get('health_metadata', {})
+            source = health_meta.get('source', 'service-level')
+            coverage = health_meta.get('coverage', 1.0)  # Service-level implicitly has coverage=1.0
+            self_score = candidate.get('self_score', 0)
+
+            # Filter criteria (per FaultIAnalysis.md lines 88-93):
+            # ACCEPT if:
+            # 1. Service-wide pod degradation (≥50% coverage), OR
+            # 2. Clear service-level symptoms (service_score > threshold), OR
+            # 3. Network partition (special case)
+
+            # Special case: network partition
+            if candidate['node'] == 'global_network':
+                filtered_rankings.append(candidate)
+                continue
+
+            # Check intrinsic degradation evidence
+            has_intrinsic_evidence = False
+
+            if source == 'pod-level':
+                # Pod-level: require ≥50% coverage for intrinsic evidence
+                if coverage >= 0.5:
+                    has_intrinsic_evidence = True
+            elif source == 'service-level':
+                # Service-level: require meaningful self-degradation
+                if self_score >= 0.3:  # Threshold for "clear" service-level symptom
+                    has_intrinsic_evidence = True
+
+            # FILTER: Only include candidates with confirmed intrinsic degradation
+            if has_intrinsic_evidence:
+                filtered_rankings.append(candidate)
+
+        # If filter is too aggressive (no candidates), fall back to top scored nodes
+        if len(filtered_rankings) == 0:
+            # Emergency fallback: include top 3 by score
+            filtered_rankings = sorted(rankings, key=lambda x: x['score'], reverse=True)[:3]
+
+        return sorted(filtered_rankings, key=lambda x: x['score'], reverse=True)
 
     def validate_ground_truth(self, ground_truth_node: str, candidates: List[Dict]) -> Dict:
         """
