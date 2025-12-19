@@ -184,7 +184,8 @@ class WhiteboxRCAEngine:
         network_partitions = []
         metric_gaps = {}  # Track edges with metric gaps for confirmation
 
-        # STRATEGY 1: Detect metric gaps (secondary confirmation)
+        # STRATEGY 1: Detect sustained near-complete metric gaps (network partitions)
+        # Look for time windows where dependency requests drop to near-zero for extended periods
         if metrics_df is not None and fault_start_time is not None:
             try:
                 # Filter for dependency request metrics
@@ -200,34 +201,30 @@ class WhiteboxRCAEngine:
                     dep_metrics = dep_metrics[dep_metrics['dependency_id'].notna()]
 
                     if not dep_metrics.empty:
-                        # Split into baseline and current periods
+                        # Split into baseline and post-fault periods
                         baseline_df = dep_metrics[dep_metrics['sim_time'] < fault_start_time]
-                        current_df = dep_metrics[dep_metrics['sim_time'] >= fault_start_time]
+                        post_fault_df = dep_metrics[dep_metrics['sim_time'] >= fault_start_time]
 
-                        # Calculate duration of each period
+                        # Calculate baseline request frequency for each edge
                         baseline_duration = fault_start_time if fault_start_time > 0 else 1
-                        current_duration = current_df['sim_time'].max() - fault_start_time if len(current_df) > 0 else 1
 
-                        # Group by component and dependency to find gaps
+                        # Group by component and dependency to analyze each edge
                         for (component_id, dep_id), baseline_group in baseline_df.groupby(['component_id', 'dependency_id']):
                             # Check if this dependency had regular activity in baseline
                             baseline_count = len(baseline_group)
                             baseline_total_reqs = baseline_group['value'].sum() if 'value' in baseline_group.columns else 0
 
                             if baseline_count >= 3 and baseline_total_reqs > 10:  # Was active in baseline
-                                # Check if we have data in current period
-                                current_group = current_df[
-                                    (current_df['component_id'] == component_id) &
-                                    (current_df['dependency_id'] == dep_id)
-                                ]
-                                current_count = len(current_group)
+                                # Get post-fault data for this edge
+                                post_fault_group = post_fault_df[
+                                    (post_fault_df['component_id'] == component_id) &
+                                    (post_fault_df['dependency_id'] == dep_id)
+                                ].sort_values('sim_time')
 
-                                # Calculate FREQUENCY (samples per second) instead of absolute count
-                                baseline_freq = baseline_count / baseline_duration
-                                current_freq = current_count / current_duration if current_duration > 0 else 0
+                                if len(post_fault_group) == 0:
+                                    # No data at all post-fault - complete blackout
+                                    baseline_freq = baseline_count / baseline_duration
 
-                                # Detect gap: frequency dropped by >50%
-                                if current_freq < baseline_freq * 0.5:
                                     # Map component_id to service
                                     if component_id and component_id.startswith('pod_'):
                                         service = '_'.join(component_id.split('_')[1:-1])
@@ -236,28 +233,86 @@ class WhiteboxRCAEngine:
 
                                     if service and dep_id:
                                         metric_gaps[(service, dep_id)] = {
-                                            'baseline_samples': baseline_count,
-                                            'current_samples': current_count,
-                                            'gap_ratio': 1.0 - (current_freq / baseline_freq) if baseline_freq > 0 else 1.0,
                                             'baseline_freq': baseline_freq,
-                                            'current_freq': current_freq
+                                            'max_blackout_duration': post_fault_df['sim_time'].max() - fault_start_time,
+                                            'gap_ratio': 1.0,
+                                            'partition_type': 'complete_blackout'
                                         }
+                                else:
+                                    # Use sliding window to find sustained gaps
+                                    # Window size: 60 seconds (configurable)
+                                    # Threshold: >95% drop (near-zero requests)
+                                    window_size = 60.0
+                                    baseline_freq = baseline_count / baseline_duration
+
+                                    # Check for sustained gaps in time windows
+                                    max_gap_duration = 0
+                                    max_gap_start = None
+                                    current_gap_start = None
+                                    last_request_time = fault_start_time
+
+                                    for _, row in post_fault_group.iterrows():
+                                        request_time = row['sim_time']
+                                        gap_duration = request_time - last_request_time
+
+                                        # If gap > window_size, we have a sustained blackout
+                                        if gap_duration >= window_size:
+                                            if current_gap_start is None:
+                                                current_gap_start = last_request_time
+
+                                            total_gap = request_time - current_gap_start
+                                            if total_gap > max_gap_duration:
+                                                max_gap_duration = total_gap
+                                                max_gap_start = current_gap_start
+                                        else:
+                                            current_gap_start = None
+
+                                        last_request_time = request_time
+
+                                    # Check if gap extends to end of timeline
+                                    end_time = post_fault_df['sim_time'].max()
+                                    final_gap = end_time - last_request_time
+                                    if final_gap >= window_size:
+                                        if current_gap_start is None:
+                                            current_gap_start = last_request_time
+                                        total_gap = end_time - current_gap_start
+                                        if total_gap > max_gap_duration:
+                                            max_gap_duration = total_gap
+                                            max_gap_start = current_gap_start
+
+                                    # If we found a sustained gap (>60s with near-zero requests), flag as partition
+                                    if max_gap_duration >= window_size:
+                                        # Map component_id to service
+                                        if component_id and component_id.startswith('pod_'):
+                                            service = '_'.join(component_id.split('_')[1:-1])
+                                        else:
+                                            service = component_id
+
+                                        if service and dep_id:
+                                            metric_gaps[(service, dep_id)] = {
+                                                'baseline_freq': baseline_freq,
+                                                'max_blackout_duration': max_gap_duration,
+                                                'blackout_start': max_gap_start,
+                                                'gap_ratio': 1.0,  # Near 100% during blackout window
+                                                'partition_type': 'sustained_blackout'
+                                            }
 
                         # Report detected gaps
                         if metric_gaps:
-                            print(f"  [Metric Gaps] Detected {len(metric_gaps)} edges with metric frequency drops")
+                            print(f"  [Network Partition Detection] Found {len(metric_gaps)} edges with sustained blackouts")
                             for (src, tgt), info in list(metric_gaps.items())[:3]:
-                                print(f"    {src} -> {tgt}: {info['baseline_freq']:.3f} → {info['current_freq']:.3f}/s ({info['gap_ratio']*100:.0f}% drop)")
+                                print(f"    {src} -> {tgt}: {info['max_blackout_duration']:.0f}s blackout (baseline: {info['baseline_freq']:.2f} req/s)")
 
-                        # Convert metric gaps to network partitions
-                        # A significant frequency drop (>50%) indicates a network partition
+                        # Convert sustained blackouts to network partitions
+                        # Only flag as partition if blackout is sustained (>60s) and nearly complete (>95%)
                         for (source, target), gap_info in metric_gaps.items():
-                            # High confidence: >70% drop with substantial baseline activity
-                            if gap_info['gap_ratio'] >= 0.7 and gap_info['baseline_freq'] >= 0.1:
+                            blackout_duration = gap_info['max_blackout_duration']
+
+                            # Very high confidence: 120+ seconds of complete blackout
+                            if blackout_duration >= 120:
                                 reason = (f'Network partition detected: {source} -> {target} '
-                                         f'({gap_info["gap_ratio"]*100:.0f}% frequency drop: '
-                                         f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
-                                confidence = 0.95
+                                         f'(Complete blackout for {blackout_duration:.0f}s, baseline: {gap_info["baseline_freq"]:.2f} req/s)')
+                                confidence = 0.98
                                 network_partitions.append({
                                     'source': source,
                                     'target': target,
@@ -265,12 +320,11 @@ class WhiteboxRCAEngine:
                                     'confidence': confidence,
                                     'double_confirmed': False
                                 })
-                            # Medium confidence: >50% drop with baseline activity
-                            elif gap_info['gap_ratio'] >= 0.5 and gap_info['baseline_freq'] >= 0.05:
-                                reason = (f'Network partition suspected: {source} -> {target} '
-                                         f'({gap_info["gap_ratio"]*100:.0f}% frequency drop: '
-                                         f'{gap_info["baseline_freq"]:.2f} → {gap_info["current_freq"]:.2f}/s)')
-                                confidence = 0.85
+                            # High confidence: 60+ seconds of blackout
+                            elif blackout_duration >= 60:
+                                reason = (f'Network partition detected: {source} -> {target} '
+                                         f'(Sustained blackout for {blackout_duration:.0f}s, baseline: {gap_info["baseline_freq"]:.2f} req/s)')
+                                confidence = 0.90
                                 network_partitions.append({
                                     'source': source,
                                     'target': target,
@@ -280,7 +334,7 @@ class WhiteboxRCAEngine:
                                 })
 
             except Exception as e:
-                print(f"  [!] Warning: Metric gap detection failed: {e}")
+                print(f"  [!] Warning: Network partition detection failed: {e}")
 
         # Create global_network candidate if partitions detected
         if network_partitions:
