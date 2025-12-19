@@ -15,15 +15,52 @@ class NetworkPartitionError(Exception):
     pass
 
 
+def resolve_to_service_id(component_id: str):
+    """
+    Resolve a component ID to its parent service ID.
+
+    For pods, returns the parent service ID.
+    For services, returns the service ID itself.
+    For other components, returns the component ID as-is.
+
+    Args:
+        component_id: ID of the component to resolve
+
+    Returns:
+        The service ID if component is a pod/service, otherwise the component ID
+    """
+    from src.simulation import Simulation
+
+    # Get global component registry
+    registry = Simulation.get_global_component_registry()
+    if not registry:
+        # No registry available, fall back to component ID
+        return component_id
+
+    # Look up the component
+    component = registry.get(component_id)
+    if not component:
+        # Component not found, return ID as-is
+        return component_id
+
+    # If it's a Pod, get its parent service ID
+    if hasattr(component, 'parent_service') and component.parent_service:
+        return component.parent_service.id
+
+    # For services and other components, return their own ID
+    return component.id
+
+
 def check_network_partition(source_id: str, target_id: str, emit_log_func=None):
     """
     Utility function to check if network partition blocks communication.
 
     This is a shared implementation used across all components to avoid code duplication.
+    Uses robust service ID resolution instead of string matching heuristics.
 
     Args:
-        source_id: ID of the source component
-        target_id: ID of the target component
+        source_id: ID of the source component (can be pod, service, or other component)
+        target_id: ID of the target component (can be pod, service, or other component)
         emit_log_func: Optional logging function (e.g., component._emit_log)
 
     Raises:
@@ -32,18 +69,13 @@ def check_network_partition(source_id: str, target_id: str, emit_log_func=None):
     from src.simulation import Simulation
     network_link = Simulation.get_global_network()
     if network_link and network_link.partition_rules:
+        # Resolve component IDs to their service IDs
+        source_service_id = resolve_to_service_id(source_id)
+        target_service_id = resolve_to_service_id(target_id)
+
         for (partition_source, partition_target) in network_link.partition_rules:
-            # Check if source matches (exact or pod belongs to service)
-            source_matches = (source_id == partition_source or
-                            partition_source in source_id or
-                            source_id.startswith(f"pod_{partition_source}"))
-
-            # Check if target matches
-            target_matches = (target_id == partition_target or
-                            partition_target in target_id or
-                            target_id.startswith(f"pod_{partition_target}"))
-
-            if source_matches and target_matches:
+            # Exact match on service IDs (robust, no false positives)
+            if source_service_id == partition_source and target_service_id == partition_target:
                 # Network partition blocks this communication
                 error_msg = f"Network partition blocks communication from {source_id} to {target_id}"
                 if emit_log_func:
@@ -159,12 +191,21 @@ class NetworkLink(EnrichedComponent):
             target_id: ID of the target component (for partition checks)
         """
         # Check for network partition FIRST (blocks all traffic)
-        if source_id and target_id and (source_id, target_id) in self.partition_rules:
-            self._emit_log("ERROR", f"Network partition blocks traffic from {source_id} to {target_id}")
-            if span:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "network_partition")
-            raise NetworkPartitionError(f"Connection timed out: network partition between {source_id} and {target_id}")
+        # Use robust service ID resolution instead of string matching heuristics
+        if source_id and target_id and self.partition_rules:
+            # Resolve component IDs to their service IDs
+            source_service_id = resolve_to_service_id(source_id)
+            target_service_id = resolve_to_service_id(target_id)
+
+            for (partition_source, partition_target) in self.partition_rules:
+                # Exact match on service IDs (robust, no false positives)
+                if source_service_id == partition_source and target_service_id == partition_target:
+                    # Network partition blocks this communication
+                    self._emit_log("ERROR", f"Network partition blocks traffic from {source_id} to {target_id} (rule: {partition_source} -> {partition_target})")
+                    if span:
+                        span.set_attribute("error", True)
+                        span.set_attribute("error.type", "network_partition")
+                    raise NetworkPartitionError(f"Connection timed out: network partition between {source_id} and {target_id}")
 
         # Check for connection establishment failure
         if self._should_transient_error_occur('connection_failure'):

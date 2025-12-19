@@ -16,6 +16,8 @@ from src.components.base_component import EnrichedComponent
 class Simulation:
     # Class-level registry for global network link (for network partition checks)
     _global_network_link = None
+    # Class-level registry for global component registry (for service ID resolution)
+    _global_component_registry = None
 
     def __init__(self, config: dict):
         self.config = config
@@ -42,6 +44,16 @@ class Simulation:
     def get_global_network(cls):
         """Get the global network link for partition checks."""
         return cls._global_network_link
+
+    @classmethod
+    def set_global_component_registry(cls, component_registry):
+        """Set the global component registry for service ID resolution."""
+        cls._global_component_registry = component_registry
+
+    @classmethod
+    def get_global_component_registry(cls):
+        """Get the global component registry for service ID resolution."""
+        return cls._global_component_registry
 
     def _periodic_metric_flush(self, interval: int = 60):
         """
@@ -142,6 +154,8 @@ class Simulation:
                     parsed_hcl = parse_tf_directory(iac_path)
                     component_registry = build_component_graph(parsed_hcl, self.env)
                     self.component_registry = component_registry
+                    # Set global component registry for network partition service ID resolution
+                    Simulation.set_global_component_registry(component_registry)
                 except (ImportError, FileNotFoundError) as e:
                     self.logger.warning(f"IaC parsing skipped: {e}")
                     if self.component_registry is None:
@@ -150,6 +164,8 @@ class Simulation:
                 self.logger.info("[Phase 2/5] Using procedurally generated topology (skipping IaC)")
         else:
             self.logger.info(f"[Phase 2/5] Using pre-built component registry with {len(self.component_registry)} components")
+            # Set global component registry for network partition service ID resolution
+            Simulation.set_global_component_registry(self.component_registry)
 
         component_registry = self.component_registry
         if not component_registry:
