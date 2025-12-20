@@ -171,7 +171,18 @@ class WhiteboxRCAEngine:
             self_scores[node] = analysis
 
         # --- PHASE 2: Physics Coverage ---
+        # Start with nodes that have self-degradation
         candidates = [n for n, s in self_scores.items() if s.is_root_cause_candidate]
+
+        # CRITICAL: Always include external dependencies, even with weak self-scores
+        # External deps should be evaluated by physics coverage (caller consensus), not just self-health
+        external_dep_types = ['ExternalAPI', 'ExternalService', 'Database', 'Cache', 'Queue', 'MessageBroker']
+        for node in self.topology.nodes:
+            node_type = self.topology.nodes[node].get('type', '')
+            if node_type in external_dep_types and node not in candidates:
+                # Only add if node has self-score (was analyzed in Phase 1)
+                if node in self_scores:
+                    candidates.append(node)
 
         physics_hypotheses = self.reasoner.calculate_global_coverage(
             candidates, self_scores, baseline_data, current_data
@@ -408,13 +419,36 @@ class WhiteboxRCAEngine:
 
         # --- PHASE 4: SOTA Ranking & Explainability ---
         rankings = []
+
+        # Debug: Check for external deps with physics
+        external_deps_with_physics = [
+            (node, physics_hypotheses[node].coverage_score)
+            for node in self.topology.nodes
+            if node in physics_hypotheses
+            and self.topology.nodes[node].get('type') in ['ExternalAPI', 'ExternalService', 'Database', 'Cache', 'Queue']
+            and physics_hypotheses[node].coverage_score > 0
+        ]
+        if external_deps_with_physics:
+            print(f"\n[DEBUG] External deps with physics: {external_deps_with_physics[:5]}")
+
         for node in self.topology.nodes:
-            if node not in self_scores: continue
+            # Include nodes with self-scores OR physics evidence
+            # (External deps may have no self-score but strong physics signal)
+            has_self_score = node in self_scores
+            has_physics = node in physics_hypotheses and physics_hypotheses[node].coverage_score > 0.1
+
+            if not (has_self_score or has_physics):
+                continue  # Skip only if BOTH are missing
 
             # === COMPONENT 1: BASE HEALTH (0-50 points) ===
             # Pod-level analysis is AUTHORITATIVE when available (more granular than service aggregates)
-            service_self_score = self_scores[node].self_degradation_score
-            service_confidence = self_scores[node].confidence
+            # For nodes with no self-score (external deps), use 0 (rely on physics)
+            if has_self_score:
+                service_self_score = self_scores[node].self_degradation_score
+                service_confidence = self_scores[node].confidence
+            else:
+                service_self_score = 0.0
+                service_confidence = 'low'
 
             # Calculate integrated score (considers pod-level if available)
             integrated_score, health_metadata = self.calculate_integrated_health_score(
@@ -462,7 +496,16 @@ class WhiteboxRCAEngine:
             # === COMPONENT 3: SEMANTIC TYPE (0-40 points) ===
             # PRIMARY symptoms (cause) get major boost
             # SECONDARY symptoms (effect) get zero
-            is_primary = (self_scores[node].symptom_type == 'primary')
+            is_primary = (self_scores[node].symptom_type == 'primary') if node in self_scores else False
+
+            # OVERRIDE: Leaf nodes (no outgoing dependencies) are ALWAYS primary
+            # Rationale: Services with no dependencies can't have symptoms caused by dependency issues
+            # This includes: external deps (APIs, DBs, caches) AND internal leaf services
+            # Any degradation they show is intrinsic, not cascading from downstream calls
+            successors = list(self.topology.successors(node)) if node in self.topology else []
+            is_leaf = len(successors) == 0
+            if is_leaf:
+                is_primary = True
 
             # Refined: Consider both type AND coverage
             if is_primary:

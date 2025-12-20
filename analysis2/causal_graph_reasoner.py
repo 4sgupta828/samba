@@ -238,6 +238,11 @@ class CausalGraphReasoner:
         caller_dep_curr = get_service_metric(current, caller, 'dependency.duration')
         caller_dep_growth = calc_growth(caller_dep_base, caller_dep_curr)
 
+        # Check if callee is an external dependency (for special handling)
+        # External deps are blackbox - they don't emit metrics, so we use caller's view
+        callee_node_type = self.topology.nodes.get(callee, {}).get('type', '')
+        is_callee_external = callee_node_type in ['ExternalAPI', 'ExternalService', 'Database', 'Cache', 'Queue']
+
         # Capacity metrics
         callee_rps_base = get_service_metric(baseline, callee, 'requests')
         callee_rps_curr = get_service_metric(current, callee, 'requests')
@@ -326,6 +331,18 @@ class CausalGraphReasoner:
 
         # B. LATENCY (Backpressure) - RELAXED THRESHOLDS
         # Lower threshold from 1.2x to 1.15x (15% slowdown)
+
+        # SPECIAL CASE: External dependencies (blackbox)
+        # External deps are blackbox systems that don't emit self-metrics
+        # Use caller's dependency latency growth as the primary signal
+        # NOTE: Internal leaf services are NOT treated this way - they have metrics we should use
+        if is_callee_external and callee_lat_base < 0.01:
+            # External service has no latency metrics (blackbox)
+            # Validate using caller's dependency latency growth alone
+            if caller_dep_growth > CausalConstants.MIN_LATENCY_GROWTH_RELAXED:
+                return CausalLink(callee, caller, 'latency', True, f"External Dep Latency (caller dep: {caller_dep_growth:.1f}x)")
+
+        # Normal case: Use callee's self-latency
         if callee_lat_growth > CausalConstants.MIN_LATENCY_GROWTH_RELAXED:
             # Caller must reflect diluted growth (accounts for multiple dependencies)
             required_growth = 1.0 + ((callee_lat_growth - 1.0) * CausalConstants.LATENCY_DILUTION_FACTOR)
