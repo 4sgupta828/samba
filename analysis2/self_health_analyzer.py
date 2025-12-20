@@ -115,14 +115,32 @@ class SelfHealthAnalyzer:
 
     def analyze(self, node_id: str, node_type: str,
                 baseline: Dict[str, np.ndarray],
-                current: Dict[str, np.ndarray]) -> SelfHealthResult:
+                current: Dict[str, np.ndarray],
+                topology=None,
+                all_baseline_data: Dict[str, Dict[str, np.ndarray]] = None,
+                all_current_data: Dict[str, Dict[str, np.ndarray]] = None) -> SelfHealthResult:
+        """
+        Analyze node self-health with dependency-aware error attribution.
+
+        Args:
+            node_id: Node to analyze
+            node_type: Type of node (Service, Queue, etc.)
+            baseline: Node's baseline metrics
+            current: Node's current metrics
+            topology: NetworkX DiGraph (optional, for dependency health check)
+            all_baseline_data: All nodes' baseline data (optional, for dependency health check)
+            all_current_data: All nodes' current data (optional, for dependency health check)
+        """
 
         # 1. Standard Whitebox Analysis (If metrics exist)
         if current:
             # Normalize metrics to standard names for backward compatibility
             baseline_norm = self._normalize_metrics(node_id, baseline)
             current_norm = self._normalize_metrics(node_id, current)
-            return self._analyze_whitebox(node_id, node_type, baseline_norm, current_norm)
+            return self._analyze_whitebox(
+                node_id, node_type, baseline_norm, current_norm,
+                topology, all_baseline_data, all_current_data
+            )
 
         # 2. No metrics? Return empty (Caller will handle Blackbox Inference)
         return SelfHealthResult(node_id, False, 0.0, 'secondary', [])
@@ -177,7 +195,75 @@ class SelfHealthAnalyzer:
             symptoms=symptoms
         )
 
-    def _analyze_whitebox(self, node_id, node_type, baseline, current) -> SelfHealthResult:
+    def _check_dependency_health(self, node_id, topology, all_current_data) -> Dict[str, Any]:
+        """
+        Check if node's dependencies are healthy.
+
+        Returns:
+            {
+                'has_dependencies': bool,
+                'dependencies_healthy': bool,  # All deps have error_rate < 5%
+                'max_dep_error_rate': float,
+                'degraded_deps': List[str]
+            }
+        """
+        if not topology or not all_current_data:
+            return {
+                'has_dependencies': False,
+                'dependencies_healthy': True,  # Conservative: assume healthy if can't check
+                'max_dep_error_rate': 0.0,
+                'degraded_deps': []
+            }
+
+        # Get dependencies (outgoing edges, excluding pods)
+        dependencies = []
+        for dep in topology.successors(node_id):
+            dep_type = topology.nodes[dep].get('type', '')
+            # Skip pod edges (control plane), only consider data plane dependencies
+            if not topology.nodes[dep].get('parent_service'):
+                dependencies.append(dep)
+
+        if not dependencies:
+            return {
+                'has_dependencies': False,
+                'dependencies_healthy': True,
+                'max_dep_error_rate': 0.0,
+                'degraded_deps': []
+            }
+
+        # Check error rates of dependencies
+        degraded_deps = []
+        max_error_rate = 0.0
+
+        for dep in dependencies:
+            dep_data = all_current_data.get(dep, {})
+            if not dep_data:
+                continue
+
+            # Check for internal error rate
+            error_rate_metric = None
+            for key in dep_data.keys():
+                if 'error_rate' in key.lower() and 'dependency' not in key.lower():
+                    error_rate_metric = key
+                    break
+
+            if error_rate_metric:
+                dep_error_rate = np.mean(dep_data[error_rate_metric])
+                max_error_rate = max(max_error_rate, dep_error_rate)
+
+                # Threshold: 5% is significant degradation
+                if dep_error_rate > 0.05:
+                    degraded_deps.append((dep, dep_error_rate))
+
+        return {
+            'has_dependencies': True,
+            'dependencies_healthy': len(degraded_deps) == 0,
+            'max_dep_error_rate': max_error_rate,
+            'degraded_deps': degraded_deps
+        }
+
+    def _analyze_whitebox(self, node_id, node_type, baseline, current,
+                          topology=None, all_baseline_data=None, all_current_data=None) -> SelfHealthResult:
         symptoms = []
         resource_score = 0.0
         performance_score = 0.0
@@ -287,37 +373,50 @@ class SelfHealthAnalyzer:
                     found_primary = True
                     resource_score = max(resource_score, 10.0)
 
-            # Check Error Rate
-            # PRINCIPLED: True self-health degradation shows BOTH errors AND resource symptoms
-            # If errors appear WITHOUT resource degradation, it's likely a cascading failure
+            # Check Error Rate with Dependency-Aware Attribution
+            # PRINCIPLE: Errors contribute proportionally to their magnitude
+            # BUT: Only if they can be attributed to this node (not cascading from dependencies)
             err_stat = self._check_metric('internal_error_rate', baseline, current)
             if err_stat.significant and err_stat.effect_size > self.thresholds.min_effect_size_medium:
                 curr_err_mean = np.mean(current['internal_error_rate']) if len(current['internal_error_rate']) > 0 else 0
 
-                # Check if this component has ANY resource/primary symptoms
-                # True root causes show resource exhaustion (CPU, memory, threads, deadlocks)
-                # Victims show high errors WITHOUT resource symptoms (cascading failure)
-                has_resource_symptoms = (
-                    resource_score > 0 or  # Found resource saturation/exhaustion
-                    limp_mode_score > 0 or  # Found deadlock/zombie patterns
-                    found_primary  # Found other primary symptoms (cache faults, queue faults)
+                # Check dependency health to determine attribution
+                dep_health = self._check_dependency_health(node_id, topology, all_current_data)
+
+                # ATTRIBUTION LOGIC:
+                # 1. No dependencies OR all dependencies healthy (error_rate < 5%)
+                #    → Errors are intrinsic, score proportionally
+                # 2. Dependencies have errors (>5%)
+                #    → GRAY AREA: Cannot determine attribution, score 0 (conservative)
+                #    → Let physics model determine root cause via coverage
+
+                can_attribute_errors = (
+                    not dep_health['has_dependencies'] or  # No deps → errors are intrinsic
+                    dep_health['dependencies_healthy']     # Deps healthy → errors are intrinsic
                 )
 
-                if not has_resource_symptoms and curr_err_mean > 0.1:
-                    # High errors WITHOUT any resource degradation = likely dependency victim
-                    # PRINCIPLED: If dependencies fail, service returns errors but shows no internal stress
-                    # Do NOT attribute these errors to self-health
-                    symptoms.append(f"Error rate increased ({curr_err_mean:.1%}) - no resource degradation (likely cascading failure)")
-                    # No performance_score increase - this is not a self-health issue
+                if can_attribute_errors:
+                    # PROPORTIONAL SCORING: error_rate * 10.0 (e.g., 47% → 4.7 score)
+                    # Cap at 10.0 to maintain consistency with other signals
+                    error_score = min(10.0, curr_err_mean * 10.0)
+                    performance_score = max(performance_score, error_score)
+
+                    # Mark as primary if errors are high
+                    if curr_err_mean > 0.20:  # 20%+ errors
+                        found_primary = True
+
+                    symptoms.append(f"Error rate {curr_err_mean:.1%} (attributed to self)")
+
                 else:
-                    # Has resource symptoms OR moderate errors - this is genuine self-degradation
-                    symptoms.append(f"Error rate increased ({curr_err_mean:.1%})")
-                    if curr_err_mean > self.thresholds.error_rate_severe:
-                        performance_score = max(performance_score, 10.0)
-                    elif curr_err_mean > self.thresholds.error_rate_moderate:
-                        performance_score = max(performance_score, 8.0)
-                    else:
-                        performance_score = max(performance_score, 6.0)
+                    # GRAY AREA: Dependencies have errors, cannot attribute cleanly
+                    # Conservative approach: Don't score errors, let physics determine attribution
+                    # Add note to symptoms explaining why errors not factored
+                    degraded_deps_str = ", ".join([f"{dep}({err:.1%})" for dep, err in dep_health['degraded_deps']])
+                    symptoms.append(
+                        f"Error rate {curr_err_mean:.1%} - not factored into health score "
+                        f"(potential dilution from degraded dependencies: {degraded_deps_str})"
+                    )
+                    # performance_score unchanged - errors NOT attributed to self-health
 
             # Check Latency
             if lat_stat.significant and lat_stat.effect_size > self.thresholds.min_effect_size_medium:

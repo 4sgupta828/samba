@@ -152,9 +152,14 @@ class WhiteboxRCAEngine:
             b_metrics = baseline_data.get(node, {})
             c_metrics = current_data.get(node, {})
 
-            # A. Whitebox Analysis
+            # A. Whitebox Analysis (with dependency-aware error attribution)
             if c_metrics:
-                analysis = self.self_analyzer.analyze(node, node_type, b_metrics, c_metrics)
+                analysis = self.self_analyzer.analyze(
+                    node, node_type, b_metrics, c_metrics,
+                    topology=self.topology,
+                    all_baseline_data=baseline_data,
+                    all_current_data=current_data
+                )
 
             # B. Blackbox Inference
             else:
@@ -778,7 +783,12 @@ class WhiteboxRCAEngine:
                                   reverse=True)[:3]
             for c in physics_sorted:
                 c['filter_evidence'] = 'fallback-physics-only'
-                c['story'] = c.get('story', '') + "\n⚠️  FALLBACK: Weak metrics but selected by physics reasoning."
+                # Story can be list or string, handle both
+                story = c.get('story', [])
+                if isinstance(story, list):
+                    story.append("⚠️  FALLBACK: Weak metrics but selected by physics reasoning.")
+                else:
+                    c['story'] = story + "\n⚠️  FALLBACK: Weak metrics but selected by physics reasoning."
             filtered_rankings = physics_sorted
 
         return sorted(filtered_rankings, key=lambda x: x['score'], reverse=True)

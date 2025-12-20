@@ -101,6 +101,28 @@ class CausalGraphReasoner:
 
         return False
 
+    def _is_caller_edge(self, predecessor: str, node: str) -> bool:
+        """
+        Determine if predecessor → node edge represents a CALL (vs async consumer pattern).
+
+        Returns True if predecessor is a caller (fault in node impacts predecessor).
+        Returns False if predecessor is a data source (queue feeding consumer via async pull).
+
+        Rules:
+        - Queue/MessageBroker → Service: NOT a call (async consumer pattern, reverse impact)
+        - Service → Service: IS a call (traditional RPC/HTTP, forward propagation)
+        - Service → Database/Cache/Queue: IS a call (dependency access, forward propagation)
+        """
+        pred_type = self.topology.nodes[predecessor].get('type', 'Service')
+        node_type = self.topology.nodes[node].get('type', 'Service')
+
+        # Queue → Service = async consumer pattern (NOT a caller, disconnected by async-ness)
+        if pred_type in ['Queue', 'MessageBroker'] and node_type == 'Service':
+            return False
+
+        # All other edges are synchronous calls
+        return True
+
     def calculate_global_coverage(self, candidates: List[str], health_scores: Dict, baseline: Dict, current: Dict) -> Dict[str, CausalHypothesis]:
         """For every candidate, calculate how much of the system it explains."""
 
@@ -112,6 +134,8 @@ class CausalGraphReasoner:
 
             if total_symptomatic:
                 explained = h.explained_nodes.intersection(total_symptomatic)
+                # FIX (a): Don't count root in its own coverage - only count OTHER nodes it explains
+                explained = explained - {candidate}
                 h.coverage_score = len(explained) / len(total_symptomatic)
             else:
                 h.coverage_score = 0.0
@@ -143,7 +167,10 @@ class CausalGraphReasoner:
 
         while queue:
             curr = queue.pop(0)
-            callers = list(self.topology.predecessors(curr))
+            predecessors = list(self.topology.predecessors(curr))
+
+            # FIX (b): Filter to only ACTUAL callers (exclude async data sources like queues)
+            callers = [p for p in predecessors if self._is_caller_edge(p, curr)]
 
             for caller in callers:
                 if caller in visited:
