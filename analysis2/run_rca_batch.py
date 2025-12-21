@@ -267,6 +267,10 @@ class DatasetAdapter:
         print(f"    Baseline metrics: {len(base_df)}")
         print(f"    Current metrics:  {len(curr_df)}")
 
+        # Store window times for later use (e.g., per-dependency metric extraction)
+        self.baseline_window = (windows.baseline.start, windows.baseline.end)
+        self.current_window = (windows.current.start, windows.current.end)
+
         # Process into dictionaries
         baseline_data = self._process_window(base_df)
         current_data = self._process_window(curr_df)
@@ -598,6 +602,8 @@ def process_episode(episode_dir: Path, top_k: int = 5) -> Dict:
         service_results = engine.analyze_incident(
             baseline_services, current_services,
             metrics_df=adapter.metrics_df,
+            baseline_window=adapter.baseline_window,
+            current_window=adapter.current_window,
             fault_start_time=fault_start_time,
             traces_file=traces_file,
             logs_file=logs_file,  # Add logs for network partition detection

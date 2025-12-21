@@ -138,6 +138,8 @@ class WhiteboxRCAEngine:
     def analyze_incident(self,
                          baseline_data: Dict, current_data: Dict,
                          metrics_df: Optional[pd.DataFrame] = None,
+                         baseline_window: tuple = None,
+                         current_window: tuple = None,
                          fault_start_time: Optional[float] = None,
                          traces_file: Optional[Path] = None,
                          logs_file: Optional[Path] = None,
@@ -145,15 +147,53 @@ class WhiteboxRCAEngine:
 
         # --- PHASE 1: Self-Health (Whitebox + Blackbox Inference) ---
         self_scores = {}
+
+        # Define external dependency types that should ALWAYS use caller-based analysis
+        external_dep_types = {
+            'ExternalService', 'ExternalAPI',
+            'Database', 'Cache',
+            'Queue', 'MessageBroker'
+        }
+
         for node in self.topology.nodes:
             if self.topology.nodes[node].get('parent_service'): continue
 
             node_type = self.topology.nodes[node].get('type', 'Service')
+            node_role = self.topology.nodes[node].get('role', '')
             b_metrics = baseline_data.get(node, {})
             c_metrics = current_data.get(node, {})
 
-            # A. Whitebox Analysis (with dependency-aware error attribution)
-            if c_metrics:
+            # ROUTING DECISION: Whitebox vs Blackbox
+            # For external dependencies, ALWAYS use caller-based (blackbox) analysis
+            # regardless of whether they have self metrics. This provides:
+            # 1. Consensus view across all callers (error rate, latency, throughput)
+            # 2. Alignment with physics model (impact propagation from callers)
+            # 3. Avoids relying on incomplete/misleading self metrics
+
+            is_external_dep = (node_type in external_dep_types or node_role == 'external')
+
+            if is_external_dep:
+                # EXTERNAL DEPENDENCY: ALWAYS use caller-based consensus analysis
+                # Principle: External deps are black boxes - evaluate by what callers observe,
+                # not by incomplete self metrics
+                callers = list(self.topology.predecessors(node))
+                if callers:
+                    c_views_base = [baseline_data.get(c, {}) for c in callers]
+                    c_views_curr = [current_data.get(c, {}) for c in callers]
+                    analysis = self.self_analyzer.infer_blackbox_health(
+                        node, c_views_base, c_views_curr,
+                        caller_ids=callers,
+                        metrics_df=metrics_df,
+                        baseline_window=baseline_window,
+                        current_window=current_window,
+                        target_dependency=node
+                    )
+                else:
+                    # External dep with no callers - skip (orphan)
+                    continue
+
+            elif c_metrics:
+                # INTERNAL SERVICE: Use whitebox analysis with dependency-aware error attribution
                 analysis = self.self_analyzer.analyze(
                     node, node_type, b_metrics, c_metrics,
                     topology=self.topology,
@@ -161,14 +201,20 @@ class WhiteboxRCAEngine:
                     all_current_data=current_data
                 )
 
-            # B. Blackbox Inference
             else:
+                # INTERNAL SERVICE without metrics: Use blackbox inference from callers
+                # (Note: This uses aggregated data since internal services aren't dependencies)
                 callers = list(self.topology.predecessors(node))
                 if callers:
                     c_views_base = [baseline_data.get(c, {}) for c in callers]
                     c_views_curr = [current_data.get(c, {}) for c in callers]
                     analysis = self.self_analyzer.infer_blackbox_health(
-                        node, c_views_base, c_views_curr
+                        node, c_views_base, c_views_curr,
+                        caller_ids=None,  # Internal services don't need per-dependency extraction
+                        metrics_df=None,
+                        baseline_window=None,
+                        current_window=None,
+                        target_dependency=None
                     )
                 else:
                     continue # Orphan node
@@ -177,17 +223,9 @@ class WhiteboxRCAEngine:
 
         # --- PHASE 2: Physics Coverage ---
         # Start with nodes that have self-degradation
+        # External dependencies are now properly scored in Phase 1 using caller consensus,
+        # so no special handling needed here
         candidates = [n for n, s in self_scores.items() if s.is_root_cause_candidate]
-
-        # CRITICAL: Always include external dependencies, even with weak self-scores
-        # External deps should be evaluated by physics coverage (caller consensus), not just self-health
-        external_dep_types = ['ExternalAPI', 'ExternalService', 'Database', 'Cache', 'Queue', 'MessageBroker']
-        for node in self.topology.nodes:
-            node_type = self.topology.nodes[node].get('type', '')
-            if node_type in external_dep_types and node not in candidates:
-                # Only add if node has self-score (was analyzed in Phase 1)
-                if node in self_scores:
-                    candidates.append(node)
 
         physics_hypotheses = self.reasoner.calculate_global_coverage(
             candidates, self_scores, baseline_data, current_data

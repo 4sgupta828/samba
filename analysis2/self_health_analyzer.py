@@ -147,52 +147,170 @@ class SelfHealthAnalyzer:
 
     def infer_blackbox_health(self, node_id: str,
                               callers_baseline: List[Dict],
-                              callers_current: List[Dict]) -> SelfHealthResult:
+                              callers_current: List[Dict],
+                              caller_ids: List[str] = None,
+                              metrics_df: 'pd.DataFrame' = None,
+                              baseline_window: tuple = None,
+                              current_window: tuple = None,
+                              target_dependency: str = None) -> SelfHealthResult:
         """
-        Synthesizes health for a node based on what its Callers see.
-        For blackbox external services without direct metrics.
+        Synthesizes health for a node based on what its Callers see (caller consensus).
+
+        For external dependencies (ExternalService, ExternalAPI, Database, etc.),
+        we evaluate based on what callers observe:
+        - Consensus error rate across all callers
+        - Consensus P99 latency across all callers
+        - Consensus throughput change across all callers
+
+        This aligns with the physics model: external deps are evaluated by their
+        impact on callers, not by incomplete self metrics.
+
+        Args:
+            node_id: The node being analyzed (e.g., 'insurance_api')
+            callers_baseline: Aggregated baseline metrics for callers (fallback if raw data unavailable)
+            callers_current: Aggregated current metrics for callers (fallback if raw data unavailable)
+            caller_ids: List of caller node IDs (service names)
+            metrics_df: Raw metrics DataFrame (preserves all labels including dependency_id)
+            baseline_window: (start_time, end_time) for baseline period
+            current_window: (start_time, end_time) for current period
+            target_dependency: The dependency node being analyzed (e.g., 'insurance_api')
         """
         symptoms = []
         score = 0.0
 
-        # 1. Check Latency (The main signal for external APIs)
-        base_lats = [np.mean(c.get('dependency_latency', [0])) for c in callers_baseline]
-        curr_lats = [np.mean(c.get('dependency_latency', [0])) for c in callers_current]
+        # If we have raw metrics_df and target_dependency, extract per-dependency metrics directly
+        # This preserves dependency_id labels that get lost in aggregation
+        if metrics_df is not None and target_dependency and caller_ids and baseline_window and current_window:
+            import pandas as pd
 
-        avg_base_lat = np.mean(base_lats) if base_lats else 0.0
-        avg_curr_lat = np.mean(curr_lats) if curr_lats else 0.0
+            def extract_dependency_metrics_from_df(df, time_start, time_end, callers, dep_id, metric_suffix):
+                """Extract per-dependency metrics from raw DataFrame."""
+                # Filter for:
+                # 1. Time window
+                # 2. Caller pods (component_id contains caller service name)
+                # 3. Dependency metrics (name contains 'dependency')
+                # 4. Specific dependency (label dependency_id == dep_id)
+                # 5. Specific metric (name contains metric_suffix)
 
-        if avg_curr_lat > 0.01:
-            growth = (avg_curr_lat + 0.001) / (avg_base_lat + 0.001)
-            if growth > 1.5:
-                symptoms.append(f"Inferred High Latency ({growth:.1f}x from callers)")
-                score = 10.0
-            elif growth > 1.2:
-                symptoms.append(f"Inferred Latency Elevation")
-                score = 5.0
+                mask = (
+                    (df['sim_time'] >= time_start) &
+                    (df['sim_time'] <= time_end) &
+                    (df['name'].str.contains('dependency', na=False)) &
+                    (df['name'].str.contains(metric_suffix, na=False))
+                )
 
-        # 2. Check Errors
-        base_errs = [np.mean(c.get('dependency_error_rate', [0])) for c in callers_baseline]
-        curr_errs = [np.mean(c.get('dependency_error_rate', [0])) for c in callers_current]
+                # Filter for callers
+                caller_mask = pd.Series([False] * len(df), index=df.index)
+                for caller in callers:
+                    caller_mask |= df['component_id'].str.contains(caller, na=False)
+                mask &= caller_mask
 
-        avg_curr_err = np.mean(curr_errs) if curr_errs else 0.0
-        avg_base_err = np.mean(base_errs) if base_errs else 0.0
+                # Filter for specific dependency_id
+                if 'labels' in df.columns:
+                    dep_mask = df['labels'].apply(
+                        lambda x: isinstance(x, dict) and x.get('dependency_id') == dep_id
+                    )
+                    mask &= dep_mask
 
-        if avg_curr_err - avg_base_err > 0.01:
-            symptoms.append(f"Inferred Error Spike ({(avg_curr_err*100):.1f}%)")
-            score = 10.0
+                filtered = df[mask]
+
+                if len(filtered) == 0:
+                    return np.array([])
+
+                # Extract values
+                values = filtered['value'].dropna().values
+                return values
+
+            # Extract per-dependency metrics for this specific dependency
+            base_errors = extract_dependency_metrics_from_df(
+                metrics_df, baseline_window[0], baseline_window[1],
+                caller_ids, target_dependency, 'errors'
+            )
+            curr_errors = extract_dependency_metrics_from_df(
+                metrics_df, current_window[0], current_window[1],
+                caller_ids, target_dependency, 'errors'
+            )
+            base_requests = extract_dependency_metrics_from_df(
+                metrics_df, baseline_window[0], baseline_window[1],
+                caller_ids, target_dependency, 'requests'
+            )
+            curr_requests = extract_dependency_metrics_from_df(
+                metrics_df, current_window[0], current_window[1],
+                caller_ids, target_dependency, 'requests'
+            )
+            base_duration = extract_dependency_metrics_from_df(
+                metrics_df, baseline_window[0], baseline_window[1],
+                caller_ids, target_dependency, 'duration'
+            )
+            curr_duration = extract_dependency_metrics_from_df(
+                metrics_df, current_window[0], current_window[1],
+                caller_ids, target_dependency, 'duration'
+            )
+
+            # Compute consensus error rate
+            if len(curr_errors) > 0 and len(curr_requests) > 0:
+                total_base_errs = np.sum(base_errors) if len(base_errors) > 0 else 0
+                total_curr_errs = np.sum(curr_errors)
+                total_base_reqs = np.sum(base_requests) if len(base_requests) > 0 else 1
+                total_curr_reqs = np.sum(curr_requests)
+
+                base_err_rate = total_base_errs / total_base_reqs if total_base_reqs > 0 else 0
+                curr_err_rate = total_curr_errs / total_curr_reqs if total_curr_reqs > 0 else 0
+                err_increase = curr_err_rate - base_err_rate
+
+                if err_increase > 0.01:  # >1% increase
+                    symptoms.append(
+                        f"Caller consensus: Error rate {base_err_rate*100:.1f}% → {curr_err_rate*100:.1f}% "
+                        f"(+{err_increase*100:.1f}pp)"
+                    )
+                    error_score = min(10.0, err_increase * 50.0)
+                    score = max(score, error_score)
+
+            # Compute consensus P99 latency
+            if len(curr_duration) > 0 and len(base_duration) > 0:
+                base_p99 = np.percentile(base_duration, 99)
+                curr_p99 = np.percentile(curr_duration, 99)
+
+                if base_p99 > 0:
+                    lat_growth = curr_p99 / base_p99
+                    if lat_growth > 2.0:
+                        symptoms.append(
+                            f"Caller consensus: P99 latency {base_p99:.0f}ms → {curr_p99:.0f}ms ({lat_growth:.1f}x)"
+                        )
+                        score = max(score, 10.0)
+                    elif lat_growth > 1.5:
+                        symptoms.append(f"Caller consensus: P99 latency increased {lat_growth:.1f}x")
+                        score = max(score, 7.0)
+
+            # Compute consensus throughput
+            if len(curr_requests) > 0 and len(base_requests) > 0:
+                avg_base_rps = np.mean(base_requests)
+                avg_curr_rps = np.mean(curr_requests)
+
+                if avg_base_rps > 0:
+                    rps_change = ((avg_curr_rps / avg_base_rps) - 1) * 100
+                    if rps_change < -30:
+                        symptoms.append(f"Caller consensus: Throughput dropped {abs(rps_change):.0f}%")
+                        score = max(score, 5.0)
+
+        # NOTE: If raw metrics_df not available, we cannot get per-dependency metrics
+        # due to aggregation losing dependency_id labels. Return low confidence result.
 
         # DECISION: Symptom Type
-        # For a Blackbox, High Latency/Errors IS the root state (we can't see inside)
+        # For external dependencies, observed degradation IS the root state (we can't see inside)
         # Treat as PRIMARY since it's the deepest we can observe
         symptom_type = 'primary' if score > 5.0 else 'secondary'
+
+        # Confidence based on number of signals detected
+        confidence = 'high' if len(symptoms) >= 2 else ('medium' if len(symptoms) == 1 else 'low')
 
         return SelfHealthResult(
             node_id=node_id,
             is_root_cause_candidate=(score > 4.0),
             self_degradation_score=score,
             symptom_type=symptom_type,
-            symptoms=symptoms
+            symptoms=symptoms,
+            confidence=confidence
         )
 
     def _check_dependency_health(self, node_id, topology, all_current_data) -> Dict[str, Any]:
