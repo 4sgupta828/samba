@@ -291,41 +291,68 @@ def memory_pressure(component, params: Dict[str, Any]):
         component._emit_log("ERROR", "Component does not have dynamics engine - cannot inject memory pressure")
         return
 
-    # Capacity-relative calculation
-    severity = params.get('severity', 0.5)
-    progress = params.get('progress', 1.0)  # Support gradual injection
+    # === PRINCIPLED APPROACH: Target steady-state memory utilization ===
+    #
+    # Goal: Achieve target memory utilization at typical load (not just at baseline)
+    # Formula: baseline + (typical_concurrent * memory_per_request) = target_utilization * capacity
+    #
+    # This approach:
+    # 1. Uses pod's actual OOM limit (not dynamics engine's arbitrary max)
+    # 2. Derives concurrent estimate from thread pool capacity (not hardcoded)
+    # 3. Targets specific utilization % based on severity
+    # 4. Ensures memory pressure is visible while preventing OOM kills
 
-    # Get current memory state
-    # For gradual injection, we need to calculate based on original baseline, not current
+    severity = params.get('severity', 0.5)
+    progress = params.get('progress', 1.0)
+
     if not hasattr(component, '_memory_pressure_original_base'):
         component._memory_pressure_original_base = component.dynamics.config.memory_base
-        component._memory_pressure_target_increase = 0.0  # Track target increase
-    
+        component._memory_pressure_target_increase = 0.0
+
     original_base = component._memory_pressure_original_base
-    current_memory_mb = component.dynamics.memory_percent  # Actually in MB despite name
-    memory_capacity_mb = component.dynamics.config.memory_max  # Max capacity
 
-    # Calculate available headroom based on original baseline
-    available_headroom_mb = memory_capacity_mb - original_base
-
-    # Non-linear severity scaling (matches fault tuner)
-    if severity < 0.3:
-        scale = (severity / 0.3) * 0.6  # 0-60% of headroom
-    elif severity < 0.7:
-        scale = 0.6 + ((severity - 0.3) / 0.4) * 0.4  # 60-100% of headroom
+    # Use pod's actual OOM kill limit (not dynamics engine's max)
+    if hasattr(component, 'memory_capacity_mb'):
+        memory_capacity_mb = component.memory_capacity_mb
     else:
-        scale = 1.0 + (((severity - 0.7) / 0.3) ** 1.5) * 0.3  # 100-130% of headroom
+        memory_capacity_mb = component.dynamics.config.memory_max
 
-    # Calculate target memory increase (use 70% of available headroom by default, scaled by severity)
-    base_consumption = 0.70  # Consume 70% of available headroom
-    target_memory_increase_mb = available_headroom_mb * base_consumption * scale
+    # Determine target memory utilization based on severity
+    # Maps severity to target utilization at steady state
+    if severity < 0.3:
+        target_utilization = 0.70 + (severity / 0.3) * 0.10  # 70-80%
+    elif severity < 0.7:
+        target_utilization = 0.80 + ((severity - 0.3) / 0.4) * 0.12  # 80-92%
+    else:
+        target_utilization = 0.92 + ((severity - 0.7) / 0.3) * 0.05  # 92-97%
 
-    # Fallback to provided parameter if severity not calculated properly
+    target_total_memory_mb = memory_capacity_mb * target_utilization
+
+    # Estimate typical concurrent requests from thread pool capacity
+    if hasattr(component, 'thread_pool_size'):
+        typical_concurrent = component.thread_pool_size * 0.65  # 65% of pool capacity
+    elif hasattr(component.dynamics, 'thread_pool_size'):
+        typical_concurrent = component.dynamics.thread_pool_size * 0.65
+    else:
+        # Fallback: Estimate from capacity (assume ~10% for concurrent requests)
+        typical_concurrent = (memory_capacity_mb * 0.10) / max(component.dynamics.config.memory_per_request_mb, 1.0)
+
+    # Calculate memory used by typical concurrent requests
+    concurrent_memory_mb = typical_concurrent * component.dynamics.config.memory_per_request_mb
+
+    # Calculate target baseline: target_total - concurrent = baseline
+    target_baseline_mb = target_total_memory_mb - concurrent_memory_mb
+
+    # Safety bounds: Must increase visibly but leave room for requests
+    min_baseline_mb = original_base + 50.0  # At least 50 MB increase
+    max_baseline_mb = memory_capacity_mb - (5 * component.dynamics.config.memory_per_request_mb)  # Room for 5 requests minimum
+
+    target_baseline_mb = max(min_baseline_mb, min(max_baseline_mb, target_baseline_mb))
+    target_memory_increase_mb = target_baseline_mb - original_base
+
+    # Fallback if provided explicitly
     if 'memory_increase_mb' in params:
         target_memory_increase_mb = params['memory_increase_mb']
-
-    # Bounds check
-    target_memory_increase_mb = max(50.0, min(available_headroom_mb * 0.9, target_memory_increase_mb))
     
     # Store target for revert
     component._memory_pressure_target_increase = target_memory_increase_mb
@@ -336,18 +363,20 @@ def memory_pressure(component, params: Dict[str, Any]):
     # Set baseline to original + current increase (for gradual injection)
     component.dynamics.config.memory_base = original_base + current_memory_increase_mb
 
-    # Calculate resulting memory utilization percentage
-    new_memory_mb = original_base + current_memory_increase_mb
-    memory_util_pct = (new_memory_mb / memory_capacity_mb) * 100.0
+    # Calculate resulting memory utilization at steady state (baseline + typical concurrent)
+    new_baseline_mb = original_base + current_memory_increase_mb
+    steady_state_memory_mb = new_baseline_mb + concurrent_memory_mb
+    steady_state_util_pct = (steady_state_memory_mb / memory_capacity_mb) * 100.0
+    baseline_util_pct = (new_baseline_mb / memory_capacity_mb) * 100.0
 
     if progress < 1.0:
         component._emit_log("WARN",
             f"Memory pressure injected: +{current_memory_increase_mb:.0f}MB / {target_memory_increase_mb:.0f}MB "
-            f"(progress: {progress:.1%}, utilization: {memory_util_pct:.1f}%, severity={severity:.2f})")
+            f"(progress: {progress:.1%}, steady-state: {steady_state_util_pct:.1f}%, severity={severity:.2f})")
     else:
         component._emit_log("WARN",
             f"Memory pressure injected: +{current_memory_increase_mb:.0f}MB "
-            f"(utilization: {memory_util_pct:.1f}%, severity={severity:.2f})")
+            f"(baseline: {baseline_util_pct:.1f}%, steady-state: {steady_state_util_pct:.1f}%, severity={severity:.2f})")
 
 def revert_memory_pressure(component, params: Dict[str, Any]):
     """Revert memory pressure by restoring original baseline."""

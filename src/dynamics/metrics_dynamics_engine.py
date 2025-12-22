@@ -319,15 +319,20 @@ class MetricsDynamicsEngine:
         else:
             contention_cpu = 0.0
 
-        # FIX: Add Memory Pressure Overhead (Thrashing/Paging)
-        # If memory > 80%, add exponential CPU penalty before OOM kill
+        # Memory Pressure CPU Overhead (Realistic modeling)
+        # High memory causes GC pressure, page faults, and allocation overhead
+        # But should NOT cause service to stop making requests (only OOM kill does that)
         memory_usage_ratio = self.memory_percent / self.config.memory_max
         memory_pressure_cpu = 0.0
         if memory_usage_ratio > 0.8:
-            # at 80% -> 0% CPU penalty
-            # at 95% -> ~56% CPU penalty
-            # at 100% -> ~100% CPU penalty
-            memory_pressure_cpu = 100.0 * ((memory_usage_ratio - 0.8) / 0.2) ** 2
+            # Realistic CPU overhead from memory pressure:
+            # - at 80%: ~0% (no significant overhead yet)
+            # - at 90%: ~7.5% (moderate GC/allocation overhead)
+            # - at 95%: ~16% (heavy GC, some paging)
+            # - at 98%: ~24% (severe GC pressure)
+            # Never reaches 100% - only OOM kill stops the service completely
+            normalized = (memory_usage_ratio - 0.8) / 0.2  # 0.0 at 80%, 1.0 at 100%
+            memory_pressure_cpu = 30.0 * (normalized ** 2)  # Max 30% at 100% memory
 
         # Combine all CPU sources
         target_cpu = target_cpu_from_load + queue_contention_cpu + contention_cpu + memory_pressure_cpu

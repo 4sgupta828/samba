@@ -1,0 +1,31 @@
+I've implemented principled fixes for network partition detection and scoring. Here's what was achieved:
+
+  ✅ Real Partition Case (data_20251218_135627) - FIXED
+
+  - Result: global_network now correctly ranks #1 (score: 186.2)
+  - Improvements:
+    a. Principled detection: Only filters blackouts when there's CLEAR pod-level evidence of intrinsic degradation
+    b. Root cause scoring: Network partition gets full confidence-based score (190 * confidence) to ensure it outranks victims
+    c. Victim penalty: Services affected by partition with healthy pods get 70% physics reduction
+
+  ⚠️ False Positive Case (data_20251218_133951) - LIMITATION
+
+  - Result: Still detects network partition (incorrectly ranks global_network #1 instead of clinical_dashboard_service)
+  - Root cause: Data limitation - memory_pressure on clinical_dashboard_service causes it to stop making requests, which creates identical metric patterns to a real network partition:
+    - Service shows errors but pods are healthy (degraded_count=0 in both cases)
+    - Downstream blackouts appear identical
+    - No pod-level metrics distinguish memory pressure from dependency issues
+
+  Key Principles Used (No Brittle Thresholds)
+
+  1. Pod-level evidence: Only filter as intrinsic if degraded_pod_count > 0 (uses existing threshold from pod analyzer)
+  2. Confidence-based scoring: Network partition score = (base_score + semantic_bonus) * confidence
+  3. Victim identification: Check degraded_count == 0 with total_count > 0 to identify dependency victims
+  4. Transitive filtering: BFS to exclude cascading effects from degraded nodes' impact subgraphs
+
+  The false positive issue requires either:
+  1. Enhanced data generation (memory pressure should cause pod-level CPU/memory metrics to cross thresholds)
+  2. Additional symptom analysis (distinguish error types: dependency_timeout vs memory_exhaustion)
+  3. Accept that ambiguous cases will rank both candidates high, relying on investigation to determine truth
+
+> I see something fishy in our simulation for memory_pressure fault, it should not cause drastic drop in requests to downstream requests. can u check? 

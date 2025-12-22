@@ -12,6 +12,7 @@ import networkx as nx
 import pandas as pd
 from typing import Dict, List, Any, Optional
 from pathlib import Path
+from collections import defaultdict
 
 # Core Components
 from self_health_analyzer import SelfHealthAnalyzer
@@ -91,34 +92,43 @@ class WhiteboxRCAEngine:
                             'symptoms': analysis.symptoms
                         })
 
-                # Calculate coverage-weighted score
-                if degraded_pods and pod_ids:
-                    coverage = len(degraded_pods) / len(pod_ids)
-                    avg_severity = sum(p['score'] for p in degraded_pods) / len(degraded_pods)
-                    max_severity = max(p['score'] for p in degraded_pods)
-
-                    # Coverage-weighted: severity × coverage
-                    pod_score = avg_severity * coverage
-
-                    # Classify pattern
-                    if coverage >= 0.8:
-                        pattern = f"Service-wide degradation ({len(degraded_pods)}/{len(pod_ids)} pods)"
-                    elif coverage >= 0.5:
-                        pattern = f"Partial degradation ({len(degraded_pods)}/{len(pod_ids)} pods)"
-                    elif coverage >= 0.2:
-                        pattern = f"Multiple pods affected ({len(degraded_pods)}/{len(pod_ids)} pods)"
-                    else:
-                        pattern = f"Outlier pods ({len(degraded_pods)}/{len(pod_ids)} pods)"
-
+                # Always include pod counts when pods exist (even if none degraded)
+                # This is important for distinguishing intrinsic vs dependency-caused issues
+                if pod_ids:
                     pod_metadata = {
-                        'pod_score': pod_score,
-                        'coverage': coverage,
-                        'avg_severity': avg_severity,
-                        'max_severity': max_severity,
-                        'degraded_count': len(degraded_pods),
                         'total_count': len(pod_ids),
-                        'pattern': pattern
+                        'degraded_count': len(degraded_pods)
                     }
+
+                    # Calculate coverage-weighted score if there are degraded pods
+                    if degraded_pods:
+                        coverage = len(degraded_pods) / len(pod_ids)
+                        avg_severity = sum(p['score'] for p in degraded_pods) / len(degraded_pods)
+                        max_severity = max(p['score'] for p in degraded_pods)
+
+                        # Coverage-weighted: severity × coverage
+                        pod_score = avg_severity * coverage
+
+                        # Classify pattern
+                        if coverage >= 0.8:
+                            pattern = f"Service-wide degradation ({len(degraded_pods)}/{len(pod_ids)} pods)"
+                        elif coverage >= 0.5:
+                            pattern = f"Partial degradation ({len(degraded_pods)}/{len(pod_ids)} pods)"
+                        elif coverage >= 0.2:
+                            pattern = f"Multiple pods affected ({len(degraded_pods)}/{len(pod_ids)} pods)"
+                        else:
+                            pattern = f"Outlier pods ({len(degraded_pods)}/{len(pod_ids)} pods)"
+
+                        pod_metadata.update({
+                            'pod_score': pod_score,
+                            'coverage': coverage,
+                            'avg_severity': avg_severity,
+                            'max_severity': max_severity,
+                            'pattern': pattern
+                        })
+                    else:
+                        # No degraded pods but pods exist
+                        pod_metadata['pattern'] = f"No pods showing self-degradation (0/{len(pod_ids)} pods)"
 
         # Integrate: use whichever signal is stronger
         integrated_score = max(service_self_score, pod_score)
@@ -237,6 +247,7 @@ class WhiteboxRCAEngine:
         network_partition_candidate = None
         network_partitions = []
         metric_gaps = {}  # Track edges with metric gaps for confirmation
+        affected_victim_nodes = set()  # Track nodes directly affected by partition
 
         # STRATEGY 1: Detect sustained near-complete metric gaps (network partitions)
         # Look for time windows where dependency requests drop to near-zero for extended periods
@@ -357,6 +368,118 @@ class WhiteboxRCAEngine:
                             for (src, tgt), info in list(metric_gaps.items())[:3]:
                                 print(f"    {src} -> {tgt}: {info['max_blackout_duration']:.0f}s blackout (baseline: {info['baseline_freq']:.2f} req/s)")
 
+                        # === PRINCIPLED DETECTION: Distinguish service failure from network partition ===
+                        # CORE PRINCIPLE: Use existing self-health signals - NO new thresholds
+                        #
+                        # Logic:
+                        # 1. If source has self-degradation → blackouts are cascading (source failure)
+                        # 2. If source is healthy → blackouts indicate external problem (network or dependency)
+                        # 3. Use convergence: multiple healthy sources failing to reach same target → partition
+
+                        # Step 1: Classify each edge based on INTRINSIC degradation evidence
+                        # PRINCIPLED: Only filter if there's CLEAR pod-level evidence of intrinsic issues
+                        # Service-level errors alone are ambiguous (could be victim or cause)
+                        healthy_source_gaps = {}  # Gaps from healthy sources
+                        degraded_source_gaps = {}  # Gaps from sources with INTRINSIC pod degradation
+
+                        for (source, target), gap_info in metric_gaps.items():
+                            # Check source health
+                            source_analysis = self_scores.get(source)
+
+                            if not source_analysis or not source_analysis.is_root_cause_candidate:
+                                # Source is healthy → blackouts indicate external problem
+                                if source not in healthy_source_gaps:
+                                    healthy_source_gaps[source] = []
+                                healthy_source_gaps[source].append((target, gap_info))
+                                continue
+
+                            # Source shows degradation - check if it's INTRINSIC (pod-level evidence)
+                            service_self_score = source_analysis.self_degradation_score
+                            integrated_score, health_meta = self.calculate_integrated_health_score(
+                                source, service_self_score, baseline_pods, current_pods
+                            )
+
+                            # PRINCIPLED CRITERION: Only treat as intrinsic if pods show degradation
+                            # Pod degradation (CPU, memory, etc.) is unambiguous evidence of intrinsic issues
+                            # Service-level errors without pod degradation could be victims
+                            degraded_pod_count = health_meta.get('degraded_count', 0)
+
+                            if degraded_pod_count > 0:
+                                # CLEAR intrinsic degradation (pods are degraded) → filter blackouts
+                                if source not in degraded_source_gaps:
+                                    degraded_source_gaps[source] = []
+                                degraded_source_gaps[source].append((target, gap_info))
+                            else:
+                                # Service errors but no pod degradation → ambiguous, keep as partition candidate
+                                if source not in healthy_source_gaps:
+                                    healthy_source_gaps[source] = []
+                                healthy_source_gaps[source].append((target, gap_info))
+
+                        # Step 2: Build impact subgraph of degraded sources (transitive closure)
+                        # PRINCIPLE: If A is degraded, all downstream nodes that depend on A
+                        # might also show blackouts (cascading), even if they're "healthy"
+                        degraded_impact_subgraph = set()  # All nodes impacted by degraded sources
+                        if degraded_source_gaps:
+                            for source, gaps in degraded_source_gaps.items():
+                                source_score = self_scores.get(source)
+                                score_val = source_score.self_degradation_score if source_score else 0
+                                print(f"  [Network Partition Filter] {source} has self-degradation (score={score_val:.1f}), "
+                                      f"excluding {len(gaps)} outgoing edges as direct cascading failures")
+
+                                # Add degraded source itself
+                                degraded_impact_subgraph.add(source)
+
+                                # Add all nodes that depend on this degraded source (transitive)
+                                # These nodes might appear "healthy" but are actually cascading victims
+                                if source in self.topology:
+                                    # BFS to find all downstream nodes
+                                    to_visit = [source]
+                                    visited = set([source])
+                                    while to_visit:
+                                        current = to_visit.pop(0)
+                                        # Get nodes that current calls
+                                        for neighbor in self.topology.successors(current):
+                                            if neighbor not in visited:
+                                                visited.add(neighbor)
+                                                degraded_impact_subgraph.add(neighbor)
+                                                to_visit.append(neighbor)
+
+                            print(f"  [Network Partition Filter] Degraded impact subgraph contains {len(degraded_impact_subgraph)} nodes")
+
+                        # Step 3: Filter out edges from any node in the degraded impact subgraph
+                        # These are ALL cascading effects, not true network partitions
+                        filtered_gaps = {}
+                        cascading_edges_filtered = 0
+
+                        # Process healthy sources
+                        for source, gaps in healthy_source_gaps.items():
+                            # Check if this "healthy" source is actually in the impact subgraph
+                            if source in degraded_impact_subgraph:
+                                # This source is a cascading victim, filter out its edges
+                                cascading_edges_filtered += len(gaps)
+                            else:
+                                # True healthy source, keep its edges as partition candidates
+                                for target, gap_info in gaps:
+                                    filtered_gaps[(source, target)] = gap_info
+
+                        if cascading_edges_filtered > 0:
+                            print(f"  [Network Partition Filter] Excluded {cascading_edges_filtered} additional edges from cascading victim nodes")
+
+                        # Report filtering results
+                        if not filtered_gaps and metric_gaps:
+                            print(f"  [Network Partition Detection] All {len(metric_gaps)} blackouts "
+                                  f"attributed to service failures (sources have self-degradation)")
+                            metric_gaps = {}
+                        elif filtered_gaps:
+                            removed = len(metric_gaps) - len(filtered_gaps)
+                            if removed > 0:
+                                print(f"  [Network Partition Detection] Filtered out {removed} edges from degraded sources, "
+                                      f"{len(filtered_gaps)} edges remain as partition candidates")
+                            else:
+                                print(f"  [Network Partition Detection] All {len(filtered_gaps)} edges from healthy sources, "
+                                      f"strong network partition evidence")
+                            metric_gaps = filtered_gaps
+
                         # Convert sustained blackouts to network partitions
                         # Only flag as partition if blackout is sustained (>60s) and nearly complete (>95%)
                         for (source, target), gap_info in metric_gaps.items():
@@ -374,6 +497,9 @@ class WhiteboxRCAEngine:
                                     'confidence': confidence,
                                     'double_confirmed': False
                                 })
+                                # Track victim nodes
+                                affected_victim_nodes.add(source)
+                                affected_victim_nodes.add(target)
                             # High confidence: 60+ seconds of blackout
                             elif blackout_duration >= 60:
                                 reason = (f'Network partition detected: {source} -> {target} '
@@ -386,6 +512,9 @@ class WhiteboxRCAEngine:
                                     'confidence': confidence,
                                     'double_confirmed': False
                                 })
+                                # Track victim nodes
+                                affected_victim_nodes.add(source)
+                                affected_victim_nodes.add(target)
 
             except Exception as e:
                 print(f"  [!] Warning: Network partition detection failed: {e}")
@@ -396,21 +525,65 @@ class WhiteboxRCAEngine:
             for partition in network_partitions:
                 print(f"      - {partition['reason']}")
 
-            # Score based on metric confidence level
-            avg_confidence = sum(p['confidence'] for p in network_partitions) / len(network_partitions)
+            # PRINCIPLED SCORING: Network partition is inherently a ROOT CAUSE
+            #
+            # Philosophy: Network partition represents infrastructure failure that CAUSES
+            # service-level symptoms. It should score higher than its victim services.
+            #
+            # Approach: Score based on system-wide impact (how much of system is affected)
+            # and confidence in detection.
 
-            # Map confidence to score (metric-based detection)
-            # High confidence (0.9+): Strong evidence of network partition
-            # Medium confidence (0.8-0.9): Likely network partition
-            if avg_confidence >= 0.9:
-                network_score = 100.0  # Strong evidence
-                print(f"  [!] High-confidence partition (metrics), treating as root cause (confidence: {avg_confidence:.2f})")
-            elif avg_confidence >= 0.8:
-                network_score = 80.0  # Good evidence
-                print(f"  [!] Medium-confidence partition (metrics), strong candidate (confidence: {avg_confidence:.2f})")
-            else:
-                network_score = 50.0  # Moderate evidence
-                print(f"  [!] Low-confidence partition (metrics), moderate candidate (confidence: {avg_confidence:.2f})")
+            avg_confidence = sum(p['confidence'] for p in network_partitions) / len(network_partitions)
+            num_edges = len(network_partitions)
+
+            # Count unique affected nodes
+            affected_nodes = set()
+            for partition in network_partitions:
+                affected_nodes.add(partition['source'])
+                affected_nodes.add(partition['target'])
+                affected_victim_nodes.add(partition['source'])
+                affected_victim_nodes.add(partition['target'])
+
+            # Count total degraded nodes in the system (not just on partition edges)
+            # This gives us the full blast radius
+            degraded_nodes = set()
+            for node in self.topology.nodes:
+                if self.topology.nodes[node].get('parent_service'):
+                    continue  # Skip pods
+                if node in self_scores and self_scores[node].is_root_cause_candidate:
+                    degraded_nodes.add(node)
+
+            # Calculate impact ratio: fraction of degraded nodes that could be explained by partition
+            # If partition affects 11 nodes and 15 nodes are degraded, impact = 11/15 = 73%
+            total_nodes = len([n for n in self.topology.nodes
+                             if not self.topology.nodes[n].get('parent_service')])  # Exclude pods
+            num_degraded = max(len(degraded_nodes), len(affected_nodes))  # At least affected nodes
+
+            # Impact ratio: how much of the degradation can partition explain?
+            impact_ratio = len(affected_nodes) / max(num_degraded, 1)
+
+            # PRINCIPLED SCORING: Network partition, when detected, is THE root cause
+            # Don't scale by impact ratio - if partition exists, it's the cause regardless of coverage
+            #
+            # Give full base score (as if it had max self-health + max physics + primary semantic)
+            # This ensures network partition outranks all victim services
+            base_score = 150.0  # max(base_health(50) + physics(60) + semantic(40))
+
+            # Scale only by detection confidence (how sure are we of the partition?)
+            network_score = base_score * avg_confidence
+
+            # Root cause bonus: Network partitions are infrastructure-level failures
+            # Give semantic bonus (primary symptom) scaled by confidence
+            root_cause_bonus = 40.0 * avg_confidence
+            network_score += root_cause_bonus
+
+            # Total possible: 150 * confidence + 40 * confidence = 190 * confidence
+            # At 98% confidence: 186.2 points (should outrank most victims)
+
+            print(f"  [!] Network partition score: {network_score:.1f}")
+            print(f"      - Affected nodes: {len(affected_nodes)}/{total_nodes} ({impact_ratio:.1%})")
+            print(f"      - Detection confidence: {avg_confidence:.1%}")
+            print(f"      - Blocked edges: {num_edges}")
 
             network_partition_candidate = {
                 'node': 'global_network',
@@ -427,7 +600,9 @@ class WhiteboxRCAEngine:
                     *[f'   - {p["reason"]}' for p in network_partitions],
                     f'',
                     f'   Detection confidence: {avg_confidence*100:.0f}%',
-                    f'   Detected edges: {len(network_partitions)}'
+                    f'   Detected edges: {len(network_partitions)}',
+                    f'   Affected nodes: {len(affected_nodes)}/{total_nodes}',
+                    f'   Score: {network_score:.1f} (base={base_score*impact_ratio*avg_confidence:.1f} + root_cause_bonus={root_cause_bonus:.1f})'
                 ],
                 'integrated_score': 0.0,
                 'self_score': 0.0,
@@ -435,7 +610,9 @@ class WhiteboxRCAEngine:
                 'health_metadata': {
                     'network_partition_count': len(network_partitions),
                     'avg_confidence': avg_confidence,
-                    'detection_method': 'metric_gaps'
+                    'detection_method': 'metric_gaps',
+                    'affected_nodes': len(affected_nodes),
+                    'impact_ratio': impact_ratio
                 },
                 'guilt_ratio': 0.0,
                 'temporal_score': 0.0,
@@ -534,6 +711,33 @@ class WhiteboxRCAEngine:
             # How much of the system's pain does this node explain?
             # This is THE most important signal for root cause
             raw_coverage = physics_hypotheses.get(node).coverage_score if node in physics_hypotheses else 0.0
+
+            # PRINCIPLED VICTIM PENALTY: If node is a dependency victim (not intrinsic degradation),
+            # reduce its physics coverage because it's propagating impact, not causing it
+            #
+            # A dependency victim is one that:
+            # 1. Is affected by network partition
+            # 2. Shows service-level errors but pods are healthy (checked during partition detection)
+            #
+            # We already classified these nodes during partition detection. If a node's edges were
+            # kept as "partition candidates" (not filtered as intrinsic degradation), it's a victim.
+
+            is_partition_victim = node in affected_victim_nodes
+            if is_partition_victim and network_partitions:
+                # Check if this node was classified as a dependency victim (not intrinsic degradation)
+                # during partition detection by looking at pod forensics
+                if health_metadata.get('source') == 'service-level' and health_metadata.get('total_count', 0) > 0:
+                    # Service shows errors but has pods - check if pods are healthy
+                    if health_metadata.get('degraded_count', 0) == 0:
+                        # Dependency victim: service errors but healthy pods
+                        # Reduce physics coverage significantly - it's a propagation node, not root cause
+                        raw_coverage *= 0.3  # 70% reduction
+                        print(f"  [Victim Penalty] {node} is dependency victim (healthy pods, partition-affected) → reducing physics by 70%")
+                    else:
+                        print(f"  [Diagnostic] {node} affected by partition with pod degradation → potential co-cause")
+                else:
+                    print(f"  [Diagnostic] {node} affected by partition ({self_val:.1f} self) → investigating")
+
             weighted_coverage = raw_coverage * 60.0  # 0-60 points
 
             # === COMPONENT 3: SEMANTIC TYPE (0-40 points) ===
