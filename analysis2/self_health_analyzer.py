@@ -217,9 +217,37 @@ class SelfHealthAnalyzer:
                 if len(filtered) == 0:
                     return np.array([])
 
-                # Extract values
-                values = filtered['value'].dropna().values
-                return values
+                # Extract values - handle both simple values and summary dictionaries
+                if 'value' in filtered.columns:
+                    # Check if values are in 'value' field or 'summary' field
+                    has_value = filtered['value'].notna().any()
+                    has_summary = filtered.get('summary').notna().any() if 'summary' in filtered.columns else False
+
+                    if has_summary and not has_value:
+                        # Values are in summary field (common for aggregated metrics)
+                        # Extract p50 from summary as representative value
+                        values = []
+                        for idx, row in filtered.iterrows():
+                            summary = row.get('summary')
+                            if isinstance(summary, dict):
+                                # For duration/latency, use p50 as representative
+                                # For counts (errors, requests), use sum or count
+                                if 'duration' in metric_suffix.lower() or 'latency' in metric_suffix.lower():
+                                    val = summary.get('p50')
+                                elif 'error' in metric_suffix.lower() or 'request' in metric_suffix.lower():
+                                    val = summary.get('sum') or summary.get('count')
+                                else:
+                                    val = summary.get('p50') or summary.get('sum')
+
+                                if val is not None:
+                                    values.append(val)
+                        return np.array(values)
+                    else:
+                        # Values are in 'value' field
+                        values = filtered['value'].dropna().values
+                        return values
+
+                return np.array([])
 
             # Extract per-dependency metrics for this specific dependency
             base_errors = extract_dependency_metrics_from_df(
