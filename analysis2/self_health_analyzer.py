@@ -327,8 +327,21 @@ class SelfHealthAnalyzer:
 
         # DECISION: Symptom Type
         # For external dependencies, observed degradation IS the root state (we can't see inside)
-        # Treat as PRIMARY since it's the deepest we can observe
-        symptom_type = 'primary' if score > 5.0 else 'secondary'
+        # BUT: Throughput drops alone are often secondary effects (victim of upstream slowdown)
+        # PRIMARY symptoms require errors OR latency increases
+        has_errors = any('Error rate' in s for s in symptoms)
+        has_latency = any('latency' in s.lower() for s in symptoms)
+        has_only_throughput = len(symptoms) == 1 and any('Throughput dropped' in s for s in symptoms)
+
+        if has_only_throughput:
+            # Throughput-only: likely a victim of upstream slowdown, not root cause
+            symptom_type = 'secondary'
+        elif has_errors or has_latency:
+            # Errors or latency: intrinsic degradation, treat as primary
+            symptom_type = 'primary'
+        else:
+            # Fallback: use score threshold
+            symptom_type = 'primary' if score > 5.0 else 'secondary'
 
         # Confidence based on number of signals detected
         confidence = 'high' if len(symptoms) >= 2 else ('medium' if len(symptoms) == 1 else 'low')

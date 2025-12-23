@@ -675,12 +675,15 @@ class WhiteboxRCAEngine:
                 node, service_self_score, baseline_pods, current_pods
             )
 
-            # PRINCIPLED: Use pod-level evidence, but weight by coverage
+            # PRINCIPLED: Use pod-level evidence, but weight by coverage AND severity
             # High coverage (service-wide) = strong evidence of intrinsic problem
             # Low coverage (outlier pods) = weak evidence, likely cascading effect
+            # EXCEPTION: Hot shard pattern (low coverage + high severity) = strong evidence
             if health_metadata.get('source') == 'pod-level':
                 self_val = integrated_score
                 coverage = health_metadata.get('coverage', 0)
+                max_severity = health_metadata.get('max_severity', 0)
+                degraded_count = health_metadata.get('degraded_count', 0)
 
                 # Coverage-based confidence: distinguish root cause from victim
                 if coverage >= 0.8:
@@ -692,13 +695,28 @@ class WhiteboxRCAEngine:
                     confidence = 'medium'
                     confidence_multiplier = 0.6
                 elif coverage >= 0.3:
-                    # Multiple pods (30-50%) - weak evidence
-                    confidence = 'low'
-                    confidence_multiplier = 0.3
+                    # Multiple pods (30-50%) - weak evidence UNLESS hot shard
+                    # Hot shard: low coverage but very high severity in affected pods
+                    if degraded_count > 0 and max_severity >= 8.0:
+                        # HOT SHARD PATTERN: Few pods but severe degradation
+                        # This is a strong root cause signal (traffic skew, hot partition, etc.)
+                        confidence = 'high'
+                        confidence_multiplier = 0.9  # Slightly lower than service-wide but still high
+                        print(f"  [Hot Shard Detected] {node}: {degraded_count} pod(s) with severity {max_severity:.1f} → boosting confidence")
+                    else:
+                        confidence = 'low'
+                        confidence_multiplier = 0.3
                 else:
-                    # Outlier pods (<30%) - very weak evidence (likely cascading)
-                    confidence = 'very_low'
-                    confidence_multiplier = 0.15
+                    # Outlier pods (<30%) - check for hot shard pattern
+                    if degraded_count > 0 and max_severity >= 8.0:
+                        # HOT SHARD PATTERN with very few pods
+                        confidence = 'medium'
+                        confidence_multiplier = 0.7
+                        print(f"  [Hot Shard Detected] {node}: {degraded_count} pod(s) with severity {max_severity:.1f} → boosting confidence")
+                    else:
+                        # Very weak evidence (likely cascading)
+                        confidence = 'very_low'
+                        confidence_multiplier = 0.15
             else:
                 # No pods or pod score lower - use service-level as fallback
                 self_val = service_self_score
@@ -745,14 +763,15 @@ class WhiteboxRCAEngine:
             # SECONDARY symptoms (effect) get zero
             is_primary = (self_scores[node].symptom_type == 'primary') if node in self_scores else False
 
-            # OVERRIDE: Leaf nodes (no outgoing dependencies) are ALWAYS primary
-            # Rationale: Services with no dependencies can't have symptoms caused by dependency issues
-            # This includes: external deps (APIs, DBs, caches) AND internal leaf services
-            # Any degradation they show is intrinsic, not cascading from downstream calls
-            successors = list(self.topology.successors(node)) if node in self.topology else []
-            is_leaf = len(successors) == 0
-            if is_leaf:
-                is_primary = True
+            # ORIGINAL BEHAVIOR: Leaf nodes (no outgoing dependencies) were ALWAYS overridden to primary
+            # NEW BEHAVIOR: Respect secondary classification for special cases
+            #
+            # Rationale: Leaf nodes usually have primary symptoms because they can't be affected
+            # by downstream dependencies. However, external dependencies can be victims of
+            # system-wide effects (e.g., global traffic drops causing throughput reduction).
+            #
+            # So we no longer override - just use the symptom_type determined by self_analyzer
+            # based on the actual symptoms observed (errors/latency = primary, throughput-only = secondary)
 
             # Refined: Consider both type AND coverage
             if is_primary:
