@@ -146,8 +146,8 @@ class SelfHealthAnalyzer:
         return SelfHealthResult(node_id, False, 0.0, 'secondary', [])
 
     def infer_blackbox_health(self, node_id: str,
-                              callers_baseline: List[Dict],
-                              callers_current: List[Dict],
+                              callers_baseline: List[Dict],  # noqa: ARG002 - used for fallback
+                              callers_current: List[Dict],  # noqa: ARG002 - used for fallback
                               caller_ids: List[str] = None,
                               metrics_df: 'pd.DataFrame' = None,
                               baseline_window: tuple = None,
@@ -182,6 +182,7 @@ class SelfHealthAnalyzer:
         # This preserves dependency_id labels that get lost in aggregation
         if metrics_df is not None and target_dependency and caller_ids and baseline_window and current_window:
             import pandas as pd
+            import numpy as np
 
             def extract_dependency_metrics_from_df(df, time_start, time_end, callers, dep_id, metric_suffix):
                 """Extract per-dependency metrics from raw DataFrame."""
@@ -227,7 +228,7 @@ class SelfHealthAnalyzer:
                         # Values are in summary field (common for aggregated metrics)
                         # Extract p50 from summary as representative value
                         values = []
-                        for idx, row in filtered.iterrows():
+                        for _, row in filtered.iterrows():
                             summary = row.get('summary')
                             if isinstance(summary, dict):
                                 # For duration/latency, use p50 as representative
@@ -364,7 +365,6 @@ class SelfHealthAnalyzer:
         # Get dependencies (outgoing edges, excluding pods)
         dependencies = []
         for dep in topology.successors(node_id):
-            dep_type = topology.nodes[dep].get('type', '')
             # Skip pod edges (control plane), only consider data plane dependencies
             if not topology.nodes[dep].get('parent_service'):
                 dependencies.append(dep)
