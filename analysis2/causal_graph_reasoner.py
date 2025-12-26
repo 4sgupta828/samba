@@ -262,6 +262,16 @@ class CausalGraphReasoner:
                     visited.add(dep)
                     # Note: Don't add to queue for further traversal - we only check direct impact
 
+        # ===== NOISY NEIGHBOR DETECTION (Resource Contention) =====
+        # Detect if root is a noisy neighbor (high CPU pod affecting co-located pods)
+        # This is NOT propagation-based - it's resource contention on the same node
+        noisy_neighbor_victims = self._detect_noisy_neighbor(root, health_scores, baseline, current)
+        for victim in noisy_neighbor_victims:
+            if victim not in h.explained_nodes:
+                h.explained_nodes.add(victim)
+                h.reverse_impacted_nodes.add(victim)  # Track as "reverse" impact (not traditional propagation)
+                h.narrative.append(f"  <-> Noisy neighbor victim: {victim} (co-located, resource contention)")
+
         return h
 
     def _verify_propagation(self, callee, caller, baseline, current, health_scores) -> CausalLink:
@@ -622,3 +632,106 @@ class CausalGraphReasoner:
                     return CausalLink(consumer, dependency, 'reverse_throughput', True, evidence, is_reverse=True)
 
         return CausalLink(consumer, dependency, 'unknown', False, "No reverse physics match", is_reverse=True)
+
+    def _detect_noisy_neighbor(self, root: str, health_scores, baseline, current) -> List[str]:
+        """
+        Detect noisy neighbor pattern: High CPU aggressor pod affecting co-located pods.
+
+        Pattern:
+        1. Root (or its pods) has very high CPU (>75%)
+        2. Root and victim pods are on the same compute node
+        3. Victim pods show degradation (latency/CPU increase, throughput drop)
+
+        Returns:
+            List of victim pod IDs affected by noisy neighbor
+        """
+        victims = []
+
+        # Helper function to get metric mean
+        def get_mean(data, node, metric):
+            vals = data.get(node, {}).get(metric, [])
+            return np.mean(vals) if len(vals) > 0 else 0.0
+
+        # Determine pods to check
+        root_node_data = self.topology.nodes.get(root, {})
+        root_type = root_node_data.get('type', '')
+
+        aggressor_pods = []
+        if root_type == 'Pod':
+            # Root is a pod - check it directly
+            aggressor_pods = [root]
+        elif root_type == 'Service':
+            # Root is a service - check all its pods for aggressor behavior
+            for node_id, node_data in self.topology.nodes.items():
+                if node_data.get('type') == 'Pod' and node_data.get('parent_service') == root:
+                    aggressor_pods.append(node_id)
+        else:
+            # Not a pod or service - noisy neighbor doesn't apply
+            return victims
+
+        if not aggressor_pods:
+            return victims
+
+        # Check each potential aggressor pod
+        all_victims = set()
+        for aggressor_pod in aggressor_pods:
+            # Check if this pod has high CPU (characteristic of aggressor)
+            aggr_cpu_base = get_mean(baseline, aggressor_pod, 'container.cpu.utilization')
+            aggr_cpu_curr = get_mean(current, aggressor_pod, 'container.cpu.utilization')
+
+            # Aggressor must have high absolute CPU (>75%) and increased from baseline
+            if aggr_cpu_curr < 75.0 or aggr_cpu_curr < aggr_cpu_base * 1.2:
+                # Not a noisy neighbor aggressor
+                continue
+
+            # Find compute node for aggressor pod
+            aggr_node_data = self.topology.nodes.get(aggressor_pod, {})
+            aggr_compute_node = aggr_node_data.get('compute_node')
+            if not aggr_compute_node:
+                # No compute node info - can't detect co-location
+                continue
+
+            # Find all other pods on the same compute node
+            for node_id, node_data in self.topology.nodes.items():
+                if node_id == aggressor_pod:
+                    continue  # Skip aggressor itself
+
+                if node_data.get('type') != 'Pod':
+                    continue  # Only check pods
+
+                # Check if on same compute node
+                if node_data.get('compute_node') != aggr_compute_node:
+                    continue  # Different node
+
+                # Check if this pod is degraded
+                node_health = health_scores.get(node_id)
+                if not node_health or node_health.self_degradation_score < 2.0:
+                    # Not degraded enough to be a victim
+                    continue
+
+                # Verify victim shows noisy neighbor symptoms
+                # Look for: CPU increase, latency increase, or throughput drop
+                victim_cpu_base = get_mean(baseline, node_id, 'container.cpu.utilization')
+                victim_cpu_curr = get_mean(current, node_id, 'container.cpu.utilization')
+                cpu_increase = victim_cpu_curr - victim_cpu_base
+
+                # Get parent service for request metrics
+                victim_service = node_data.get('parent_service')
+                if victim_service:
+                    victim_lat_base = get_mean(baseline, victim_service, 'service.duration')
+                    victim_lat_curr = get_mean(current, victim_service, 'service.duration')
+                    lat_growth = victim_lat_curr / victim_lat_base if victim_lat_base > 0 else 1.0
+                else:
+                    lat_growth = 1.0
+
+                # Check if victim shows contention symptoms
+                # CPU steal time causes: CPU increase (context switching) OR latency increase (waiting for CPU)
+                has_contention_symptoms = (
+                    cpu_increase > 10.0 or  # +10% CPU from context switching
+                    lat_growth > 1.15       # +15% latency from CPU wait
+                )
+
+                if has_contention_symptoms:
+                    all_victims.add(node_id)
+
+        return list(all_victims)

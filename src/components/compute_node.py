@@ -61,6 +61,12 @@ class ComputeNode(EnrichedComponent):
             callbacks=[self._report_pod_count],
             description="Number of running pods on this node"
         )
+        self.node_cpu_steal_metric = self.meter.create_observable_gauge(
+            "node.cpu.steal_time_ms",
+            callbacks=[self._report_cpu_steal_time],
+            unit="ms",
+            description="CPU steal time penalty from resource contention (noisy neighbor)"
+        )
 
     def register_pod(self, pod):
         """Register a pod to this node."""
@@ -130,10 +136,25 @@ class ComputeNode(EnrichedComponent):
         """
         Calculate node utilization (0.0 to 1.0).
 
+        IMPORTANT: Pod CPU is reported as % of a single core (0-100%).
+        For noisy neighbor detection, we care about single-core contention.
+        A node is contended when total pod CPU > 100% (oversubscribed core).
+
         Returns:
             tuple: (cpu_utilization, memory_utilization) where 0.0 = empty, 1.0 = full
+
+        Examples:
+            - 8-core node with pods using [50%, 30%, 25%] = 105% total
+              → cpu_util = 1.05 (oversubscribed on 1 core)
+            - 8-core node with pods using [10%, 10%, 10%] = 30% total
+              → cpu_util = 0.30 (no contention)
         """
-        cpu_util = self.get_total_pod_cpu() / (self.cpu_cores * 100)
+        total_cpu = self.get_total_pod_cpu()
+
+        # FIX: Normalize by 100% (single core), not by total node capacity
+        # This allows contention detection when pods oversubscribe any single core
+        cpu_util = total_cpu / 100.0
+
         memory_util = self.get_total_pod_memory() / (self.memory_gb * 1024)
         return cpu_util, memory_util
 
@@ -205,6 +226,18 @@ class ComputeNode(EnrichedComponent):
         running_count = len(self.get_running_pods())
 
         yield Observation(running_count, {
+            "node.id": self.id,
+            "sim.time": self.env.now
+        })
+
+    def _report_cpu_steal_time(self, options):
+        """Report CPU steal time penalty from node-level resource contention."""
+        from opentelemetry.metrics import Observation
+
+        # Get current steal time penalty
+        steal_time_ms = self.get_contention_penalty()
+
+        yield Observation(steal_time_ms, {
             "node.id": self.id,
             "sim.time": self.env.now
         })

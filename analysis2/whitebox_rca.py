@@ -173,6 +173,12 @@ class WhiteboxRCAEngine:
             b_metrics = baseline_data.get(node, {})
             c_metrics = current_data.get(node, {})
 
+            # Debug: trace analytics_service
+            if node == 'analytics_service':
+                print(f"\n[DEBUG] Processing analytics_service:")
+                print(f"  node_type={node_type}, node_role={node_role}")
+                print(f"  has baseline: {len(b_metrics) > 0}, has current: {len(c_metrics) > 0}")
+
             # ROUTING DECISION: Whitebox vs Blackbox
             # For external dependencies, ALWAYS use caller-based (blackbox) analysis
             # regardless of whether they have self metrics. This provides:
@@ -198,12 +204,18 @@ class WhiteboxRCAEngine:
                         current_window=current_window,
                         target_dependency=node
                     )
+                    if node == 'analytics_service':
+                        print(f"  -> External dep analysis")
                 else:
                     # External dep with no callers - skip (orphan)
+                    if node == 'analytics_service':
+                        print(f"  -> Skipped: external dep with no callers")
                     continue
 
             elif c_metrics:
                 # INTERNAL SERVICE: Use whitebox analysis with dependency-aware error attribution
+                if node == 'analytics_service':
+                    print(f"  -> Whitebox analysis (has {len(c_metrics)} metrics)")
                 analysis = self.self_analyzer.analyze(
                     node, node_type, b_metrics, c_metrics,
                     topology=self.topology,
@@ -226,16 +238,54 @@ class WhiteboxRCAEngine:
                         current_window=None,
                         target_dependency=None
                     )
+                    if node == 'analytics_service':
+                        print(f"  -> Blackbox inference from callers")
                 else:
+                    if node == 'analytics_service':
+                        print(f"  -> Skipped: no metrics and no callers")
                     continue # Orphan node
 
+            if node == 'analytics_service':
+                print(f"  -> Adding to self_scores (score={analysis.self_degradation_score}, is_candidate={analysis.is_root_cause_candidate})")
             self_scores[node] = analysis
 
         # --- PHASE 2: Physics Coverage ---
-        # Start with nodes that have self-degradation
-        # External dependencies are now properly scored in Phase 1 using caller consensus,
-        # so no special handling needed here
-        candidates = [n for n, s in self_scores.items() if s.is_root_cause_candidate]
+        # Start with nodes that have self-degradation OR pod-level degradation
+        #
+        # IMPORTANT: Include nodes with pod-level degradation even if service-level
+        # aggregation shows no degradation. This catches:
+        # - Hot shard: 1 pod saturated, others normal → service avg looks fine
+        # - Noisy neighbor: 1 pod with CPU steal, others normal → service avg looks fine
+        candidates = []
+        for node, score_obj in self_scores.items():
+            # Include if service-level shows degradation
+            if score_obj.is_root_cause_candidate:
+                candidates.append(node)
+                continue
+
+            # Also check for pod-level degradation (hot shard / noisy neighbor patterns)
+            if baseline_pods and current_pods:
+                # Get pods for this service
+                service_pods = [p for p in current_pods.keys()
+                               if self.topology.nodes.get(p, {}).get('parent_service') == node]
+
+                if service_pods:
+                    # Check if any pod has degradation
+                    for pod_id in service_pods:
+                        if pod_id in baseline_pods and pod_id in current_pods:
+                            # Quick check: analyze pod
+                            pod_analysis = self.self_analyzer.analyze(
+                                pod_id, 'Pod',
+                                baseline_pods[pod_id], current_pods[pod_id],
+                                topology=self.topology,
+                                all_baseline_data=baseline_pods,
+                                all_current_data=current_pods
+                            )
+                            # Include node if any pod shows significant degradation
+                            if pod_analysis.self_degradation_score >= 8.0:
+                                candidates.append(node)
+                                print(f"  [Pod-Level Candidate] {node}: pod {pod_id} has score {pod_analysis.self_degradation_score:.1f}")
+                                break
 
         physics_hypotheses = self.reasoner.calculate_global_coverage(
             candidates, self_scores, baseline_data, current_data
@@ -590,7 +640,7 @@ class WhiteboxRCAEngine:
                 'score': network_score,
                 'score_composition': {
                     'base_health': {'raw': 0, 'confidence': 'high', 'multiplier': 1.0, 'points': 0},
-                    'physics_coverage': {'raw': 0, 'weight': 60.0, 'points': 0},
+                    'physics_coverage': {'raw': 0, 'weight': 80.0, 'points': 0},
                     'semantic_bonus': {'is_primary': True, 'coverage_context': 'high', 'points': 0},
                     'supplements': {'temporal': 0, 'trace': 0, 'trace_degradation': 0, 'logs': 0, 'metric_gaps': network_score}
                 },
@@ -756,12 +806,36 @@ class WhiteboxRCAEngine:
                 else:
                     print(f"  [Diagnostic] {node} affected by partition ({self_val:.1f} self) → investigating")
 
-            weighted_coverage = raw_coverage * 60.0  # 0-60 points
+            # Physics coverage represents explanatory power (how much of system this explains)
+            # Moderate increase from 60 to 80 - boosts propagation faults without overwhelming leaf faults
+            weighted_coverage = raw_coverage * 80.0  # 0-80 points (was 60, tried 120 but too aggressive)
 
             # === COMPONENT 3: SEMANTIC TYPE (0-40 points) ===
             # PRIMARY symptoms (cause) get major boost
             # SECONDARY symptoms (effect) get zero
             is_primary = (self_scores[node].symptom_type == 'primary') if node in self_scores else False
+
+            # === POD-LEVEL VALIDATION ===
+            # IMPROVEMENT: Primary symptoms require pod-level evidence
+            # Services with 0 degraded pods are likely victims, not root causes
+            # Exception: External dependencies without pod metrics (databases, caches, APIs)
+            degraded_count = health_metadata.get('degraded_count', 0)
+            total_count = health_metadata.get('total_count', 0)
+
+            # POD-LEVEL VICTIM DETECTION (Conservative)
+            # If service has pods but NONE are degraded despite high health, likely a victim
+            # Only demote from primary - don't apply health penalty (too aggressive)
+            if total_count > 0 and degraded_count == 0 and self_val >= 8.0 and is_primary:
+                # VERY CONSERVATIVE VICTIM DETECTION:
+                # Only demote from primary if:
+                # 1. Has pods (total_count > 0)
+                # 2. ZERO pods degraded (strong signal)
+                # 3. Very high service-level health (>= 8.0)
+                # 4. Is marked as primary
+                print(f"  [Victim Detection] {node}: 0/{total_count} pods degraded despite very high health ({self_val:.1f}) - demoting from primary")
+                is_primary = False
+                # This service is likely a victim of dependency issues
+                # Demotion from primary removes the 20-40 point semantic bonus
 
             # ORIGINAL BEHAVIOR: Leaf nodes (no outgoing dependencies) were ALWAYS overridden to primary
             # NEW BEHAVIOR: Respect secondary classification for special cases
@@ -773,18 +847,58 @@ class WhiteboxRCAEngine:
             # So we no longer override - just use the symptom_type determined by self_analyzer
             # based on the actual symptoms observed (errors/latency = primary, throughput-only = secondary)
 
-            # Refined: Consider both type AND coverage
+            # Refined: Consider type, coverage, AND health severity
+            # PRINCIPLE: Primary+no_physics can be EITHER leaf fault OR propagation victim
+            # - Leaf faults (external API, cache, hot shard): HIGH health + no physics = legitimate root cause
+            # - Propagation victims (service waiting on degraded dep): MODERATE health + no physics = victim
+            # Use raw health score to distinguish these cases
             if is_primary:
                 # Primary symptoms with good coverage are strong candidates
                 if raw_coverage > 0.5:
-                    semantic_bonus = 40.0  # Strong root cause signal
+                    semantic_bonus = 40.0  # Strong propagation - definitely root cause
                 elif raw_coverage > 0.2:
-                    semantic_bonus = 30.0  # Moderate root cause signal
+                    semantic_bonus = 30.0  # Moderate propagation - likely root cause
                 else:
-                    semantic_bonus = 20.0  # Isolated primary symptom
+                    # Low/no physics coverage - check if leaf fault or victim
+                    # High health (>7.0) + no physics = severe leaf fault (keep bonus)
+                    # Moderate health + no physics = likely victim (reduce bonus)
+                    if self_val >= 7.0:
+                        # Severe internal issues - likely leaf fault (cache down, API errors, hot shard)
+                        semantic_bonus = 20.0  # Full primary bonus
+                    elif self_val >= 4.0:
+                        # Moderate issues - could be propagation victim
+                        semantic_bonus = 12.0  # Reduced but not eliminated
+                    elif raw_coverage > 0.05:
+                        # Minimal physics, low-moderate health
+                        semantic_bonus = 15.0
+                    else:
+                        # Low health + no physics - could be victim OR low-signal root cause
+                        # Data shows: health 2.5-3.5 range has legitimate but weak root causes
+                        # Be more generous to avoid false negatives
+                        if 2.5 <= self_val < 3.5:
+                            semantic_bonus = 12.0  # Moderate penalty for borderline cases
+                        else:
+                            semantic_bonus = 8.0   # Strong penalty for very low health
             else:
-                # Secondary symptoms are likely victims, but high coverage victims matter
-                if raw_coverage > 0.7:
+                # Secondary symptoms are likely victims, BUT check for hot shard pattern
+                # Hot shard: Low service health (partial degradation) but HIGH pod severity
+                # Pattern: 1-2 pods severely degraded (>8), others healthy
+                coverage = health_metadata.get('coverage', 1.0)
+                max_severity = health_metadata.get('max_severity', 0)
+
+                # Hot shard heuristic: Low coverage (<0.5) + High max severity (>8)
+                is_hot_shard_pattern = (coverage < 0.5 and max_severity >= 8.0)
+
+                if is_hot_shard_pattern:
+                    # Hot shard: One pod severely degraded, likely root cause
+                    # IMPROVEMENT: Boost semantic bonus to compete with high-health victims
+                    semantic_bonus = 25.0  # Increased from 15.0
+                    # Promote to primary if severity is extreme and there's real pod degradation
+                    if max_severity >= 9.0 and degraded_count > 0:
+                        is_primary = True
+                        semantic_bonus = 30.0  # Even stronger boost for extreme hot shards
+                        print(f"  [Hot Shard Promoted] {node}: {degraded_count} pod(s) with severity {max_severity:.1f} → treating as primary")
+                elif raw_coverage > 0.7:
                     semantic_bonus = 10.0  # Major victim (might be proxy)
                 else:
                     semantic_bonus = 0.0   # Minor victim
@@ -796,12 +910,12 @@ class WhiteboxRCAEngine:
             #
             # Core evidence comes from:
             # 1. Self-degradation (weighted_self: 0-50 points)
-            # 2. Physics coverage (weighted_coverage: 0-60 points)
+            # 2. Physics coverage (weighted_coverage: 0-80 points) ← Moderate increase from 60
             # 3. Semantic type (semantic_bonus: 0-40 points)
             #
-            # Calculate core strength as percentage of maximum possible core score (150 points)
+            # Calculate core strength as percentage of maximum possible core score
             core_base_score = weighted_self + weighted_coverage + semantic_bonus
-            max_core_score = 150.0  # 50 + 60 + 40
+            max_core_score = 170.0  # 50 + 80 + 40
             core_strength = min(1.0, core_base_score / max_core_score)
 
             # Apply soft gating: supplements are scaled by core strength
@@ -837,17 +951,24 @@ class WhiteboxRCAEngine:
 
             trace_bonus = trace_bonus_raw * core_strength
 
+            # === TRACE MODULATION FOR VICTIMS ===
+            # IMPROVEMENT: Reduce trace influence for likely victims (no pod degradation)
+            if total_count > 0 and degraded_count == 0:
+                # Service shows trace degradation but no pod issues - likely victim
+                trace_bonus = trace_bonus * 0.5
+                print(f"  [Trace Modulation] {node}: No pod degradation, reducing trace influence by 50%")
+
             # === COMPONENT 6: LOG EVIDENCE (0-20 points) ===
             # Log evidence scaled by core strength
             log_bonus_raw = min(20.0, log_scores.get(node, {}).get('log_score', 0.0))
             log_bonus = log_bonus_raw * core_strength
 
-            # === FINAL SCORE (0-220 max) ===
-            # Balanced formula: No single component dominates
-            # Primary + High Coverage + Early = Strong Root Cause
+            # === FINAL SCORE (0-200 max) ===
+            # Balanced formula: Health + Physics + Semantic all matter
+            # Propagation faults get physics boost, leaf faults get health+semantic boost
             final_score = (
                 weighted_self +      # 0-50: Internal health
-                weighted_coverage +  # 0-60: Explanatory power (MOST IMPORTANT)
+                weighted_coverage +  # 0-80: Explanatory power (moderate increase)
                 semantic_bonus +     # 0-40: Cause vs Effect
                 temporal_bonus +     # 0-15: First mover advantage
                 trace_bonus +        # 0-35: Authoritative evidence
@@ -894,7 +1015,7 @@ class WhiteboxRCAEngine:
                     },
                     'physics_coverage': {
                         'raw': round(raw_coverage, 2),
-                        'weight': 60.0,
+                        'weight': 80.0,  # Moderate increase (was 60, tried 120 but too aggressive)
                         'points': round(weighted_coverage, 1)
                     },
                     'semantic_bonus': {
@@ -1017,18 +1138,31 @@ class WhiteboxRCAEngine:
                             f"Errors/degradation indicate internal problem, not cascading effect."
                         )
 
-            # 5. Hot shard / Outlier pod with strong physics
-            # Low coverage BUT high explanatory power = legitimate hot shard
-            elif source == 'pod-level' and coverage < 0.5 and physics_coverage > 0.4:
-                has_intrinsic_evidence = True
-                evidence_type = "hot-shard"
+            # 5a. Hot shard / Noisy neighbor with very high pod severity
+            # For async consumers or leaf services: even without physics, severe pod degradation is intrinsic
+            elif source == 'pod-level' and coverage < 0.5:
+                max_severity = health_meta.get('max_severity', 0)
+                # Check for either: high physics OR very high severity
+                has_physics = physics_coverage > 0.4
+                has_severe_pod = max_severity >= 8.0  # Severe degradation in at least one pod
 
-                pattern = health_meta.get('pattern', 'Unknown pattern')
-                if 'story' in candidate and isinstance(candidate['story'], str):
-                    candidate['story'] += (
-                        f"\n🔥 HOT SHARD: {pattern} but explains {physics_coverage*100:.0f}% of system impact. "
-                        f"Legitimate localized fault with broad effect."
-                    )
+                if has_physics or has_severe_pod:
+                    has_intrinsic_evidence = True
+                    evidence_type = "hot-shard-noisy-neighbor"
+
+                    pattern = health_meta.get('pattern', 'Unknown pattern')
+                    degraded_count = health_meta.get('degraded_count', 0)
+                    if 'story' in candidate and isinstance(candidate['story'], str):
+                        if has_physics:
+                            candidate['story'] += (
+                                f"\n🔥 HOT SHARD: {pattern} but explains {physics_coverage*100:.0f}% of system impact. "
+                                f"Legitimate localized fault with broad effect."
+                            )
+                        else:
+                            candidate['story'] += (
+                                f"\n🔥 NOISY NEIGHBOR / HOT SHARD: {degraded_count} pod(s) with severe degradation (max severity: {max_severity:.1f}). "
+                                f"Intrinsic resource contention affecting {candidate['node']}."
+                            )
 
             # === FILTER DECISION ===
             if has_intrinsic_evidence:

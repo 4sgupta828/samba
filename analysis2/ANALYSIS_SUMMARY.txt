@@ -1,0 +1,137 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                    RCA ACCURACY ANALYSIS COMPLETE                         ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+📊 ACCURATE RESULTS FOR batch_run_20251224_011925
+───────────────────────────────────────────────────────────────────────────
+
+Total Datasets:              17 (16 with RCA analysis, 1 missing)
+Valid Fault Injections:      11 (68.8%)
+Invalid Fault Injections:     5 (31.2%)
+
+TRUE SUCCESS RATE:           10/11 = 90.9% ✓
+
+✓ Correctly detected:        10 faults
+✗ Failed detection:           1 fault (hot_shard)
+
+═══════════════════════════════════════════════════════════════════════════
+
+🔍 KEY FINDING: Previous Analysis Was Incorrect
+
+The claim of "91.7% (22/24 valid faults)" was based on data from MULTIPLE
+batches. The accurate count for batch_run_20251224_011925 alone is:
+
+    10 successes / 11 valid faults = 90.9%
+
+═══════════════════════════════════════════════════════════════════════════
+
+❌ INVALID FAULT INJECTIONS (5 cases - NOT RCA failures)
+───────────────────────────────────────────────────────────────────────────
+
+These are SIMULATION BUGS, not RCA scoring issues:
+
+1. thread_exhaustion @ imaging_service      (health: 0.0)
+2. thread_exhaustion @ clinical_db           (health: 0.0)
+3. inject_latency @ records_cache            (health: 0.0)
+4. queue_consumer_slowdown @ audit_queue     (health: 0.0)
+5. network_partition @ global_network        (health: 0.0)
+
+Issue: Ground truth nodes not found in RCA topology - fault injection failed
+
+═══════════════════════════════════════════════════════════════════════════
+
+💥 THE ONE VALID FAILURE: hot_shard Case
+───────────────────────────────────────────────────────────────────────────
+
+Episode: data_20251224_013458
+Fault:   hot_shard @ clinical_dashboard_service
+Result:  Ranked 2nd, lost by 60.7 points
+
+WINNER (INCORRECT): patient_portal_service
+  Score:           84.4
+  Health:          10.0 → 50.0 points
+  Semantic:        20.0 points (is_primary)
+  Trace:           14.4 points
+  Pod Degradation: 0/3 pods ← NO ACTUAL DEGRADATION
+  Pattern:         "No pods showing self-degradation (likely victim)"
+
+GROUND TRUTH (CORRECT): clinical_dashboard_service
+  Score:           23.8
+  Health:          2.5 → 8.8 points (weak but real)
+  Semantic:        15.0 points (secondary)
+  Trace:           0.0 points
+  Pod Degradation: 1/4 pods ← REAL CPU SPIKE
+  Coverage:        25% (hot shard pattern)
+  Max Severity:    10.0
+
+ROOT CAUSE: Victim service (0 pods degraded) scored higher than real
+            root cause (1 pod degraded) due to high service-level
+            health and trace scores.
+
+═══════════════════════════════════════════════════════════════════════════
+
+📄 DELIVERABLES CREATED
+───────────────────────────────────────────────────────────────────────────
+
+1. rca_pattern_analysis.csv
+   - Detailed analysis of all 16 episodes
+   - Scoring breakdown for each candidate
+   - Comparison of detected vs failed cases
+
+2. analysis2/rca_accuracy_report_batch_20251224.md
+   - Comprehensive report with full analysis
+   - Invalid fault details
+   - Working patterns to preserve
+   - Recommended improvements
+
+3. analysis2/rca_improvements_implementation.py
+   - Exact code patches for whitebox_rca.py
+   - Implementation instructions
+   - Expected impact analysis
+
+═══════════════════════════════════════════════════════════════════════════
+
+🔧 RECOMMENDED FIX (High Priority)
+───────────────────────────────────────────────────────────────────────────
+
+IMPROVEMENT #1: Pod-Level Validation Filter
+
+Location: analysis2/whitebox_rca.py, line 816 (after is_primary calculation)
+
+Problem:  Services with 0 degraded pods marked as primary root causes
+Solution: Validate that primary candidates have actual pod degradation
+
+Code Patch:
+```python
+# POD-LEVEL VALIDATION: Primary symptoms require pod-level evidence
+degraded_count = health_metadata.get('degraded_count', 0)
+total_count = health_metadata.get('total_count', 0)
+
+if is_primary and total_count > 0 and degraded_count == 0:
+    print(f"  [Victim Detection] {node}: 0/{total_count} pods degraded - demoting")
+    is_primary = False
+```
+
+Expected Impact: Fixes the 1 hot_shard failure → 100% success rate
+
+═══════════════════════════════════════════════════════════════════════════
+
+📈 NEXT STEPS
+───────────────────────────────────────────────────────────────────────────
+
+1. Review the detailed report:
+   cat analysis2/rca_accuracy_report_batch_20251224.md
+
+2. Apply the recommended fix:
+   - Edit analysis2/whitebox_rca.py
+   - Add pod-level validation (see rca_improvements_implementation.py)
+
+3. Re-run RCA and verify:
+   python run_rca_batch.py data/batch_run_20251224_011925
+   python analysis2/analyze_rca_patterns.py data/batch_run_20251224_011925
+
+4. Expected result: 11/11 valid faults detected (100%)
+
+5. Fix simulation issues:
+   - Investigate why 5 fault injections failed
+   - Fix thread_exhaustion, inject_latency, queue_consumer_slowdown faults

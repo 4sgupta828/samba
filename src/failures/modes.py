@@ -817,16 +817,25 @@ def revert_queue_consumer_slowdown(component: MessageQueue, params: Dict[str, An
 def noisy_neighbor(component, params: Dict[str, Any]):
     """
     Simulates noisy neighbor by pinning CPU to high percentage on the aggressor pod.
-    This causes resource contention on the shared node, affecting other pods
-    on the same node through CPU steal time.
+    This causes realistic resource contention on the shared node, affecting other pods
+    through multiple physics-based mechanisms:
 
-    The fault has TWO effects:
+    The fault has MULTIPLE effects:
     1. Aggressor pod: CPU pinned to target percentage (e.g., 90-100%)
-    2. Co-located pods: Experience CPU steal time due to node contention
+    2. Co-located pods experience:
+       - CPU steal time (proportional to contention)
+       - Throughput degradation (increased CPU cost per request)
+       - Memory bandwidth contention (cache pressure, memory access delays)
+       - Latency increases (from all of the above)
+
+    This models real-world noisy neighbor scenarios where a resource-intensive pod
+    starves co-located pods of CPU cycles, memory bandwidth, and cache space.
 
     Args:
         component: The aggressor Pod or Service (if Service, picks a random pod)
-        params: cpu_percent (default: randomized 90-100%), steal_time_multiplier (default: 1.5)
+        params:
+            - cpu_percent (float): Target CPU % for aggressor (default: 100.0)
+            - severity (float): Fault severity 0.0-1.0 controlling victim impact (default: 0.7)
     """
     # If component is a Service, pick a random pod
     if isinstance(component, Service):
@@ -852,50 +861,72 @@ def noisy_neighbor(component, params: Dict[str, Any]):
         return
 
     cpu_target = params.get("cpu_percent", 100.0)
-    steal_time_multiplier = params.get("steal_time_multiplier", 1.5)
+    severity = params.get("severity", 0.7)  # Default: high severity (noisy neighbor is disruptive)
 
     # EFFECT 1: Set CPU floor to pin the aggressor pod's CPU
     target_pod.dynamics.fault_cpu_floor_percent = cpu_target
     target_pod._emit_log("WARN", f"Noisy neighbor: CPU pinned to {cpu_target}% (aggressor pod)")
 
-    # EFFECT 2: Apply steal time to co-located pods (if on a compute node)
+    # EFFECT 2-5: Apply resource contention to co-located pods (if on a compute node)
     if target_pod.compute_node is not None:
         node = target_pod.compute_node
         co_located_pods = [p for p in node.pods if p.id != target_pod.id]
 
         if co_located_pods:
-            component._emit_log("INFO", f"noisy_neighbor: Applying steal time to {len(co_located_pods)} co-located pods on node {node.id}")
+            component._emit_log("INFO", f"noisy_neighbor: Applying resource contention to {len(co_located_pods)} co-located pods on node {node.id}")
 
-            # Store original latency adders for revert
+            # Store original values for revert
             if not hasattr(component, '_noisy_neighbor_victims'):
                 component._noisy_neighbor_victims = {}
 
             for victim_pod in co_located_pods:
                 if hasattr(victim_pod, 'dynamics') and victim_pod.dynamics is not None:
-                    # Store original value
-                    original_latency = victim_pod.dynamics.fault_latency_additive_ms or 0.0
-
-                    # Calculate steal time based on node contention
-                    # Use a modest steal time penalty that won't cause cascading failures
-                    # The impact should be noticeable but not catastrophic
-                    # Typical services have 100-500ms latency, so 20-30ms penalty is ~5-10% increase
-                    base_steal_time_ms = 20.0  # Modest base steal time penalty
-                    steal_time_ms = base_steal_time_ms * steal_time_multiplier
-
-                    # Add steal time to victim pods
-                    victim_pod.dynamics.fault_latency_additive_ms = original_latency + steal_time_ms
-
-                    component._noisy_neighbor_victims[victim_pod.id] = {
-                        'original_latency': original_latency,
-                        'added_steal_time': steal_time_ms
+                    # Store original values for all effects
+                    victim_info = {
+                        'original_cpu_multiplier': getattr(victim_pod, 'cpu_cost_multiplier', 1.0),
+                        'original_memory_base': victim_pod.dynamics.config.memory_base,
                     }
 
-                    victim_pod._emit_log("WARN", f"noisy_neighbor: Experiencing CPU steal time (+{steal_time_ms:.1f}ms latency penalty)")
+                    # EFFECT 2: CPU steal time (tracked via node-level contention penalty)
+                    # The node's get_contention_penalty() will naturally increase as aggressor uses CPU
+                    # This is already applied in Pod._handle_request_internal() line 888-895
+                    # We just need to ensure the aggressor's high CPU drives node utilization up
+                    # (This happens automatically when CPU floor is set above)
+
+                    # EFFECT 3: Throughput degradation - increase CPU cost per request
+                    # When CPU is contended, each request needs more CPU cycles due to:
+                    # - Context switching overhead
+                    # - Cache misses (aggressor evicts victim's cache lines)
+                    # - Memory bandwidth contention
+                    # Scale cpu_cost_multiplier based on severity
+                    cpu_multiplier_increase = 1.0 + (severity * 0.5)  # 1.0-1.5x (up to 50% more CPU per request)
+                    if not hasattr(victim_pod, 'cpu_cost_multiplier'):
+                        victim_pod.cpu_cost_multiplier = 1.0
+                    victim_pod.cpu_cost_multiplier = victim_info['original_cpu_multiplier'] * cpu_multiplier_increase
+
+                    # EFFECT 4: Memory bandwidth contention
+                    # Aggressor's memory access patterns cause:
+                    # - Increased memory access latency for victims
+                    # - Cache pressure (L1/L2/L3 cache evictions)
+                    # - Memory controller contention
+                    # Model this as increased baseline memory (simulating cache pressure + slower allocations)
+                    memory_pressure_mb = 50.0 * severity  # 0-50MB baseline increase based on severity
+                    victim_pod.dynamics.config.memory_base = victim_info['original_memory_base'] + memory_pressure_mb
+
+                    # Store victim info for revert
+                    component._noisy_neighbor_victims[victim_pod.id] = victim_info
+
+                    victim_pod._emit_log("WARN",
+                        f"noisy_neighbor victim: CPU cost +{(cpu_multiplier_increase - 1.0)*100:.1f}%, "
+                        f"memory pressure +{memory_pressure_mb:.0f}MB (severity={severity:.2f})")
         else:
             component._emit_log("INFO", f"noisy_neighbor: No co-located pods on node {node.id if node else 'unknown'}")
 
 def revert_noisy_neighbor(component, params: Dict[str, Any]):
-    """Revert noisy neighbor by removing CPU floor from aggressor and steal time from victims."""
+    """
+    Revert noisy neighbor by removing CPU floor from aggressor and restoring
+    resource state for all victim pods.
+    """
     # Get the originally affected pod ID
     if not hasattr(component, '_noisy_neighbor_pod_id'):
         component._emit_log("WARN", "No noisy_neighbor pod ID tracked - cannot revert")
@@ -933,7 +964,7 @@ def revert_noisy_neighbor(component, params: Dict[str, Any]):
     else:
         target_pod._emit_log("WARN", "Component does not have dynamics engine")
 
-    # REVERT EFFECT 2: Remove steal time from victim pods
+    # REVERT EFFECTS 2-4: Restore victim pods to original state
     if hasattr(component, '_noisy_neighbor_victims'):
         victims_info = component._noisy_neighbor_victims
 
@@ -949,9 +980,14 @@ def revert_noisy_neighbor(component, params: Dict[str, Any]):
                 if victim_pod.id in victims_info:
                     info = victims_info[victim_pod.id]
                     if hasattr(victim_pod, 'dynamics') and victim_pod.dynamics is not None:
-                        # Restore original latency (remove the steal time we added)
-                        victim_pod.dynamics.fault_latency_additive_ms = info['original_latency']
-                        victim_pod._emit_log("INFO", f"Noisy neighbor: CPU steal time removed (-{info['added_steal_time']:.1f}ms)")
+                        # Restore original CPU multiplier (EFFECT 3 revert)
+                        if hasattr(victim_pod, 'cpu_cost_multiplier'):
+                            victim_pod.cpu_cost_multiplier = info['original_cpu_multiplier']
+
+                        # Restore original memory base (EFFECT 4 revert)
+                        victim_pod.dynamics.config.memory_base = info['original_memory_base']
+
+                        victim_pod._emit_log("INFO", "Noisy neighbor: Resource contention removed (victim restored)")
         else:
             component._emit_log("WARN", f"noisy_neighbor: Cannot access compute node to revert victim pods")
 
