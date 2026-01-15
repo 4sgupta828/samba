@@ -266,7 +266,9 @@ class CausalGraphReasoner:
         # Detect if root is a noisy neighbor (high CPU pod affecting co-located pods)
         # This is NOT propagation-based - it's resource contention on the same node
         noisy_neighbor_victims = self._detect_noisy_neighbor(root, health_scores, baseline, current)
+        print(f"  [Noisy Neighbor] {root}: Found {len(noisy_neighbor_victims)} victims")
         for victim in noisy_neighbor_victims:
+            print(f"    - Victim: {victim}")
             if victim not in h.explained_nodes:
                 h.explained_nodes.add(victim)
                 h.reverse_impacted_nodes.add(victim)  # Track as "reverse" impact (not traditional propagation)
@@ -679,10 +681,15 @@ class CausalGraphReasoner:
             aggr_cpu_base = get_mean(baseline, aggressor_pod, 'container.cpu.utilization')
             aggr_cpu_curr = get_mean(current, aggressor_pod, 'container.cpu.utilization')
 
+            print(f"    [NN Debug] Checking aggressor {aggressor_pod}: CPU {aggr_cpu_base:.1f}% -> {aggr_cpu_curr:.1f}%")
+
             # Aggressor must have high absolute CPU (>75%) and increased from baseline
             if aggr_cpu_curr < 75.0 or aggr_cpu_curr < aggr_cpu_base * 1.2:
                 # Not a noisy neighbor aggressor
+                print(f"      -> Not aggressor (CPU < 75% or not increased)")
                 continue
+
+            print(f"      -> IS AGGRESSOR! Checking for victims...")
 
             # Find compute node for aggressor pod
             aggr_node_data = self.topology.nodes.get(aggressor_pod, {})
@@ -718,8 +725,10 @@ class CausalGraphReasoner:
                 # Get parent service for request metrics
                 victim_service = node_data.get('parent_service')
                 if victim_service:
-                    victim_lat_base = get_mean(baseline, victim_service, 'service.duration')
-                    victim_lat_curr = get_mean(current, victim_service, 'service.duration')
+                    # FIX: Metric names include service prefix (e.g., service.patient_portal_service.duration)
+                    metric_name = f'service.{victim_service}.duration'
+                    victim_lat_base = get_mean(baseline, victim_service, metric_name)
+                    victim_lat_curr = get_mean(current, victim_service, metric_name)
                     lat_growth = victim_lat_curr / victim_lat_base if victim_lat_base > 0 else 1.0
                 else:
                     lat_growth = 1.0
