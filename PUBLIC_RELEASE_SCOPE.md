@@ -36,6 +36,8 @@ The following files were conservatively moved to `archive/internal_legacy/`:
   - `archive/internal_legacy/strict_runtime_pass2/root_files/`
   - `archive/internal_legacy/strict_runtime_pass2/root_dirs/`
   - `archive/internal_legacy/strict_runtime_pass2/analysis2/`
+- Analysis dead code (not imported by dataset generation or dashboard):
+  - `archive/internal_legacy/analysis_pruned_dead/` (legacy forensic pipeline, SOTA analyzer package, unused viz chart)
 
 ## Removed Local Artifacts
 
