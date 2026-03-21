@@ -12,6 +12,7 @@ import networkx as nx
 import pandas as pd
 from typing import Dict, List, Any, Optional
 from pathlib import Path
+import concurrent.futures
 from collections import defaultdict
 
 # Core Components
@@ -165,8 +166,9 @@ class WhiteboxRCAEngine:
             'Queue', 'MessageBroker'
         }
 
-        for node in self.topology.nodes:
-            if self.topology.nodes[node].get('parent_service'): continue
+        def analyze_node_health(node):
+            if self.topology.nodes[node].get('parent_service'):
+                return None
 
             node_type = self.topology.nodes[node].get('type', 'Service')
             node_role = self.topology.nodes[node].get('role', '')
@@ -179,19 +181,9 @@ class WhiteboxRCAEngine:
                 print(f"  node_type={node_type}, node_role={node_role}")
                 print(f"  has baseline: {len(b_metrics) > 0}, has current: {len(c_metrics) > 0}")
 
-            # ROUTING DECISION: Whitebox vs Blackbox
-            # For external dependencies, ALWAYS use caller-based (blackbox) analysis
-            # regardless of whether they have self metrics. This provides:
-            # 1. Consensus view across all callers (error rate, latency, throughput)
-            # 2. Alignment with physics model (impact propagation from callers)
-            # 3. Avoids relying on incomplete/misleading self metrics
-
             is_external_dep = (node_type in external_dep_types or node_role == 'external')
 
             if is_external_dep:
-                # EXTERNAL DEPENDENCY: ALWAYS use caller-based consensus analysis
-                # Principle: External deps are black boxes - evaluate by what callers observe,
-                # not by incomplete self metrics
                 callers = list(self.topology.predecessors(node))
                 if callers:
                     c_views_base = [baseline_data.get(c, {}) for c in callers]
@@ -206,14 +198,13 @@ class WhiteboxRCAEngine:
                     )
                     if node == 'analytics_service':
                         print(f"  -> External dep analysis")
+                    return (node, analysis)
                 else:
-                    # External dep with no callers - skip (orphan)
                     if node == 'analytics_service':
                         print(f"  -> Skipped: external dep with no callers")
-                    continue
+                    return None
 
             elif c_metrics:
-                # INTERNAL SERVICE: Use whitebox analysis with dependency-aware error attribution
                 if node == 'analytics_service':
                     print(f"  -> Whitebox analysis (has {len(c_metrics)} metrics)")
                 analysis = self.self_analyzer.analyze(
@@ -222,17 +213,18 @@ class WhiteboxRCAEngine:
                     all_baseline_data=baseline_data,
                     all_current_data=current_data
                 )
+                if node == 'analytics_service':
+                    print(f"  -> Adding to self_scores (score={analysis.self_degradation_score}, is_candidate={analysis.is_root_cause_candidate})")
+                return (node, analysis)
 
             else:
-                # INTERNAL SERVICE without metrics: Use blackbox inference from callers
-                # (Note: This uses aggregated data since internal services aren't dependencies)
                 callers = list(self.topology.predecessors(node))
                 if callers:
                     c_views_base = [baseline_data.get(c, {}) for c in callers]
                     c_views_curr = [current_data.get(c, {}) for c in callers]
                     analysis = self.self_analyzer.infer_blackbox_health(
                         node, c_views_base, c_views_curr,
-                        caller_ids=None,  # Internal services don't need per-dependency extraction
+                        caller_ids=None,
                         metrics_df=None,
                         baseline_window=None,
                         current_window=None,
@@ -240,14 +232,20 @@ class WhiteboxRCAEngine:
                     )
                     if node == 'analytics_service':
                         print(f"  -> Blackbox inference from callers")
+                    return (node, analysis)
                 else:
                     if node == 'analytics_service':
                         print(f"  -> Skipped: no metrics and no callers")
-                    continue # Orphan node
+                    return None
 
-            if node == 'analytics_service':
-                print(f"  -> Adding to self_scores (score={analysis.self_degradation_score}, is_candidate={analysis.is_root_cause_candidate})")
-            self_scores[node] = analysis
+        # Parallelize self-health analysis
+        # This is the most compute-intensive part of Phase 1
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = executor.map(analyze_node_health, self.topology.nodes)
+
+        for result in results:
+            if result:
+                self_scores[result[0]] = result[1]
 
         # --- PHASE 2: Physics Coverage ---
         # Start with nodes that have self-degradation OR pod-level degradation
@@ -854,31 +852,20 @@ class WhiteboxRCAEngine:
             # Use raw health score to distinguish these cases
             if is_primary:
                 # Primary symptoms with good coverage are strong candidates
-                if raw_coverage > 0.5:
-                    semantic_bonus = 40.0  # Strong propagation - definitely root cause
-                elif raw_coverage > 0.2:
-                    semantic_bonus = 30.0  # Moderate propagation - likely root cause
-                else:
-                    # Low/no physics coverage - check if leaf fault or victim
-                    # High health (>7.0) + no physics = severe leaf fault (keep bonus)
-                    # Moderate health + no physics = likely victim (reduce bonus)
-                    if self_val >= 7.0:
-                        # Severe internal issues - likely leaf fault (cache down, API errors, hot shard)
-                        semantic_bonus = 20.0  # Full primary bonus
-                    elif self_val >= 4.0:
-                        # Moderate issues - could be propagation victim
-                        semantic_bonus = 12.0  # Reduced but not eliminated
-                    elif raw_coverage > 0.05:
-                        # Minimal physics, low-moderate health
-                        semantic_bonus = 15.0
-                    else:
-                        # Low health + no physics - could be victim OR low-signal root cause
-                        # Data shows: health 2.5-3.5 range has legitimate but weak root causes
-                        # Be more generous to avoid false negatives
-                        if 2.5 <= self_val < 3.5:
-                            semantic_bonus = 12.0  # Moderate penalty for borderline cases
-                        else:
-                            semantic_bonus = 8.0   # Strong penalty for very low health
+                # Continuous scoring: Linear scaling up to 0.5 coverage
+                # Max bonus 40.0 at coverage >= 0.5
+                coverage_bonus = min(40.0, raw_coverage * 80.0)
+                
+                # Base bonus for being primary (even without coverage)
+                # High health (>7.0) gets full base bonus (20.0)
+                # Low health gets reduced base bonus
+                health_factor = min(1.0, self_val / 7.0)
+                base_bonus = 20.0 * health_factor
+                
+                # Take the max of coverage-based or health-based bonus
+                # This ensures strong propagation OR strong internal symptoms get rewarded
+                semantic_bonus = max(coverage_bonus, base_bonus)
+                
             else:
                 # Secondary symptoms are likely victims, BUT check for hot shard pattern
                 # Hot shard: Low service health (partial degradation) but HIGH pod severity

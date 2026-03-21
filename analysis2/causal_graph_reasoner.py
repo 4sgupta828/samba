@@ -22,10 +22,11 @@ SOTA Features:
 
 import networkx as nx
 import numpy as np
+from collections import defaultdict
 from typing import Dict, List, Set, Any
 from dataclasses import dataclass, field
 from config_extractor import CausalConstants
-from rca_config import get_thresholds
+from rca_config import get_thresholds, MetricSchema
 from statistical_utils import compare_distributions
 
 @dataclass
@@ -51,6 +52,12 @@ class CausalGraphReasoner:
     def __init__(self, topology: nx.DiGraph, threshold_config=None):
         self.topology = topology
         self.thresholds = get_thresholds(threshold_config)
+        
+        # Optimize Noisy Neighbor: Build O(1) lookup map for pods on compute nodes
+        self.node_map = defaultdict(list)
+        for node, data in self.topology.nodes(data=True):
+            if data.get('type') == 'Pod' and 'compute_node' in data:
+                self.node_map[data['compute_node']].append(node)
 
     def _is_queue_node(self, node_id: str) -> bool:
         """Check if a node is a queue/message broker."""
@@ -368,8 +375,8 @@ class CausalGraphReasoner:
 
         if callee_err_delta < 0.001:  # No error rate signal
             # 1. Cache hit rate drop as proxy
-            cache_hit_base = baseline.get(callee, {}).get('cache.hit_rate', [])
-            cache_hit_curr = current.get(callee, {}).get('cache.hit_rate', [])
+            cache_hit_base = baseline.get(callee, {}).get(MetricSchema.CACHE_HIT_RATE[0], [])
+            cache_hit_curr = current.get(callee, {}).get(MetricSchema.CACHE_HIT_RATE[0], [])
             if len(cache_hit_base) > 0 and len(cache_hit_curr) > 0:
                 base_mean = np.mean(cache_hit_base)
                 curr_mean = np.mean(cache_hit_curr)
@@ -382,8 +389,8 @@ class CausalGraphReasoner:
 
         # 2. Database query errors as proxy (effect size based)
         if callee_err_delta < 0.001:  # Still no error signal
-            db_errors_base = baseline.get(callee, {}).get('db.query.errors', [])
-            db_errors_curr = current.get(callee, {}).get('db.query.errors', [])
+            db_errors_base = baseline.get(callee, {}).get(MetricSchema.DB_QUERY_ERRORS[0], [])
+            db_errors_curr = current.get(callee, {}).get(MetricSchema.DB_QUERY_ERRORS[0], [])
             if len(db_errors_base) > 0 and len(db_errors_curr) > 0:
                 # Use statistical comparison with effect size
                 stat = compare_distributions(db_errors_base, db_errors_curr)
@@ -393,8 +400,8 @@ class CausalGraphReasoner:
         # 3. Queue timeout failures as proxy - BUT ONLY if queue itself is faulty!
         # CRITICAL: Don't blame the queue if it's just buffering due to slow consumer
         if callee_err_delta < 0.001:  # Still no error signal
-            queue_timeouts_base = baseline.get(callee, {}).get('mq.messages.timeout_failures', [])
-            queue_timeouts_curr = current.get(callee, {}).get('mq.messages.timeout_failures', [])
+            queue_timeouts_base = baseline.get(callee, {}).get(MetricSchema.QUEUE_TIMEOUTS[0], [])
+            queue_timeouts_curr = current.get(callee, {}).get(MetricSchema.QUEUE_TIMEOUTS[0], [])
             if len(queue_timeouts_base) > 0 and len(queue_timeouts_curr) > 0:
                 # Check if this is a REAL queue fault (not just buffering)
                 # Use health_scores to determine if queue has PRIMARY symptoms
@@ -414,8 +421,8 @@ class CausalGraphReasoner:
 
         # 4. External service errors as proxy (effect size based)
         if callee_err_delta < 0.001:  # Still no error signal
-            ext_errors_base = baseline.get(callee, {}).get('component.errors.total', [])
-            ext_errors_curr = current.get(callee, {}).get('component.errors.total', [])
+            ext_errors_base = baseline.get(callee, {}).get(MetricSchema.COMPONENT_ERRORS[0], [])
+            ext_errors_curr = current.get(callee, {}).get(MetricSchema.COMPONENT_ERRORS[0], [])
             if len(ext_errors_base) > 0 and len(ext_errors_curr) > 0:
                 # Use statistical comparison with lower threshold (external failures are critical)
                 stat = compare_distributions(ext_errors_base, ext_errors_curr)
@@ -533,6 +540,13 @@ class CausalGraphReasoner:
             if metric_suffix in mapped_names:
                 vals = data.get(node, {}).get(mapped_names[metric_suffix], [])
                 return np.mean(vals) if len(vals) > 0 else 0.0
+            
+            # Try MetricSchema lookups
+            if metric_suffix == 'duration':
+                for m in MetricSchema.LATENCY:
+                    if m in data.get(node, {}):
+                        return np.mean(data[node][m])
+                        
             return 0.0
 
         # Check if consumer is degraded (precondition for reverse impact)
@@ -560,37 +574,34 @@ class CausalGraphReasoner:
         # Case 1: REVERSE IMPACT ON QUEUE (Backward)
         # Consumer slowdown → Queue depth increases
         if self._is_queue_node(dependency):
-            # Check queue depth/size metrics
-            queue_depth_base = get_mean(baseline, dependency, 'mq.messages.depth')
-            queue_depth_curr = get_mean(current, dependency, 'mq.messages.depth')
-
-            # Fallback to other queue size metrics
-            if queue_depth_base < 0.01:
-                queue_depth_base = get_mean(baseline, dependency, 'mq.queue.size')
-                queue_depth_curr = get_mean(current, dependency, 'mq.queue.size')
-
-            if queue_depth_base < 0.01:
-                queue_depth_base = get_mean(baseline, dependency, 'queue.depth')
-                queue_depth_curr = get_mean(current, dependency, 'queue.depth')
-
-            # Fallback to in_flight messages (SQS-style queues)
-            if queue_depth_base < 0.01:
-                queue_depth_base = get_mean(baseline, dependency, 'mq.messages.in_flight')
-                queue_depth_curr = get_mean(current, dependency, 'mq.messages.in_flight')
-
-            if queue_depth_base > 0.01:  # Have queue depth data
+            # Use MetricSchema for queue depth
+            queue_depth_base_arr = np.array([])
+            queue_depth_curr_arr = np.array([])
+            
+            for metric in MetricSchema.QUEUE_DEPTH + MetricSchema.QUEUE_IN_FLIGHT:
+                if metric in baseline.get(dependency, {}):
+                    queue_depth_base_arr = baseline[dependency][metric]
+                    queue_depth_curr_arr = current[dependency][metric]
+                    break
+            
+            if len(queue_depth_base_arr) > 0:
+                queue_depth_base = np.mean(queue_depth_base_arr)
+                queue_depth_curr = np.mean(queue_depth_curr_arr)
                 queue_depth_growth = calc_growth(queue_depth_base, queue_depth_curr)
 
-                # Queue depth should increase when consumer slows down
-                if queue_depth_growth > 1.3:  # 30% increase in queue depth
+                # Use dynamic thresholding via statistical test
+                # Check for large effect size (Cohen's d >= 3.0 by default for queues)
+                is_significant = self.thresholds.has_large_effect(queue_depth_base_arr, queue_depth_curr_arr, metric_type='queue')
+
+                if is_significant:
                     evidence = f"Consumer Slowdown → Queue Backup (consumer lat: {consumer_lat_growth:.1f}x, queue depth: {queue_depth_growth:.1f}x)"
                     if consumer_err_delta > 0.01:
                         evidence += f", consumer errors: +{consumer_err_delta:.1%}"
                     return CausalLink(consumer, dependency, 'reverse_queue', True, evidence, is_reverse=True)
 
             # Check queue age metrics as alternative signal
-            queue_age_base = get_mean(baseline, dependency, 'mq.messages.age')
-            queue_age_curr = get_mean(current, dependency, 'mq.messages.age')
+            queue_age_base = get_mean(baseline, dependency, MetricSchema.QUEUE_AGE[0])
+            queue_age_curr = get_mean(current, dependency, MetricSchema.QUEUE_AGE[0])
 
             if queue_age_base > 0.01:
                 queue_age_growth = calc_growth(queue_age_base, queue_age_curr)
@@ -623,8 +634,8 @@ class CausalGraphReasoner:
                         return CausalLink(consumer, dependency, 'reverse_throughput', True, evidence, is_reverse=True)
 
             # Check for database-specific write reduction
-            db_writes_base = get_mean(baseline, dependency, 'db.writes.total')
-            db_writes_curr = get_mean(current, dependency, 'db.writes.total')
+            db_writes_base = get_mean(baseline, dependency, MetricSchema.DB_WRITES[0])
+            db_writes_curr = get_mean(current, dependency, MetricSchema.DB_WRITES[0])
 
             if db_writes_base > 0.01:
                 db_writes_drop = calc_drop(db_writes_base, db_writes_curr)
@@ -658,20 +669,10 @@ class CausalGraphReasoner:
         root_node_data = self.topology.nodes.get(root, {})
         root_type = root_node_data.get('type', '')
 
-        aggressor_pods = []
         if root_type == 'Pod':
             # Root is a pod - check it directly
             aggressor_pods = [root]
-        elif root_type == 'Service':
-            # Root is a service - check all its pods for aggressor behavior
-            for node_id, node_data in self.topology.nodes.items():
-                if node_data.get('type') == 'Pod' and node_data.get('parent_service') == root:
-                    aggressor_pods.append(node_id)
         else:
-            # Not a pod or service - noisy neighbor doesn't apply
-            return victims
-
-        if not aggressor_pods:
             return victims
 
         # Check each potential aggressor pod
@@ -679,7 +680,7 @@ class CausalGraphReasoner:
         for aggressor_pod in aggressor_pods:
             # Check if this pod has high CPU (characteristic of aggressor)
             aggr_cpu_base = get_mean(baseline, aggressor_pod, 'container.cpu.utilization')
-            aggr_cpu_curr = get_mean(current, aggressor_pod, 'container.cpu.utilization')
+            aggr_cpu_curr = get_mean(current, aggressor_pod, MetricSchema.CPU_USAGE[0])
 
             print(f"    [NN Debug] Checking aggressor {aggressor_pod}: CPU {aggr_cpu_base:.1f}% -> {aggr_cpu_curr:.1f}%")
 
@@ -699,16 +700,11 @@ class CausalGraphReasoner:
                 continue
 
             # Find all other pods on the same compute node
-            for node_id, node_data in self.topology.nodes.items():
+            # Optimized: Use pre-computed node_map
+            potential_victims = self.node_map.get(aggr_compute_node, [])
+            for node_id in potential_victims:
                 if node_id == aggressor_pod:
-                    continue  # Skip aggressor itself
-
-                if node_data.get('type') != 'Pod':
-                    continue  # Only check pods
-
-                # Check if on same compute node
-                if node_data.get('compute_node') != aggr_compute_node:
-                    continue  # Different node
+                    continue
 
                 # Check if this pod is degraded
                 node_health = health_scores.get(node_id)
@@ -718,11 +714,12 @@ class CausalGraphReasoner:
 
                 # Verify victim shows noisy neighbor symptoms
                 # Look for: CPU increase, latency increase, or throughput drop
-                victim_cpu_base = get_mean(baseline, node_id, 'container.cpu.utilization')
-                victim_cpu_curr = get_mean(current, node_id, 'container.cpu.utilization')
+                victim_cpu_base = get_mean(baseline, node_id, MetricSchema.CPU_USAGE[0])
+                victim_cpu_curr = get_mean(current, node_id, MetricSchema.CPU_USAGE[0])
                 cpu_increase = victim_cpu_curr - victim_cpu_base
 
                 # Get parent service for request metrics
+                node_data = self.topology.nodes[node_id]
                 victim_service = node_data.get('parent_service')
                 if victim_service:
                     # FIX: Metric names include service prefix (e.g., service.patient_portal_service.duration)

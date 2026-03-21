@@ -17,3 +17,12 @@ matplotlib>=3.7.0
 
 # Utilities
 numpy>=1.24.0
+
+# Whitebox RCA statistics
+scipy>=1.10.0
+
+# Optional changepoint detection used by RCA fallback paths
+ruptures>=1.1.9
+
+# LLM-assisted topology generation
+anthropic>=0.40.0

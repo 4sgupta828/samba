@@ -93,6 +93,21 @@ cd ~/samba
 pip install -r requirements.txt
 ```
 
+### Public Release Workflows
+
+```bash
+# 1) Generate one simulation episode
+python generate_dataset.py -n 1 -v
+
+# 2) Run whitebox RCA over a dataset
+python analysis2/run_rca_batch.py data/final_validation
+
+# 3) Launch the dashboard UI
+cd viz && python app.py
+```
+
+For keep/archive scope used in this public release, see `PUBLIC_RELEASE_SCOPE.md`.
+
 ### Generate Training Data
 
 ```bash

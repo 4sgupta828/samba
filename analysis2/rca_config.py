@@ -200,6 +200,39 @@ class RCAThresholds:
         return cohens_d >= self.queue_growth_min_effect_size
 
 
+@dataclass
+class MetricSchema:
+    """Centralized schema for metric names to avoid hardcoding strings."""
+    
+    # Resource Metrics
+    CPU_USAGE = ['container.cpu.utilization', 'pod.cpu.utilization', 'db.cpu.utilization']
+    MEMORY_USAGE = ['container.memory.usage_mb', 'pod.memory.usage']
+    THREAD_POOL_ACTIVE = ['thread_pool.threads.active', 'db.connections.active', 'connection_pool.connections.active']
+    THREAD_POOL_QUEUE = ['thread_pool.queue.depth', 'connection_pool.queue_depth']
+    
+    # Service Metrics
+    LATENCY = ['service.{node}.duration', 'db.query.latency', 'duration', 'avg_latency']
+    ERROR_RATE = ['service.{node}.error_rate', 'error_rate', 'internal_error_rate']
+    REQUESTS = ['service.{node}.requests', 'requests', 'inbound_rps']
+    
+    # Dependency Metrics
+    DEP_LATENCY = ['service.{node}.dependency.duration', 'dependency.duration', 'dependency_latency']
+    DEP_ERROR_RATE = ['service.{node}.dependency.error_rate', 'dependency.error_rate', 'dependency_error_rate']
+    DEP_REQUESTS = ['service.{node}.dependency.requests', 'dependency.requests', 'outbound_rps']
+    
+    # Queue Metrics
+    QUEUE_DEPTH = ['mq.messages.visible', 'queue.depth', 'mq.queue.size', 'mq.messages.depth']
+    QUEUE_IN_FLIGHT = ['mq.messages.in_flight']
+    QUEUE_AGE = ['mq.messages.age_seconds', 'mq.messages.age']
+    QUEUE_UTILIZATION = ['mq.queue.utilization']
+    QUEUE_TIMEOUTS = ['mq.messages.timeout_failures']
+    
+    # Component Specific
+    CACHE_HIT_RATE = ['cache.hit_rate']
+    DB_QUERY_ERRORS = ['db.query.errors']
+    DB_WRITES = ['db.writes.total']
+    COMPONENT_ERRORS = ['component.errors.total']
+
 # Global default configuration
 DEFAULT_THRESHOLDS = RCAThresholds()
 

@@ -17,6 +17,7 @@ from typing import Dict, List, Any
 from dataclasses import dataclass
 from statistical_utils import compare_distributions, StatResult
 from config_extractor import ConfigExtractor
+from rca_config import MetricSchema
 
 @dataclass
 class SelfHealthResult:
@@ -53,28 +54,17 @@ class SelfHealthAnalyzer:
 
         # PRIMARY metrics: Internal resource constraints (The Smoking Gun)
         # Using RAW metric names from simulation
-        self.primary_metrics = [
-            'container.cpu.utilization', 'pod.cpu.utilization',
-            'container.memory.usage_mb', 'pod.memory.usage',
-            'thread_pool.threads.active', 'db.connections.active',
-            'connection_pool.connections.active'
-        ]
+        self.primary_metrics = MetricSchema.CPU_USAGE + MetricSchema.MEMORY_USAGE + MetricSchema.THREAD_POOL_ACTIVE
 
         # SECONDARY metrics: Outcome of degradation (The Smoke)
         # These are service-specific, will be built dynamically
         self.secondary_metric_suffixes = [
-            'error_rate',  # service.{name}.error_rate
-            'duration'     # service.{name}.duration
+            'error_rate',
+            'duration'
         ]
 
         # QUEUE metrics: Special handling (can be primary or secondary depending on root cause)
-        self.queue_metrics = [
-            'mq.messages.visible',      # Backlog waiting in queue
-            'mq.messages.in_flight',    # Messages being processed
-            'mq.messages.age_seconds',  # Staleness indicator
-            'mq.queue.utilization',     # Capacity pressure
-            'consumer.lag', 'queue.lag' # Consumer lag
-        ]
+        self.queue_metrics = MetricSchema.QUEUE_DEPTH + MetricSchema.QUEUE_IN_FLIGHT + MetricSchema.QUEUE_AGE + MetricSchema.QUEUE_UTILIZATION
 
     def _get_metric(self, data: Dict[str, np.ndarray], *possible_names) -> np.ndarray:
         """Try multiple possible metric names, return first found."""
@@ -88,28 +78,28 @@ class SelfHealthAnalyzer:
         normalized = dict(data)  # Start with all raw metrics
 
         # Map raw names to standard names for backward compatibility
-        normalized['cpu_usage'] = self._get_metric(data, 'container.cpu.utilization', 'pod.cpu.utilization', 'db.cpu.utilization')
-        normalized['memory_usage'] = self._get_metric(data, 'container.memory.usage_mb', 'pod.memory.usage')
-        normalized['thread_pool_active'] = self._get_metric(data, 'thread_pool.threads.active', 'db.connections.active', 'connection_pool.connections.active')
-        normalized['thread_pool_queue'] = self._get_metric(data, 'thread_pool.queue.depth', 'connection_pool.queue_depth')
+        normalized['cpu_usage'] = self._get_metric(data, *MetricSchema.CPU_USAGE)
+        normalized['memory_usage'] = self._get_metric(data, *MetricSchema.MEMORY_USAGE)
+        normalized['thread_pool_active'] = self._get_metric(data, *MetricSchema.THREAD_POOL_ACTIVE)
+        normalized['thread_pool_queue'] = self._get_metric(data, *MetricSchema.THREAD_POOL_QUEUE)
 
         # Service-specific metrics (build dynamically)
-        normalized['avg_latency'] = self._get_metric(data, f'service.{node_id}.duration', 'db.query.latency')
-        normalized['internal_error_rate'] = self._get_metric(data, f'service.{node_id}.error_rate')
-        normalized['inbound_rps'] = self._get_metric(data, f'service.{node_id}.requests')
+        normalized['avg_latency'] = self._get_metric(data, f'service.{node_id}.duration', *[m for m in MetricSchema.LATENCY if '{node}' not in m])
+        normalized['internal_error_rate'] = self._get_metric(data, f'service.{node_id}.error_rate', *[m for m in MetricSchema.ERROR_RATE if '{node}' not in m])
+        normalized['inbound_rps'] = self._get_metric(data, f'service.{node_id}.requests', *[m for m in MetricSchema.REQUESTS if '{node}' not in m])
 
         # Cache-specific metrics (for external caches)
-        normalized['cache_hit_rate'] = self._get_metric(data, 'cache.hit_rate')
-        normalized['cache_errors'] = self._get_metric(data, 'component.errors.total')
-        normalized['dependency_latency'] = self._get_metric(data, f'service.{node_id}.dependency.duration')
-        normalized['dependency_error_rate'] = self._get_metric(data, f'service.{node_id}.dependency.error_rate')
-        normalized['outbound_rps'] = self._get_metric(data, f'service.{node_id}.dependency.requests')
+        normalized['cache_hit_rate'] = self._get_metric(data, *MetricSchema.CACHE_HIT_RATE)
+        normalized['cache_errors'] = self._get_metric(data, *MetricSchema.COMPONENT_ERRORS)
+        normalized['dependency_latency'] = self._get_metric(data, f'service.{node_id}.dependency.duration', *[m for m in MetricSchema.DEP_LATENCY if '{node}' not in m])
+        normalized['dependency_error_rate'] = self._get_metric(data, f'service.{node_id}.dependency.error_rate', *[m for m in MetricSchema.DEP_ERROR_RATE if '{node}' not in m])
+        normalized['outbound_rps'] = self._get_metric(data, f'service.{node_id}.dependency.requests', *[m for m in MetricSchema.DEP_REQUESTS if '{node}' not in m])
 
         # Queue metrics
-        normalized['queue_depth'] = self._get_metric(data, 'mq.messages.visible', 'queue.depth')
-        normalized['queue_in_flight'] = self._get_metric(data, 'mq.messages.in_flight')
-        normalized['queue_age'] = self._get_metric(data, 'mq.messages.age_seconds')
-        normalized['queue_utilization'] = self._get_metric(data, 'mq.queue.utilization')
+        normalized['queue_depth'] = self._get_metric(data, *MetricSchema.QUEUE_DEPTH)
+        normalized['queue_in_flight'] = self._get_metric(data, *MetricSchema.QUEUE_IN_FLIGHT)
+        normalized['queue_age'] = self._get_metric(data, *MetricSchema.QUEUE_AGE)
+        normalized['queue_utilization'] = self._get_metric(data, *MetricSchema.QUEUE_UTILIZATION)
 
         return normalized
 

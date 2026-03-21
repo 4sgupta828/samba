@@ -2,6 +2,8 @@
 
 A streamlined visualization tool for exploring GNN training episode data from Samba.
 
+This UI is part of the public simulation + whitebox RCA framework release. For repo scope and archived internal artifacts, see `../PUBLIC_RELEASE_SCOPE.md`.
+
 ## 🎯 Purpose
 
 This dashboard provides a focused interface for understanding training episodes:
