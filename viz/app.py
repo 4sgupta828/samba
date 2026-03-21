@@ -2619,28 +2619,32 @@ def start_generation(n_clicks, num_episodes, topology_size, fault_severity, faul
             project_root = Path(__file__).parent.parent
             topology_bank_path = str(project_root / topology_bank_path)
 
-        # Validate that topology bank exists
+        # Validate that topology bank exists (tracked in repo as data/topology_bank/)
         if not os.path.exists(topology_bank_path):
             return dbc.Alert([
-                html.H6("❌ Topology Bank Not Found", className="alert-heading"),
-                html.P(f"The topology bank directory does not exist: {topology_bank_path}"),
-                html.P("Please generate the topology bank first by running:"),
-                html.Pre("python3 generate_topology_bank.py --samples 2 --output data/topology_bank",
+                html.H6("Topology bank folder missing", className="alert-heading"),
+                html.P(f"Expected directory: {topology_bank_path}"),
+                html.P("Create it (or pull latest) so `data/topology_bank/` exists, then populate it:"),
+                html.Pre("python generate_topology_bank.py --samples 2 --output data/topology_bank",
                         className="small bg-light p-2"),
-                html.P("This will generate LLM-based topologies that can be reused for multiple dataset generations.", className="small")
-            ], color="danger"), True, False, True
+                html.P("Procedural generation (no LLM topologies) does not need this folder.", className="small text-muted")
+            ], color="warning"), True, False, True
 
-        # Check if topology bank has any topologies
+        # Check if topology bank has any topologies (ignore dot dirs / hidden)
         try:
-            subdirs = [d for d in os.listdir(topology_bank_path) if os.path.isdir(os.path.join(topology_bank_path, d))]
+            subdirs = [
+                d for d in os.listdir(topology_bank_path)
+                if os.path.isdir(os.path.join(topology_bank_path, d)) and not d.startswith('.')
+            ]
             if len(subdirs) == 0:
                 return dbc.Alert([
-                    html.H6("❌ Empty Topology Bank", className="alert-heading"),
-                    html.P(f"The topology bank directory exists but contains no topologies: {topology_bank_path}"),
-                    html.P("Please generate topologies first by running:"),
-                    html.Pre("python3 generate_topology_bank.py --samples 2 --output data/topology_bank",
-                            className="small bg-light p-2")
-                ], color="danger"), True, False, True
+                    html.H6("Topology bank is empty", className="alert-heading"),
+                    html.P(f"No topology subdirectories under: {topology_bank_path}"),
+                    html.P("Generate LLM topologies (requires ANTHROPIC_API_KEY):"),
+                    html.Pre("python generate_topology_bank.py --samples 2 --output data/topology_bank",
+                            className="small bg-light p-2"),
+                    html.P("Or turn off “LLM topologies” and use procedural generation only.", className="small text-muted")
+                ], color="warning"), True, False, True
         except Exception as e:
             return dbc.Alert([
                 html.H6("❌ Error Checking Topology Bank", className="alert-heading"),

@@ -13,7 +13,13 @@ venv
 
 output
 
-data/
+# Ignore generated data under data/ except tracked layout + topology_bank placeholder
+data/*
+!data/README.md
+!data/topology_bank/
+data/topology_bank/*
+!data/topology_bank/README.md
+!data/topology_bank/.gitkeep
 
 simulation_data/
 
