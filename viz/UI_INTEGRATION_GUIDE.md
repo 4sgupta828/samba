@@ -1,6 +1,6 @@
 # RCA Failure Analysis UI Integration Guide
 
-This guide documents all changes needed to integrate RCA Failure Analysis into the Samba UI.
+This guide documents all changes needed to integrate RCA Failure Analysis into the Dataraft UI.
 
 ## ✅ Completed Changes
 

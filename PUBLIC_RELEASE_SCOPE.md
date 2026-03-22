@@ -1,6 +1,6 @@
 # Public Release Scope
 
-This repository is published as a simulation and whitebox RCA framework.
+This repository is published as **Dataraft** — a microservice simulation and whitebox RCA framework.
 
 ## In Scope
 
@@ -62,6 +62,6 @@ python app.py
 
 ## Notes
 
-- `ANTHROPIC_API_KEY` is required for `generate_topology_bank.py`.
-- `OPENAI_API_KEY` can be used by optional LLM-assisted analysis paths.
-- Generated datasets and topology bank snapshots are intentionally excluded from the public repo.
+- **Topology bank:** use `generate_topology_bank.py` to populate `data/topology_bank/`. If your repo includes a **procedural** mode, no API key is needed; **LLM** topology modes require `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY` can be used by optional LLM-assisted analysis paths in dataset generation
+- Generated datasets and large topology-bank artifacts are typically **gitignored**; regenerate locally after clone

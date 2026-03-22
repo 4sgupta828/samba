@@ -1,7 +1,7 @@
 #!/bin/bash
-# Samba Telemetry Dashboard Launcher
+# Dataraft Telemetry Dashboard Launcher
 
-echo "🚀 Starting Samba Telemetry Dashboard..."
+echo "🚀 Starting Dataraft Telemetry Dashboard..."
 echo ""
 
 # Check if we're in the viz directory
@@ -13,15 +13,17 @@ fi
 # Check if data directory exists
 if [ ! -d "../data" ]; then
     echo "Warning: Data directory not found at ../data"
-    echo "Set SAMBA_DATA_DIR environment variable to your data location"
+    echo "Set DATARAFT_DATA_DIR (or legacy SAMBA_DATA_DIR) to your data location"
 fi
 
-# Set defaults (app.py will automatically find the latest data run)
-export SAMBA_DATA_DIR=${SAMBA_DATA_DIR:-../data}
+# Data directory: DATARAFT_DATA_DIR > SAMBA_DATA_DIR (legacy) > ../data
+_DATA="${DATARAFT_DATA_DIR:-${SAMBA_DATA_DIR:-../data}}"
+export DATARAFT_DATA_DIR="$_DATA"
+export SAMBA_DATA_DIR="$_DATA"
 export PORT=${PORT:-8050}
 
 echo "Configuration:"
-echo "  Data Directory: $SAMBA_DATA_DIR"
+echo "  Data Directory: $DATARAFT_DATA_DIR"
 echo "  Port: $PORT"
 echo ""
 

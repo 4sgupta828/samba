@@ -73,7 +73,7 @@ When ComputeAgents are filtered out, all these connections are lost, breaking th
 
 **Impact**: Message queues appear as isolated nodes in the topology, even without any filters applied.
 
-**Recommendation**: This is a **data generation issue** that needs to be fixed in the Samba training data generator. Message queues should have edges connecting them to the services that publish to or consume from them.
+**Recommendation**: This is a **data generation issue** that needs to be fixed in the Dataraft training data generator. Message queues should have edges connecting them to the services that publish to or consume from them.
 
 **Verification**:
 ```bash
@@ -110,7 +110,7 @@ gateway -> svc_X -> svc_Y -> database
 3. Service-to-external-service edges
 4. Service-to-message-queue edges (publish/subscribe relationships)
 
-**Impact**: While the UI now shows a cleaner view, the underlying topology is fundamentally disconnected, which may affect GNN training quality since the graph structure doesn't represent actual system communication patterns.
+**Impact**: While the UI now shows a cleaner view, the underlying topology is fundamentally disconnected, which weakens graph-based analysis (RCA, propagation views) since the structure doesn't represent actual system communication patterns.
 
 ## Testing
 

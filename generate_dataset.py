@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Training Data Factory - Generate infinite procedural training episodes.
+Dataset generator - orchestrates labeled microservice simulation episodes.
 
-This script orchestrates the generation of diverse, labeled microservice
-topology failures for training Graph Neural Networks (GNNs).
+Produces diverse topologies, faults, metrics, logs, traces, and ground truth
+for the Dataraft simulator and whitebox RCA / dashboard workflows.
 
 Usage:
-    python generate_dataset.py --episodes 100 --output data/train
+    python generate_dataset.py -n 100 -o data/train
 """
 import simpy
 import random
@@ -1526,7 +1526,7 @@ def generate_episode(episode_id: int, output_dir: str, scenario_lib: ScenarioLib
                 )
 
                 if verbose:
-                    print(f"  ✓ Added to replay history: ~/samba/repeatfaults/history.jsonl")
+                    print(f"  ✓ Added to replay history: ~/dataraft/repeatfaults/history.jsonl")
         except Exception as e:
             if verbose:
                 print(f"  Warning: Could not add to replay history: {e}")

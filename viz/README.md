@@ -1,12 +1,12 @@
-# Samba Telemetry Dashboard
+# Dataraft Telemetry Dashboard
 
-A streamlined visualization tool for exploring GNN training episode data from Samba.
+A streamlined visualization tool for exploring **simulation episodes** from Dataraft (metrics, topology, ground truth, failure propagation).
 
 This UI is part of the public simulation + whitebox RCA framework release. For repo scope and archived internal artifacts, see `../PUBLIC_RELEASE_SCOPE.md`.
 
 ## 🎯 Purpose
 
-This dashboard provides a focused interface for understanding training episodes:
+This dashboard provides a focused interface for understanding **simulated incidents** and **episode artifacts**:
 - **System Topology**: Interactive network graph showing component relationships
 - **Golden Signals**: Request rate, error rate, latency, and saturation metrics
 - **Component Drill-Down**: Detailed metrics for individual components
@@ -17,7 +17,7 @@ This dashboard provides a focused interface for understanding training episodes:
 ### Installation
 
 ```bash
-cd ~/samba/viz
+cd ~/dataraft/viz
 pip install -r requirements.txt
 ```
 
@@ -305,7 +305,7 @@ python -c "from data_loader import load_episode; load_episode('ep_0', '../data/f
 ### Design Principles
 
 1. **Simplicity**: ~1,000 lines vs 5,000+ in control UI
-2. **Focus**: Only training data visualization (no simulation control)
+2. **Focus**: Telemetry and episode visualization (no live simulation control in this UI)
 3. **Ground Truth**: Always visible and prominent
 4. **Interactivity**: Click to drill down, hover for details
 5. **Causality**: Propagation timeline shows temporal relationships
@@ -326,20 +326,20 @@ To add new chart types:
 
 ## 🤝 Contributing
 
-This is a streamlined tool for Samba GNN training. To extend:
+This is a streamlined tool for Dataraft simulation and RCA workflows. To extend:
 
 1. Keep it **simple** (avoid feature creep)
-2. Focus on **training data insights**
+2. Focus on **clarity of observability and incident data**
 3. Maintain **~1,000 line budget**
 4. Test with **real episodes**
 
 ## 📄 License
 
-MIT License (same as Samba)
+MIT License (same as the main Dataraft project)
 
 ## 🔗 Related Files
 
-- **Parent Project**: `../README.md` (Samba main documentation)
+- **Parent Project**: `../README.md` (Dataraft main documentation)
 - **Implementation Plan**: `../MigrateAndImproveUIPlan.md`
 - **Execution Tracker**: `../Exec.md`
 

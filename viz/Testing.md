@@ -1,6 +1,6 @@
-# Samba Telemetry Dashboard - Test Plan
+# Dataraft Telemetry Dashboard - Test Plan
 
-**Purpose**: Ensure the dashboard correctly visualizes GNN training episode data and all interactive features work as expected.
+**Purpose**: Ensure the dashboard correctly visualizes simulation episode data and all interactive features work as expected.
 
 **Version**: 1.0
 **Date**: 2025-11-21
@@ -38,7 +38,7 @@ Test on at least one of:
 
 **Expected Result**:
 ```
-Starting Samba Telemetry Dashboard...
+Starting Dataraft Telemetry Dashboard...
 Data directory: ../data/final_validation
 Loading episodes...
 Found N episodes: ['ep_0', 'ep_1', ...]
@@ -63,7 +63,7 @@ Found N episodes: ['ep_0', 'ep_1', ...]
 **Objective**: Verify custom data directory works
 
 **Steps**:
-1. Set environment variable: `export SAMBA_DATA_DIR=../data/train`
+1. Set environment variable: `export DATARAFT_DATA_DIR=../data/train`
 2. Run `python app.py`
 3. Verify episodes are loaded from custom directory
 
@@ -93,7 +93,7 @@ Found N episodes: ['ep_0', 'ep_1', ...]
 
 **Expected Result**:
 - [ ] Page loads without errors (check browser console)
-- [ ] Title displays: "🔍 Samba Telemetry Dashboard"
+- [ ] Title displays: "🔍 Dataraft Telemetry Dashboard"
 - [ ] Episode dropdown is visible
 - [ ] "Load Episode" button is visible
 - [ ] Four main sections are visible (metadata, topology, signals, propagation)
@@ -592,7 +592,7 @@ Found N episodes: ['ep_0', 'ep_1', ...]
 **Objective**: Verify graceful handling when no episodes exist
 
 **Steps**:
-1. Set `SAMBA_DATA_DIR` to an empty directory
+1. Set `DATARAFT_DATA_DIR` (or legacy `SAMBA_DATA_DIR`) to an empty directory
 2. Start the application
 3. Open in browser
 

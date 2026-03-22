@@ -1,22 +1,24 @@
 #!/bin/bash
-# Launch script for Samba Telemetry Dashboard
+# Launch script for Dataraft Telemetry Dashboard
 
-echo "🚀 Starting Samba Telemetry Dashboard..."
+echo "🚀 Starting Dataraft Telemetry Dashboard..."
 echo ""
 
-# Set default data directory if not specified (app.py will find data runs automatically)
-export SAMBA_DATA_DIR="${SAMBA_DATA_DIR:-../data}"
+# Data directory: DATARAFT_DATA_DIR > SAMBA_DATA_DIR (legacy) > ../data
+_DATA="${DATARAFT_DATA_DIR:-${SAMBA_DATA_DIR:-../data}}"
+export DATARAFT_DATA_DIR="$_DATA"
+export SAMBA_DATA_DIR="$_DATA"
 export PORT="${PORT:-8050}"
 
 echo "Configuration:"
-echo "  Data Directory: $SAMBA_DATA_DIR"
+echo "  Data Directory: $DATARAFT_DATA_DIR"
 echo "  Port: $PORT"
 echo ""
 
 # Check if data directory exists
-if [ ! -d "$SAMBA_DATA_DIR" ]; then
-    echo "⚠️  Warning: Data directory $SAMBA_DATA_DIR does not exist"
-    echo "   You can set SAMBA_DATA_DIR environment variable to specify a different directory"
+if [ ! -d "$DATARAFT_DATA_DIR" ]; then
+    echo "⚠️  Warning: Data directory $DATARAFT_DATA_DIR does not exist"
+    echo "   Set DATARAFT_DATA_DIR (or legacy SAMBA_DATA_DIR) to point at your data root"
     echo ""
 fi
 

@@ -1,5 +1,5 @@
 """
-Data loader for Samba training episodes.
+Data loader for Dataraft simulation episodes.
 
 This module handles loading all episode data including:
 - label.json: Ground truth metadata (includes fault injection details)

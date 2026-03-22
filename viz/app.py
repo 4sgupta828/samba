@@ -1,8 +1,8 @@
 """
-Samba Telemetry Dashboard
+Dataraft Telemetry Dashboard
 
-A streamlined Flask + Dash application for visualizing training episode data
-from the Samba GNN training data generator.
+Flask + Dash application for visualizing simulation episode data (metrics,
+topology, ground truth, propagation) from the Dataraft dataset generator.
 """
 
 import os
@@ -29,7 +29,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Configuration
 # Default to ../data relative to this file's location
 _default_data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
-BASE_DATA_DIR = os.environ.get('SAMBA_DATA_DIR', _default_data_dir)
+# Prefer DATARAFT_DATA_DIR; SAMBA_DATA_DIR kept for backward compatibility
+BASE_DATA_DIR = os.environ.get(
+    'DATARAFT_DATA_DIR', os.environ.get('SAMBA_DATA_DIR', _default_data_dir)
+)
 PORT = int(os.environ.get('PORT', 8050))
 
 # Default topology size: random between 8-15 nodes
@@ -59,7 +62,7 @@ app = dash.Dash(
     suppress_callback_exceptions=True
 )
 
-app.title = "Samba Telemetry Dashboard"
+app.title = "Dataraft Telemetry Dashboard"
 
 # Global state (in-memory cache for loaded episode)
 current_episode_data = {}
@@ -272,7 +275,7 @@ app.layout = dbc.Container([
     # Header
     dbc.Row([
         dbc.Col([
-            html.H1("🔍 Samba Telemetry Dashboard", className="text-center mt-3 mb-2"),
+            html.H1("🔍 Dataraft Telemetry Dashboard", className="text-center mt-3 mb-2"),
             html.P("Visualize GNN training episode data with topology, metrics, and failure propagation",
                    className="text-center text-muted mb-4")
         ])
@@ -3998,7 +4001,7 @@ def reprocess_batch_rca(n_clicks, folder_path):
 
 
 if __name__ == '__main__':
-    print(f"Starting Samba Telemetry Dashboard...")
+    print(f"Starting Dataraft Telemetry Dashboard...")
     print(f"Base data directory: {BASE_DATA_DIR}")
     print(f"Loading data runs...")
 

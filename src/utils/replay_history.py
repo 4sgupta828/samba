@@ -2,7 +2,8 @@
 Replay History Management
 
 Manages a chronological history of fault scenario runs for replay and regression testing.
-History is stored in ~/samba/repeatfaults/history.jsonl
+Default history path: ~/dataraft/repeatfaults/history.jsonl
+(override with DATARAFT_REPLAY_DIR or legacy SAMBA_REPLAY_DIR)
 """
 import json
 import os
@@ -19,11 +20,15 @@ class ReplayHistoryManager:
         Initialize the replay history manager.
 
         Args:
-            history_dir: Directory to store history (default: ~/samba/repeatfaults/)
+            history_dir: Directory to store history (default: ~/dataraft/repeatfaults/)
         """
         if history_dir is None:
-            home = Path.home()
-            history_dir = os.path.join(home, 'samba', 'repeatfaults')
+            history_dir = os.environ.get('DATARAFT_REPLAY_DIR') or os.environ.get(
+                'SAMBA_REPLAY_DIR'
+            )
+            if not history_dir:
+                home = Path.home()
+                history_dir = os.path.join(home, 'dataraft', 'repeatfaults')
 
         self.history_dir = Path(history_dir)
         self.history_file = self.history_dir / 'history.jsonl'

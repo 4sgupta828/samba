@@ -1,4 +1,4 @@
-# Samba Telemetry Dashboard Requirements
+# Dataraft Telemetry Dashboard Requirements
 
 # Core framework (compatible versions)
 # Note: Dash 2.14.0 requires Werkzeug<2.3.0, so use Flask 2.2.x

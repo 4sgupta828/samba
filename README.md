@@ -1,15 +1,17 @@
-# Samba: Spatiotemporal Data Factory for GNN Training
+# Dataraft: Microservice Simulation & Whitebox RCA Framework
 
-**Samba** is a high-fidelity infrastructure simulator designed to generate infinite, diverse, and perfectly labeled training episodes for Graph Neural Networks (GNNs) that perform root cause analysis in microservice environments.
+**Dataraft** is a high-fidelity infrastructure simulator that generates **labeled, time-series-rich episodes** (metrics, logs, traces, topology, ground truth) for microservice-style systems. It ships with a **whitebox root-cause analysis (RCA)** stack and a **telemetry dashboard** to explore episodes and validate RCA behavior.
+
+> **Note:** The Git repository may still use the historical folder or remote name (`samba`); the product and documentation use the name **Dataraft**.
 
 ## 🎯 Purpose
 
-Traditional simulators test predefined scenarios on static topologies. **Samba transforms this paradigm** into a **training data factory** that:
+Traditional simulators often fix topology and scenarios. **Dataraft** focuses on **repeatable incident simulation** and **observability-aligned outputs** that:
 
-1. **Solves the Labeling Bottleneck**: Automatically generates ground truth labels (root cause node, fault type, time) for every incident
-2. **Enables Inductive Learning**: Procedurally generates unique topologies, forcing GNNs to learn structural rules instead of memorizing node IDs
-3. **Enforces Temporal Causality**: Propagation delays create the "arrow of time" needed for causal inference
-4. **Builds Robustness**: Generates realistic data quality issues (dropped metrics, clock skew, missing logs)
+1. **Ground truth per episode**: Root cause node, fault type, and timeline for each run
+2. **Diverse topologies**: Procedural graphs so analysis generalizes beyond fixed architectures
+3. **Temporal causality**: Propagation delays and gradual faults support realistic RCA and forensics
+4. **Realistic observability**: Imperfect data (dropped metrics, skew, sampling) like production systems
 
 ## 🏗️ Architecture
 
@@ -51,7 +53,7 @@ Traditional simulators test predefined scenarios on static topologies. **Samba t
      └────────┬───────────┘
               │
      ┌────────▼───────────┐
-     │   Training Data    │
+     │   Episode output   │
      │                    │
      │ ep_0/              │
      │ ├── label.json     │
@@ -62,34 +64,34 @@ Traditional simulators test predefined scenarios on static topologies. **Samba t
      └────────────────────┘
 ```
 
-## 📊 Curriculum Learning (4 Levels)
+## 📊 Curriculum-style scenarios (4 levels)
 
-### Level 1: Simple Service Failures (5 nodes, 300s)
-- **Goal**: Learn to identify isolated component failures
+### Level 1: Simple service failures (5 nodes, 300s)
+- **Focus**: Isolated component stress
 - **Faults**: CPU saturation, memory leaks, latency spikes
-- **Target**: Single service node
+- **Typical targets**: Service nodes
 
-### Level 2: Database Bottlenecks (10 nodes, 600s)
-- **Goal**: Learn to distinguish downstream symptom propagation
+### Level 2: Database bottlenecks (10 nodes, 600s)
+- **Focus**: Downstream and DB-visible symptoms
 - **Faults**: Slow queries, connection exhaustion, background jobs
-- **Target**: Database nodes
+- **Typical targets**: Database nodes
 
-### Level 3: Complex Interactions (20 nodes, 900s)
-- **Goal**: Learn multi-hop causal chains (cache miss → DB overload)
+### Level 3: Complex interactions (20 nodes, 900s)
+- **Focus**: Multi-hop cascades (e.g. cache → DB)
 - **Faults**: Cache failures, queue backlogs
-- **Target**: Cache and queue nodes
+- **Typical targets**: Cache and queue nodes
 
-### Level 4: External Dependencies (25 nodes, 600s)
-- **Goal**: Learn to identify black box failures with no internal metrics
+### Level 4: External dependencies (25 nodes, 600s)
+- **Focus**: Limited observability into dependencies
 - **Faults**: External API latency, error rate increases
-- **Target**: External service nodes
+- **Typical targets**: External service nodes
 
 ## 🚀 Quick Start
 
 ### Installation
 
 ```bash
-cd ~/samba
+cd ~/dataraft
 pip install -r requirements.txt
 ```
 
@@ -108,7 +110,7 @@ cd viz && python app.py
 
 For keep/archive scope used in this public release, see `PUBLIC_RELEASE_SCOPE.md`.
 
-### Generate Training Data
+### Generate datasets
 
 ```bash
 # Generate 10 episodes (default)
@@ -131,7 +133,7 @@ data/train/
 ├── dataset_metadata.json       # Overall dataset info
 ├── ep_0/
 │   ├── label.json             # Ground truth: {root_cause: "svc_3", ...}
-│   ├── topology.json          # Full graph structure for GNN input
+│   ├── topology.json          # Full graph structure (for analysis / visualization)
 │   ├── metrics.json           # Time-series metrics
 │   ├── logs.jsonl             # Structured logs
 │   ├── traces.json            # Distributed traces
@@ -162,7 +164,7 @@ data/train/
 
 ### Topology Graph Format
 
-Each episode includes a `topology.json` file with the complete graph structure for GNN training:
+Each episode includes a `topology.json` file with the complete graph structure for analysis and visualization:
 
 ```json
 {
@@ -270,7 +272,7 @@ Each episode generates a **unique microservice architecture** with:
 
 ## 🔍 Topology Filtering by Root Cause
 
-Samba includes tools to filter topology graphs to show only nodes that can be affected by a root cause, helping you focus analysis on relevant components.
+Dataraft includes tools to filter topology graphs to show only nodes that can be affected by a root cause, helping you focus analysis on relevant components.
 
 ### Quick Start
 
@@ -297,9 +299,9 @@ The filtered view shows only nodes reachable from the root cause through graph t
 
 See [TOPOLOGY_FILTERING.md](TOPOLOGY_FILTERING.md) for detailed documentation.
 
-## 📈 Training Pipeline Integration
+## 📈 Working with episode data
 
-### 1. Load Data
+### 1. Load labels and metrics
 
 ```python
 import json
@@ -316,7 +318,7 @@ with open('data/train/ep_0/metrics.json') as f:
 df = pd.DataFrame(metrics['data_points'])
 ```
 
-### 2. Build Graph
+### 2. Build a graph (NetworkX)
 
 ```python
 import networkx as nx
@@ -336,27 +338,7 @@ for edge in topo['edges']:
                type=edge['type'], base_latency=edge['base_latency'])
 ```
 
-### 3. Train GNN
-
-```python
-import torch
-from torch_geometric.data import Data
-
-# Convert to PyTorch Geometric format
-node_features = torch.tensor(...)  # Aggregated metrics per node
-edge_index = torch.tensor(...)     # Adjacency list
-labels = torch.tensor(...)         # Root cause node (one-hot)
-
-data = Data(x=node_features, edge_index=edge_index, y=labels)
-
-# Train model
-model.train()
-optimizer.zero_grad()
-out = model(data)
-loss = criterion(out, labels)
-loss.backward()
-optimizer.step()
-```
+Use the same episode files with **whitebox RCA** (`analysis2/run_rca_batch.py`) and the **dashboard** (`viz/app.py`) to inspect runs and RCA results without any separate ML pipeline.
 
 ## 🧪 Testing
 
@@ -425,7 +407,7 @@ See [BASELINE_HEALTH_FIX.md](BASELINE_HEALTH_FIX.md) for detailed information ab
 ## 📁 Project Structure
 
 ```
-~/samba/
+~/dataraft/
 ├── README.md                          # This file
 ├── requirements.txt                   # Python dependencies
 ├── generate_dataset.py                # Main orchestrator
@@ -470,7 +452,7 @@ See [BASELINE_HEALTH_FIX.md](BASELINE_HEALTH_FIX.md) for detailed information ab
 
 ## 🔥 Gradual Failure Injection
 
-Unlike instant failure injection (unrealistic), Samba applies failures **gradually over time** to mimic real infrastructure degradation:
+Unlike instant failure injection (unrealistic), Dataraft applies failures **gradually over time** to mimic real infrastructure degradation:
 
 ### **Progression Types**
 - **Linear**: Steady degradation (e.g., latency increases uniformly)
@@ -485,29 +467,30 @@ Episode Duration: 600s
 └─ 360-600s:  Full failure state (40%)
 ```
 
-This creates **temporally rich training data** where GNNs learn to:
-- Detect early warning signs
-- Track degradation progression
-- Distinguish symptom propagation from root causes
+This creates **temporally rich episodes** that are useful for:
+- RCA and incident forensics (including whitebox RCA in `analysis2/`)
+- Visual exploration in the dashboard
+- Optional export to your own analytics or ML tooling
 
 ## 🤝 Relationship to Main Simulator
 
-**Samba** is a **focused fork** of the main simulator (`~/sim`) designed specifically for GNN training data generation. Key differences:
+**Dataraft** is a **focused fork** of the main simulator (`~/sim`) oriented toward **dataset generation, RCA, and visualization**. Key differences:
 
-| Feature | Main Sim (`~/sim`) | Samba (`~/samba`) |
+| Feature | Main Sim (`~/sim`) | Dataraft (`~/dataraft`) |
 |---------|-------------------|-------------------|
-| **Purpose** | Testing & validation | Training data generation |
+| **Purpose** | Testing & validation | Simulation + labeled episodes + RCA tooling |
 | **Topology** | Static (Terraform IaC) | Procedural (NetworkX) |
 | **Failures** | YAML scenarios | Programmatic gradual injection |
-| **Output** | Single run analysis | Batch datasets (1000s) |
-| **Usage** | Manual exploration | Automated pipeline |
+| **Output** | Single run analysis | Batch datasets and RCA artifacts |
+| **Usage** | Manual exploration | Pipelines, dashboard, `analysis2` RCA |
 
 ## 🎓 References
 
-This architecture implements concepts from:
-- **Inductive Learning**: Hamilton et al., "Inductive Representation Learning on Large Graphs" (NeurIPS 2017)
-- **Temporal GNNs**: Sanchez-Gonzalez et al., "Graph Networks as Learnable Physics Engines" (ICML 2020)
-- **Curriculum Learning**: Bengio et al., "Curriculum Learning" (ICML 2009)
+Useful background (general systems / observability—not required to run Dataraft):
+
+- Distributed tracing and microservice observability (OpenTelemetry)
+- Time-series analysis and changepoint ideas for incident comparison
+- Curriculum-style scenario design for structured fault coverage
 
 ## 📝 License
 
@@ -515,7 +498,7 @@ MIT License (same as main simulator)
 
 ## 🐛 Issues
 
-Report issues at: https://github.com/anthropics/samba/issues
+Report issues in the [project repository](https://github.com/4sgupta828/samba/issues) (GitHub path may differ from the **Dataraft** product name).
 
 ---
 
