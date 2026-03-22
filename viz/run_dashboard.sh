@@ -25,5 +25,9 @@ echo "  Data Directory: $SAMBA_DATA_DIR"
 echo "  Port: $PORT"
 echo ""
 
-# Run the app
-python app.py
+# Run the app (use python3 — macOS often has no `python` in PATH)
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 not found. Install Python 3 (e.g. brew install python3) or use: python3 app.py"
+    exit 1
+fi
+python3 app.py
