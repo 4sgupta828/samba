@@ -129,9 +129,19 @@ The result is a benchmark you can point a competing RCA method (or an LLM agent)
 | Train observability ML | Synthetic labeled incidents where real ones are scarce |
 | Pre-production validation | A chaos/digital-twin harness you break on purpose |
 
-## 12. To understand the space
+## 12. The provocation
 
-Chaos engineering (Chaos Monkey, Gremlin) · discrete-event simulation (SimPy) · OpenTelemetry · causal inference for RCA · changepoint detection (PELT, BinSeg, `ruptures`) · digital twins · the RCA-benchmark literature.
+> **Every RCA vendor is grading itself on an exam where it also wrote the answer key.** You cannot evaluate a diagnostic tool on incidents whose diagnosis you don't know — and in production, you never do. The uncomfortable implication: most published "our AI finds root causes X% of the time" numbers are *unfalsifiable*. They can't be reproduced, they can't be compared, and they're selected from the incidents the tool happened to get right. Until there's a shared, ground-truth benchmark the way ImageNet forced one on computer vision, "AI for RCA" is a field grading itself on vibes. The unglamorous work of *manufacturing the answer key* is the precondition for the field to be a science instead of a pitch.
+
+## 13. Further reading (high-quality references)
+
+- **Basiri et al. (2016)** — "Chaos Engineering." *IEEE Software* (Netflix). The discipline of breaking systems on purpose.
+- **"Principles of Chaos Engineering"** (principlesofchaos.org) — the canonical statement.
+- **Pearl (2009)** — "Causality: Models, Reasoning, and Inference." *Cambridge University Press.* Why cause≠correlation is a formal, not intuitive, distinction.
+- **Killick, Fearnhead & Eckley (2012)** — "Optimal Detection of Changepoints with a Linear Computational Cost" (**PELT**). *JASA.*
+- **Tobin et al. (2017)** — "Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real World." *IROS.* The sim-to-real gap, stated honestly.
+- **Deng et al. (2009)** — "ImageNet: A Large-Scale Hierarchical Image Database." *CVPR.* The template: a benchmark that reorganized a whole field.
+- Background: discrete-event simulation (SimPy) · OpenTelemetry · the RCA-benchmark literature.
 
 ---
 
