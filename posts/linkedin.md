@@ -1,47 +1,100 @@
-# Dataraft — How do you benchmark a root-cause-analysis AI when you never know the real root cause?
+# Dataraft: You can't benchmark a root-cause-analysis AI when you never know the real root cause. So we manufacture it.
 
-*A LinkedIn post. Repo: https://github.com/4sgupta828/samba*
+*Repo: https://github.com/4sgupta828/samba · SimPy microservice simulator · ~17 fault modes · L1–L4 curriculum · ground-truth-labeled incidents · MIT*
 
 ---
 
-**A quietly fundamental problem in AIOps:**
+## A quietly fundamental problem in AIOps
 
-Everyone is building AI to do root-cause analysis. Almost no one can *measure* whether it works. Why? Because in production, **you rarely know the true root cause** — that's the whole reason you needed RCA. So the field evaluates itself on anecdotes and cherry-picked incidents. You can't improve what you can't score, and you certainly can't trust an "AI SRE" you couldn't grade.
+Everyone is building AI to do root-cause analysis. Almost no one can *measure* whether it works — because **in production you rarely know the true root cause** (that's the whole reason you needed RCA). So the field grades itself on anecdotes. You can't improve what you can't score, and you certainly can't trust an "AI SRE" you couldn't grade.
 
-**What I explored: Dataraft — a simulator that *manufactures* ground-truth-labeled incidents, then tries to solve them.**
+## Framed as a research problem
 
-The closed loop, in one repo:
-1. Procedurally (or with an LLM) generate diverse microservice topologies — gateways, services, DBs, caches, queues, typed edges.
-2. Inject a **known** fault at a **known** node, ramped *gradually* (warmup → onset → full effect → recovery) so telemetry shows realistic onset and propagation.
-3. Emit production-like, deliberately *imperfect* observability — metrics, logs, traces — with dropped samples, clock skew, correlated noise, retry storms, and circuit-breaker cascades.
-4. Ship an exact `label.json` naming the root cause.
-5. Run a whitebox RCA engine against it — and **score the answer against the label.**
+| | |
+|---|---|
+| **Missing ingredient** | A dataset of realistic incidents with *known* root causes |
+| **Why it's missing** | Real telemetry has no ground-truth label; you have to **author** the incident |
+| **Approach** | Simulate systems → inject a *known* fault → emit *imperfect* observability → label it → run RCA → **score vs. label** |
+| **Central claim** | Simulation buys you the two things reality won't: **ground truth** and **volume** — at the cost of a sim-to-real validation story |
+| **Design constraint** | The data must be *hard*: gradual faults, propagation delay, cascades, and "hard negatives" (different faults, similar signatures) |
 
-The realism knobs are the point: a fragility index that runs the system near saturation, propagation delays that enforce temporal causality, and "hard negatives" — different faults with near-identical signatures — so RCA is tested against genuine ambiguity, not a clean oracle. Every run is fully replayable, turning any incident into a fixed regression test.
+## The closed loop
 
-**What AI solves well:**
-- Designing *plausible, varied* systems and scenarios (LLM-generated topologies with real architectural flavor) — great for coverage and diversity.
-- Narrating a causal story from evidence once the statistics have done the separation.
+```mermaid
+flowchart LR
+    T["① Topology<br/>procedural or LLM-designed"] --> S["② Inject fault<br/>gradual progression"]
+    S --> E["③ Episode<br/>metrics·logs·traces + label.json"]
+    E --> V["④ Validate<br/>baseline-healthy AND degraded"]
+    V --> R["⑤ Whitebox RCA<br/>recover the root cause"]
+    R --> SC["⑥ Score vs. label"]
+    SC -. replayable regression .-> S
+    style E fill:#dbeafe,stroke:#2563eb,color:#000
+    style SC fill:#dcfce7,stroke:#16a34a,color:#000
+```
 
-**What AI does NOT solve:**
-- The physics. Whether a spike is a cause or a symptom is a question for changepoint detection, statistical tests (Mann-Whitney, Cohen's d), and dependency reasoning — not a language model's intuition. Dataraft's engine is deliberately *whitebox*.
-- Ground truth. You cannot prompt your way to a labeled dataset; you have to *author* the incident.
+Faults are real, gradual, physical failure modes — not a flipped boolean:
 
-**What stays genuinely hard:**
-- The sim-to-real gap: does an RCA method that wins on simulated incidents transfer to production? Simulation buys you ground truth and volume; it owes you a validation story.
-- Hub bias — blaming the most-connected node just because everything routes through it — and disambiguating a real traffic spike from a retry storm. These are the failure modes that separate a real RCA engine from a plausible one.
+```python
+# src/failures/modes.py — ~17 modes, each with a clean revert
+def cpu_saturation(component: ComputeAgent, params): ...
+def memory_leak(component: ComputeAgent, params): ...   # ramps over time
+def inject_latency(component, params): ...
+def cache_failure(component, params): ...
+def hot_shard(component: Service, params): ...          # skewed key → one node melts
+```
 
-**How to take it from here:**
-- Grow the fault library and topology diversity; treat the labeled episodes as a public **benchmark** for RCA methods (including LLM agents like the sibling project, OATS).
-- Score not just "did you name the node" but "did you separate cause from cascade and explain it."
+Generate a labeled dataset in one command:
 
-**Products this could become:**
-- An RCA benchmark + leaderboard for the AIOps industry (the "ImageNet moment" for incident diagnosis).
-- Synthetic training data for observability ML where real labeled incidents are scarce.
-- A pre-production chaos/validation harness — a digital twin you can break on purpose.
+```bash
+python generate_dataset.py -n 100 --llm-topologies --phi 0.8   # φ = fragility (run near saturation)
+python analysis2/run_rca_batch.py data/data_<ts>               # whitebox RCA, scored vs. label
+```
 
-**To go deeper, look up:** chaos engineering (Chaos Monkey, Gremlin), discrete-event simulation (SimPy), OpenTelemetry, causal inference for RCA, and changepoint detection (PELT, `ruptures`).
+## What makes the data *hard* (and honest)
 
-The takeaway: **before we can trust AI to find root causes, we have to be able to score it — and that means manufacturing the ground truth reality won't give us.**
+| Realism knob | Why it matters for RCA |
+|---|---|
+| Gradual multi-phase faults (warmup→ramp→full→recovery) | Realistic onset & propagation, not step functions |
+| Propagation delays | Enforces *temporal* causality (cause precedes symptom) |
+| Circuit breakers + retry storms | Produces genuine cascades — the thing RCA must untangle |
+| Correlated 5×5 noise (CPU·Mem·Latency·Throughput·Error) | No clean oracle signal |
+| **Hard negatives** | Two faults with near-identical signatures → tests real discrimination |
 
-#AIOps #SRE #Observability #RCA #ChaosEngineering #Benchmarking #MLSystems
+## What AI solves — and what it doesn't
+
+| Task | Owner |
+|---|---|
+| Design plausible, varied topologies & scenarios (coverage) | **LLM** (great at diversity) |
+| Narrate a causal story once the stats separate cause from symptom | **LLM** |
+| Decide if a spike is cause or symptom | **Statistics** (Mann-Whitney U, Cohen's d, PELT changepoints) — deliberately *whitebox* |
+| Produce ground truth | **The simulator** — you cannot prompt your way to a label |
+
+## What stays genuinely hard (open problems)
+
+1. **Sim-to-real gap** — does an RCA method that wins on simulated incidents transfer to prod? This is *the* validation question and it's open.
+2. **Hub bias** — blaming the most-connected node just because everything routes through it. Dataraft's engine applies a "Guilt Ratio" correction; it's an active area.
+3. **Traffic spike vs. retry storm** — same symptom, opposite cause. Disambiguation separates a real RCA engine from a plausible one.
+
+## How to take it from here
+
+- Grow the fault library + topology diversity; publish the labeled episodes as a **public RCA benchmark** (an "ImageNet moment" for incident diagnosis).
+- Score not just "named the node" but "separated cause from cascade *and explained it.*"
+- Feed it LLM RCA agents (e.g., the sibling project **OATS**) and rank them honestly.
+
+## Use cases → products
+
+| Use case | Product shape |
+|---|---|
+| Evaluate any RCA method | A benchmark + leaderboard for AIOps |
+| Train observability ML | Synthetic labeled incidents where real ones are scarce |
+| Pre-production validation | A chaos/digital-twin harness you break on purpose |
+
+## To understand this space better
+
+Chaos engineering (Chaos Monkey, Gremlin) · discrete-event simulation (SimPy) · OpenTelemetry · causal inference for RCA · changepoint detection (PELT, `ruptures`) · digital twins.
+
+---
+
+*Before we can trust AI to find root causes, we have to be able to score it — and that means manufacturing the ground truth reality won't give us.*
+
+**#AIOps #SRE #Observability #RCA #ChaosEngineering #Benchmarking #MLSystems #ProductManagement**
